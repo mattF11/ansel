@@ -127,24 +127,14 @@ void dt_dev_init(dt_develop_t *dev, int32_t gui_attached)
 {
   memset(dev, 0, sizeof(dt_develop_t));
   dt_dev_set_history_hash(dev, DT_PIXELPIPE_CACHE_HASH_INVALID);
-  dev->gui_module = NULL;
   dt_pthread_rwlock_init(&dev->history_mutex, NULL);
   dt_pthread_rwlock_init(&dev->masks_mutex, NULL);
-  dev->history = NULL; // empty list
 
   dev->gui_attached = gui_attached;
   dev->roi.width = -1;
   dev->roi.height = -1;
-  dev->image_surface = NULL;
 
   dt_image_init(&dev->image_storage);
-  dev->pipe = dev->preview_pipe = NULL;
-  dev->virtual_pipe = NULL;
-  dev->histogram_pre_tonecurve = NULL;
-  dev->histogram_pre_levels = NULL;
-  dev->forms = NULL;
-  dev->form_gui = NULL;
-  dev->allforms = NULL;
 
   if(dev->gui_attached)
   {
@@ -167,12 +157,6 @@ void dt_dev_init(dt_develop_t *dev, int32_t gui_attached)
   dt_dev_set_backbuf(&dev->output_histogram, 0, 0, 0, -1, -1);
   dt_dev_set_backbuf(&dev->display_histogram, 0, 0, 0, -1, -1);
 
-  dev->iop = NULL;
-  dev->alliop = NULL;
-  dev->allprofile_info = NULL;
-  dev->iop_order_list = NULL;
-
-  dev->proxy.chroma_adaptation = NULL;
   dev->proxy.wb_is_D65 = TRUE; // don't display error messages until we know for sure it's FALSE
   dev->proxy.wb_coeffs[0] = 0.f;
 
@@ -530,8 +514,8 @@ void dt_dev_darkroom_pipeline(dt_develop_t *dev, dt_dev_pixelpipe_t *pipe)
           = (dt_dev_pixelpipe_get_history_hash(pipe) != dt_dev_get_history_hash(dev))
             || (dt_dev_backbuf_get_hash(&pipe->backbuf) != dt_dev_pixelpipe_get_hash(pipe))
             || (dt_dev_backbuf_get_history_hash(&pipe->backbuf) != dt_dev_get_history_hash(dev))
-            || (dt_dev_pixelpipe_get_hash(pipe) == DT_DEV_PIXELPIPE_INVALID)
-            || (dt_dev_backbuf_get_hash(&pipe->backbuf) == DT_DEV_PIXELPIPE_INVALID);
+            || (dt_dev_pixelpipe_get_hash(pipe) == DT_PIXELPIPE_CACHE_HASH_INVALID)
+            || (dt_dev_backbuf_get_hash(&pipe->backbuf) == DT_PIXELPIPE_CACHE_HASH_INVALID);
 
       // If we know history changed, ensure at least the last step is resynced
       if(history_outdated)
@@ -541,7 +525,7 @@ void dt_dev_darkroom_pipeline(dt_develop_t *dev, dt_dev_pixelpipe_t *pipe)
       if(dt_dev_pixelpipe_get_changed(pipe) != DT_DEV_PIPE_UNCHANGED)
       {
         pipe->status = DT_DEV_PIXELPIPE_DIRTY;
-        fprintf(stdout, "PIPE %s needs update\n", pipe->type == DT_DEV_PIXELPIPE_FULL ? "full" : "preview");
+        dt_print(DT_DEBUG_PIPE, "PIPE %s needs update\n", pipe->type == DT_DEV_PIXELPIPE_FULL ? "full" : "preview");
       }
 
       // DT_DEV_PIXELPIPE_DIRTY means we need to compute a new backbuffer,
@@ -800,6 +784,7 @@ void dt_dev_configure_real(dt_develop_t *dev, int wd, int ht)
   dt_dev_get_thumbnail_size(dev);
   dt_dev_pixelpipe_update_zoom_main(dev);
   dt_dev_pixelpipe_update_zoom_preview(dev);
+  dt_control_queue_redraw();
 }
 
 void dt_dev_check_zoom_pos_bounds(dt_develop_t *dev, float *dev_x, float *dev_y, float *box_w, float *box_h)
