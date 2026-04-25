@@ -25,15 +25,6 @@
 #   You should have received a copy of the GNU General Public License
 #   along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 
-
-
-
-
-
-
-
-
-
 name: CI
 
 concurrency:
@@ -52,7 +43,6 @@ on:
         - "po/**"
         - "packaging/**"
         - "data/latex/**"
-        - "data/lua/**"
         - "data/pixmaps/**"
         - "data/pswp/**"
         - "data/style/**"
@@ -91,10 +81,9 @@ jobs:
           - { label: ubuntu-24.04, code: noble }
         compiler:
           - { compiler: GNU14,  CC: gcc-14,   CXX: g++-14,   GCC_VER: "14", LLVM_VER: "" }
-          - { compiler: LLVM19, CC: clang-19, CXX: clang++-19, GCC_VER: "", LLVM_VER: "19" }
+          - { compiler: LLVM20, CC: clang-20, CXX: clang++-20, GCC_VER: "", LLVM_VER: "20" }
         btype:
           - Debug
-          - Release
         target:
           - skiptest
           - nofeatures
@@ -118,7 +107,16 @@ jobs:
           sudo add-apt-repository ppa:ubuntu-toolchain-r/test
           sudo add-apt-repository -y universe
           sudo add-apt-repository -y multiverse
-      - uses: actions/checkout@v4
+      - name: Setup LLVM 20
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg
+          wget https://apt.llvm.org/llvm-snapshot.gpg.key
+          sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg llvm-snapshot.gpg.key
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-20 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y clang-20 libomp-20-dev
+      - uses: actions/checkout@v6
         with:
           submodules: true
           fetch-depth: 1
@@ -137,8 +135,8 @@ jobs:
           ${INSTALL_PREFIX}/bin/ansel-cli \
                  --width 2048 --height 2048 \
                  --apply-custom-presets false \
-                 "${SRC_DIR}/src/tests/integration/images/mire1.cr2" \
-                 "${SRC_DIR}/src/tests/integration/0000-nop/nop.xmp" \
+                 "${SRC_DIR}/tests/integration/images/mire1.cr2" \
+                 "${SRC_DIR}/tests/integration/0000-nop/nop.xmp" \
                  output.png \
                  --core --disable-opencl --conf host_memory_limit=8192 \
                  --conf worker_threads=4 -t 4 \
@@ -184,7 +182,7 @@ jobs:
         with:
           msystem: ${{ matrix.msystem }}
           update: true
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: true
           fetch-depth: 1
@@ -206,8 +204,8 @@ jobs:
                  --verbose \
                  --width 2048 --height 2048 \
                  --apply-custom-presets false \
-                 $(cygpath ${SRC_DIR})/src/tests/integration/images/mire1.cr2 \
-                 $(cygpath ${SRC_DIR})/src/tests/integration/0000-nop/nop.xmp \
+                 $(cygpath ${SRC_DIR})/tests/integration/images/mire1.cr2 \
+                 $(cygpath ${SRC_DIR})/tests/integration/0000-nop/nop.xmp \
                  output.png \
                  --core --disable-opencl --conf host_memory_limit=8192 \
                  --conf worker_threads=4 -t 4 \
@@ -221,18 +219,17 @@ jobs:
       fail-fast: true
       matrix:
         build:
-          - { os: macos-14,    xcode: 15.4,   deployment: 14.0 } # AppleClang 15, arm64
+          - { os: macos-15, xcode: 26.3, deployment: 15.0 } # AppleClang 17, arm64
         compiler:
           - { compiler: XCode,   CC: cc, CXX: c++ }
         btype:
           - Debug
-          - Release
         target:
           - skiptest
           - nofeatures
         generator:
           - Ninja
-        eco: [-DBUILD_SSE2_CODEPATHS=OFF -DUSE_GRAPHICSMAGICK=ON -DUSE_IMAGEMAGICK=OFF]
+        eco: [-DUSE_GRAPHICSMAGICK=ON -DUSE_IMAGEMAGICK=OFF]
     env:
       DEVELOPER_DIR: /Applications/Xcode_${{ matrix.build.xcode }}.app/Contents/Developer
       CC: ${{ matrix.compiler.CC }}
@@ -246,7 +243,7 @@ jobs:
       GENERATOR: ${{ matrix.generator }}
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: true
           fetch-depth: 1
@@ -265,8 +262,8 @@ jobs:
           ${INSTALL_PREFIX}/bin/ansel-cli \
                  --width 2048 --height 2048 \
                  --apply-custom-presets false \
-                 "${SRC_DIR}/src/tests/integration/images/mire1.cr2" \
-                 "${SRC_DIR}/src/tests/integration/0000-nop/nop.xmp" \
+                 "${SRC_DIR}/tests/integration/images/mire1.cr2" \
+                 "${SRC_DIR}/tests/integration/0000-nop/nop.xmp" \
                  output.png \
                  --core --disable-opencl --conf host_memory_limit=8192 \
                  --conf worker_threads=4 -t 4 \

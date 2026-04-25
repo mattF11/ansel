@@ -72,7 +72,7 @@ int dt_pdf_parse_length(const char *str, float *length)
   int res = 0;
   char *nptr, *endptr;
 
-  if(str == NULL || length == NULL)
+  if(IS_NULL_PTR(str) || IS_NULL_PTR(length))
     return 0;
 
   SKIP_SPACES(str);
@@ -81,7 +81,7 @@ int dt_pdf_parse_length(const char *str, float *length)
 
   *length =  g_ascii_strtod(nptr, &endptr);
 
-  if(endptr == NULL || errno == ERANGE)
+  if(IS_NULL_PTR(endptr) || errno == ERANGE)
     goto end;
 
   // 0 is 0 is 0, why should we care about the unit?
@@ -121,7 +121,7 @@ int dt_pdf_parse_paper_size(const char *str, float *width, float *height)
   gboolean width_has_unit = FALSE;
   char *ptr, *nptr, *endptr;
 
-  if(str == NULL || width == NULL || height == NULL)
+  if(IS_NULL_PTR(str) || IS_NULL_PTR(width) || IS_NULL_PTR(height))
     return 0;
 
   // first check if this is a well known size
@@ -142,7 +142,7 @@ int dt_pdf_parse_paper_size(const char *str, float *width, float *height)
 
   *width =  g_ascii_strtod(nptr, &endptr);
 
-  if(endptr == NULL || *endptr == '\0' || errno == ERANGE || !isnormal(*width))
+  if(IS_NULL_PTR(endptr) || *endptr == '\0' || errno == ERANGE || !isnormal(*width))
     goto end;
 
   nptr = endptr;
@@ -174,7 +174,7 @@ int dt_pdf_parse_paper_size(const char *str, float *width, float *height)
 
   *height =  g_ascii_strtod(nptr, &endptr);
 
-  if(endptr == NULL || *endptr == '\0' || errno == ERANGE || !isnormal(*height))
+  if(IS_NULL_PTR(endptr) || *endptr == '\0' || errno == ERANGE || !isnormal(*height))
     goto end;
 
   nptr = endptr;
@@ -218,10 +218,10 @@ static void _pdf_set_offset(dt_pdf_t *pdf, int id, size_t offset)
 dt_pdf_t *dt_pdf_start(const char *filename, float width, float height, float dpi, dt_pdf_stream_encoder_t default_encoder)
 {
   dt_pdf_t *pdf = calloc(1, sizeof(dt_pdf_t));
-  if(!pdf) return NULL;
+  if(IS_NULL_PTR(pdf)) return NULL;
 
   pdf->fd = g_fopen(filename, "wb");
-  if(!pdf->fd)
+  if(IS_NULL_PTR(pdf->fd))
   {
     dt_free(pdf);
     return NULL;
@@ -361,7 +361,7 @@ int dt_pdf_add_icc_from_data(dt_pdf_t *pdf, const unsigned char *data, size_t si
   // length of the stream
   _pdf_set_offset(pdf, length_id, pdf->bytes_written + bytes_written);
   bytes_written += fprintf(pdf->fd, "%d 0 obj\n"
-                                    "%zu\n"
+                                    "%" G_GSIZE_FORMAT "\n"
                                     "endobj\n",
                            length_id, stream_size);
 
@@ -372,18 +372,18 @@ int dt_pdf_add_icc_from_data(dt_pdf_t *pdf, const unsigned char *data, size_t si
 
 // this adds an image to the pdf file and returns the info needed to reference it later.
 // if icc_id is 0 then we suppose the pixel data to be in output device space, otherwise the ICC profile object is referenced.
-// if image == NULL only the outline can be shown later
+// if IS_NULL_PTR(image) only the outline can be shown later
 dt_pdf_image_t *dt_pdf_add_image(dt_pdf_t *pdf, const unsigned char *image, int width, int height, int bpp, int icc_id, float border)
 {
   size_t stream_size = 0;
   size_t bytes_written = 0;
 
   dt_pdf_image_t *pdf_image = calloc(1, sizeof(dt_pdf_image_t));
-  if(!pdf_image) return NULL;
+  if(IS_NULL_PTR(pdf_image)) return NULL;
 
   pdf_image->width = width;
   pdf_image->height = height;
-  pdf_image->outline_mode = (image == NULL);
+  pdf_image->outline_mode = (IS_NULL_PTR(image));
   // no need to do fancy math here:
   pdf_image->bb_x = border;
   pdf_image->bb_y = border;
@@ -445,7 +445,7 @@ dt_pdf_image_t *dt_pdf_add_image(dt_pdf_t *pdf, const unsigned char *image, int 
   // length of the last stream
   _pdf_set_offset(pdf, length_id, pdf->bytes_written + bytes_written);
   bytes_written += fprintf(pdf->fd, "%d 0 obj\n"
-                                    "%zu\n"
+                                    "%" G_GSIZE_FORMAT "\n"
                                     "endobj\n",
                            length_id, stream_size);
 
@@ -458,7 +458,7 @@ dt_pdf_image_t *dt_pdf_add_image(dt_pdf_t *pdf, const unsigned char *image, int 
 dt_pdf_page_t *dt_pdf_add_page(dt_pdf_t *pdf, dt_pdf_image_t **images, int n_images)
 {
   dt_pdf_page_t *pdf_page = calloc(1, sizeof(dt_pdf_page_t));
-  if(!pdf_page) return NULL;
+  if(IS_NULL_PTR(pdf_page)) return NULL;
   pdf_page->object_id = pdf->next_id++;
   int content_id = pdf->next_id++;
   int length_id = pdf->next_id++;
@@ -625,7 +625,7 @@ dt_pdf_page_t *dt_pdf_add_page(dt_pdf_t *pdf, dt_pdf_image_t **images, int n_ima
   // length of the last stream
   _pdf_set_offset(pdf, length_id, pdf->bytes_written + bytes_written);
   bytes_written += fprintf(pdf->fd, "%d 0 obj\n"
-                                    "%zu\n"
+                                    "%" G_GSIZE_FORMAT "\n"
                                     "endobj\n",
                            length_id, stream_size);
 
@@ -710,7 +710,7 @@ void dt_pdf_finish(dt_pdf_t *pdf, dt_pdf_page_t **pages, int n_pages)
   {
     off_hours = off / 60;
     off_mins = abs(off - off_hours * 60);
-    snprintf(&time_str[size], 9, "%+03d'%02d'", off_hours, off_mins);
+    g_snprintf(&time_str[size], sizeof(time_str) - size, "%+03d'%02d'", off_hours, off_mins);
   }
 
 time_error:
@@ -760,7 +760,7 @@ time_error:
 
   // and finally the file footer with the offset of the xref section
   fprintf(pdf->fd, "startxref\n"
-                   "%zu\n"
+                   "%" G_GSIZE_FORMAT "\n"
                    "%%%%EOF\n",
           pdf->bytes_written);
 
@@ -776,7 +776,7 @@ float * read_ppm(const char * filename, int * wd, int * ht)
 {
   FILE *f = g_fopen(filename, "rb");
 
-  if(!f)
+  if(IS_NULL_PTR(f))
   {
     fprintf(stderr, "can't open input file\n");
     return NULL;
@@ -808,9 +808,7 @@ float * read_ppm(const char * filename, int * wd, int * ht)
       return NULL;
     }
     // and transform it into 0..1 range
-    #ifdef _OPENMP
-    #pragma omp parallel for schedule(static) default(none) shared(image, tmp, width, height, max)
-    #endif
+    __OMP_PARALLEL_FOR__()
     for(int i = 0; i < width * height * 3; i++)
       image[i] = (float)tmp[i] / max;
     dt_free(tmp);
@@ -829,15 +827,11 @@ float * read_ppm(const char * filename, int * wd, int * ht)
       return NULL;
     }
     // swap byte order
-    #ifdef _OPENMP
-    #pragma omp parallel for schedule(static) default(none) shared(tmp, width, height)
-    #endif
+    __OMP_PARALLEL_FOR__()
     for(int k = 0; k < 3 * width * height; k++)
       tmp[k] = ((tmp[k] & 0xff) << 8) | (tmp[k] >> 8);
     // and transform it into 0..1 range
-    #ifdef _OPENMP
-    #pragma omp parallel for schedule(static) default(none) shared(image, tmp, max, width, height)
-    #endif
+    __OMP_PARALLEL_FOR__()
     for(int i = 0; i < width * height * 3; i++)
       image[i] = (float)tmp[i] / max;
     dt_free(tmp);
@@ -883,17 +877,14 @@ int main(int argc, char *argv[])
   {
     int width, height;
     float *image = read_ppm(argv[i + 1], &width, &height);
-    if(!image) exit(1);
+    if(IS_NULL_PTR(image)) exit(1);
     uint16_t *data = (uint16_t *)malloc(sizeof(uint16_t) * 3 * width * height);
-    if(!data)
+    if(IS_NULL_PTR(data))
     {
       dt_free(image);
       exit(1);
     }
-
-#ifdef _OPENMP
-  #pragma omp parallel for schedule(static) default(none) shared(image, data, width, height)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(int i = 0; i < width * height * 3; i++)
       data[i] = CLIP(image[i]) * 65535;
 

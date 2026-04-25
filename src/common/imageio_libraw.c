@@ -247,7 +247,7 @@ dt_imageio_retval_t dt_imageio_open_libraw(dt_image_t *img, const char *filename
   if(!img->exif_inited) (void)dt_exif_read(img, filename);
 
   libraw_data_t *raw = libraw_init(0);
-  if(!raw) return DT_IMAGEIO_FILE_CORRUPTED;
+  if(IS_NULL_PTR(raw)) return DT_IMAGEIO_FILE_CORRUPTED;
 
 #if defined(_WIN32) && (defined(UNICODE) || defined(_UNICODE))
   wchar_t *wfilename = g_utf8_to_utf16(filename, -1, NULL, NULL, NULL);
@@ -265,7 +265,7 @@ dt_imageio_retval_t dt_imageio_open_libraw(dt_image_t *img, const char *filename
   // but seems to be the best available. LibRaw crx decoder can actually
   // decode the raw data, but internal metadata like wb_coeffs, crops etc.
   // are not populated into libraw structure, or image is not of CFA type.
-  if(raw->rawdata.color.cam_mul[0] == 0.0f || isnan(raw->rawdata.color.cam_mul[0]) || !raw->rawdata.raw_image)
+  if(raw->rawdata.color.cam_mul[0] == 0.0f || isnan(raw->rawdata.color.cam_mul[0]) || IS_NULL_PTR(raw->rawdata.raw_image))
   {
     fprintf(stderr, "[libraw_open] detected unsupported image `%s'\n", img->filename);
     goto error;
@@ -303,14 +303,15 @@ dt_imageio_retval_t dt_imageio_open_libraw(dt_image_t *img, const char *filename
   // This incurs a significant performance penalty.
   libraw_err = libraw_dcraw_process(raw);
   if(libraw_err != LIBRAW_SUCCESS) goto error;
-  img->buf_dsc.filters = raw->idata.filters;
+  img->dsc.filters = raw->idata.filters;
 
   // For CR3, we only have Bayer data and a single channel
-  img->buf_dsc.channels = 1;
-  img->buf_dsc.datatype = TYPE_UINT16;
-  img->buf_dsc.cst = IOP_CS_RAW;
+  img->dsc.channels = 1;
+  img->dsc.datatype = TYPE_UINT16;
+  img->dsc.bpp = sizeof(uint16_t);
+  img->dsc.cst = IOP_CS_RAW;
 
-  if(FILTERS_ARE_4BAYER(img->buf_dsc.filters))
+  if(FILTERS_ARE_4BAYER(img->dsc.filters))
   {
     img->flags |= DT_IMAGE_4BAYER;
   }
@@ -319,7 +320,7 @@ dt_imageio_retval_t dt_imageio_open_libraw(dt_image_t *img, const char *filename
     img->flags &= ~DT_IMAGE_4BAYER;
   }
 
-  if(img->buf_dsc.filters)
+  if(img->dsc.filters)
   {
     img->flags &= ~DT_IMAGE_LDR;
     img->flags &= ~DT_IMAGE_HDR;
@@ -335,7 +336,7 @@ dt_imageio_retval_t dt_imageio_open_libraw(dt_image_t *img, const char *filename
 
   img->loader = LOADER_LIBRAW;
 
-  if(!mbuf)
+  if(IS_NULL_PTR(mbuf))
   {
     err = DT_IMAGEIO_OK;
     goto error;
@@ -343,7 +344,7 @@ dt_imageio_retval_t dt_imageio_open_libraw(dt_image_t *img, const char *filename
 
   // Allocate and copy image from libraw buffer to dt
   void *buf = dt_mipmap_cache_alloc(mbuf, img);
-  if(!buf)
+  if(IS_NULL_PTR(buf))
   {
     fprintf(stderr, "[libraw_open] could not alloc full buffer for image `%s'\n", img->filename);
     err = DT_IMAGEIO_CACHE_FULL;

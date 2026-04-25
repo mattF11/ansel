@@ -96,10 +96,8 @@
 #include "control/control.h"
 #include "control/jobs.h"
 #include "develop/lightroom.h"
+#include "develop/develop.h"
 #include "win/filepath.h"
-#ifdef USE_LUA
-#include "lua/image.h"
-#endif
 #include <assert.h>
 #include <ctype.h>
 #include <math.h>
@@ -268,7 +266,7 @@ gboolean dt_image_is_matrix_correction_supported(const dt_image_t *img)
 {
   if(!(img->flags & (DT_IMAGE_RAW | DT_IMAGE_S_RAW))) return FALSE;
   if(img->flags & DT_IMAGE_MONOCHROME) return FALSE;
-  if((img->flags & DT_IMAGE_S_RAW) && img->buf_dsc.filters == 0) return FALSE;
+  if((img->flags & DT_IMAGE_S_RAW) && img->dsc.filters == 0) return FALSE;
 
   const gboolean has_d65 = _image_matrix_has_data(img->d65_color_matrix, 9);
   const gboolean has_adobe = _image_matrix_has_data(&img->adobe_XYZ_to_CAM[0][0], 9);
@@ -324,10 +322,10 @@ static const char *_image_colorspace_to_string(const dt_image_colorspace_t color
 
 void dt_image_print_debug_info(const dt_image_t *img, const char *context)
 {
-  if(!img) return;
+  if(IS_NULL_PTR(img)) return;
 
   const char *ctx = context ? context : "image";
-  const dt_iop_buffer_dsc_t *dsc = &img->buf_dsc;
+  const dt_iop_buffer_dsc_t *dsc = &img->dsc;
   const gboolean is_raw = dt_image_is_raw(img);
   const gboolean is_ldr = dt_image_is_ldr(img);
   const gboolean is_hdr = dt_image_is_hdr(img);
@@ -337,7 +335,7 @@ void dt_image_print_debug_info(const dt_image_t *img, const char *context)
   const gboolean mosaic = dsc->filters != 0u;
   const gboolean xtrans = dsc->filters == 9u;
   const gboolean bayer = mosaic && !xtrans;
-  const size_t bpp = dt_iop_buffer_dsc_to_bpp(dsc);
+  const size_t bpp = dsc->bpp;
   int bit_depth = 0;
 
   switch(dsc->datatype)
@@ -381,7 +379,7 @@ void dt_image_print_debug_info(const dt_image_t *img, const char *context)
            (flags & DT_IMAGE_NO_LEGACY_PRESETS) != 0, (flags & DT_IMAGE_REJECTED) != 0, (flags & DT_IMAGE_REMOVE) != 0,
            img->has_localcopy, img->has_audio, img->is_hdr);
   dt_print(DT_DEBUG_IMAGEIO,
-           "[image debug] %s buf: channels=%u datatype=%s bit_depth=%d bpp=%zu filters=%u cst=%d colorspace=%s "
+           "[image debug] %s buf: channels=%u datatype=%s bit_depth=%d bpp=%" G_GSIZE_FORMAT " filters=%u cst=%d colorspace=%s "
            "processed_max=[%.4f %.4f %.4f %.4f]\n",
            ctx, dsc->channels, _image_buf_type_to_string(dsc->datatype), bit_depth, bpp, dsc->filters, dsc->cst,
            _image_colorspace_to_string(img->colorspace), dsc->processed_maximum[0], dsc->processed_maximum[1],
@@ -513,7 +511,7 @@ gboolean dt_image_safe_remove(const int32_t imgid)
 dt_image_path_source_t dt_image_choose_input_path(const dt_image_t *img, char *pathname,
                                                   size_t pathname_len, gboolean force_cache)
 {
-  if(!img || !pathname) return DT_IMAGE_PATH_NONE;
+  if(IS_NULL_PTR(img) || IS_NULL_PTR(pathname)) return DT_IMAGE_PATH_NONE;
   pathname[0] = '\0';
 
   // Start with local copies as file I/O will be better if we have a choice
@@ -605,10 +603,10 @@ void dt_image_local_copy_paths_from_fullpath(const char *fullpath, int32_t imgid
 {
   if(local_copy_path) local_copy_path[0] = '\0';
   if(local_copy_legacy_path) local_copy_legacy_path[0] = '\0';
-  if(!fullpath || !*fullpath || imgid <= 0 || !local_copy_path || !local_copy_legacy_path) return;
+  if(IS_NULL_PTR(fullpath) || !*fullpath || imgid <= 0 || IS_NULL_PTR(local_copy_path) || IS_NULL_PTR(local_copy_legacy_path)) return;
 
   char *md5_filename = g_compute_checksum_for_string(G_CHECKSUM_MD5, fullpath, strlen(fullpath));
-  if(!md5_filename) return;
+  if(IS_NULL_PTR(md5_filename)) return;
 
   char cachedir[PATH_MAX] = { 0 };
   dt_loc_get_user_cache_dir(cachedir, sizeof(cachedir));
@@ -881,7 +879,7 @@ static void _image_set_images_locations(const GList *img, const GArray *gloc,
 
 void dt_image_set_images_locations(const GList *imgs, const GArray *gloc, const gboolean undo_on)
 {
-  if(!imgs || !gloc || (g_list_length((GList *)imgs) != gloc->len))
+  if(IS_NULL_PTR(imgs) || IS_NULL_PTR(gloc) || (g_list_length((GList *)imgs) != gloc->len))
     return;
   GList *undo = NULL;
   if(undo_on) dt_undo_start_group(darktable.undo, DT_UNDO_GEOTAG);
@@ -919,7 +917,7 @@ dt_image_orientation_t dt_image_get_orientation(const int32_t imgid)
 {
   // find the flip module -- the pointer stays valid until darktable shuts down
   static dt_iop_module_so_t *flip = NULL;
-  if(flip == NULL)
+  if(IS_NULL_PTR(flip))
   {
     for(const GList *modules = darktable.iop; modules; modules = g_list_next(modules))
     {
@@ -1235,7 +1233,7 @@ uint32_t dt_image_altered(const int32_t imgid)
 
   _image_stmt_mutex_ensure();
   dt_pthread_mutex_lock(&_image_stmt_mutex);
-  if(!_image_altered_stmt)
+  if(IS_NULL_PTR(_image_altered_stmt))
   {
     DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
                                 "SELECT COUNT(imgid) FROM main.history WHERE imgid = ?1", -1,
@@ -1293,7 +1291,7 @@ GList* dt_image_find_xmps(const char* filename)
   // start by locating the extension, which we'll be referencing multiple times
   const size_t fn_len = strlen(filename);
   const char* ext = strrchr(filename,'.');  // find last dot
-  if(!ext) ext = filename;
+  if(IS_NULL_PTR(ext)) ext = filename;
   const size_t ext_offset = ext - filename;
 
   gchar pattern[PATH_MAX] = { 0 };
@@ -1451,7 +1449,7 @@ static int32_t _image_import_internal(const int32_t film_id, const char *filenam
   }
   char *ext = g_ascii_strdown(cc + 1, -1);
   int supported = 0;
-  for(const char **i = dt_supported_extensions; *i != NULL; i++)
+  for(const char **i = dt_supported_extensions; !IS_NULL_PTR(*i); i++)
     if(!strcmp(ext, *i))
     {
       supported = 1;
@@ -1660,20 +1658,6 @@ static int32_t _image_import_internal(const int32_t film_id, const char *filenam
   dt_free(sql_pattern);
   dt_free(normalized_filename);
 
-#ifdef USE_LUA
-  //Synchronous calling of lua post-import-image events
-  if(lua_locking)
-    dt_lua_lock();
-
-  lua_State *L = darktable.lua_state.state;
-
-  luaA_push(L, dt_lua_image_t, &id);
-  dt_lua_event_trigger(L, "post-import-image", 1);
-
-  if(lua_locking)
-    dt_lua_unlock();
-#endif
-
   if(raise_signals)
   {
     DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_IMAGE_IMPORT, id);
@@ -1750,14 +1734,13 @@ void dt_image_init(dt_image_t *img)
   img->legacy_flip.legacy = 0;
   img->legacy_flip.user_flip = 0;
 
-  img->buf_dsc.filters = 0u;
-  img->buf_dsc = (dt_iop_buffer_dsc_t){.channels = 0, .datatype = TYPE_UNKNOWN };
+  img->dsc = (dt_iop_buffer_dsc_t){ .channels = 0, .datatype = TYPE_UNKNOWN, .bpp = 0, .filters = 0u };
   img->film_id = UNKNOWN_IMAGE;
   img->group_id = UNKNOWN_IMAGE;
   img->group_members = 0;
   img->history_items = 0;
   img->history_hash = UINT64_MAX;
-  img->mipmap_hash = UINT64_MAX;
+  img->mipmap_hash = 0; // don't default it to img->history_hash to not make it look like they are in sync
   img->self_hash = 0;
   img->flags = 0;
   img->id = UNKNOWN_IMAGE;
@@ -2514,13 +2497,13 @@ static int64_t _write_timestamp_get(const int32_t imgid)
 
   _write_timestamp_stmt_ensure();
   dt_pthread_mutex_lock(&_write_timestamp_stmt_mutex);
-  if(!_write_timestamp_select_stmt)
+  if(IS_NULL_PTR(_write_timestamp_select_stmt))
   {
     DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
                                 "SELECT write_timestamp FROM main.images WHERE id = ?1",
                                 -1, &_write_timestamp_select_stmt, NULL);
   }
-  if(!_write_timestamp_select_stmt)
+  if(IS_NULL_PTR(_write_timestamp_select_stmt))
   {
     dt_pthread_mutex_unlock(&_write_timestamp_stmt_mutex);
     return 0;
@@ -2562,14 +2545,14 @@ static void _write_timestamp_set_now(const int32_t imgid)
 
 static gboolean _sidecar_is_up_to_date(const dt_image_t *img)
 {
-  if(!img || img->id <= 0) return FALSE;
+  if(IS_NULL_PTR(img) || img->id <= 0) return FALSE;
   if(img->change_timestamp <= 0) return FALSE;
 
   const int64_t write_timestamp = _write_timestamp_get(img->id);
   if(write_timestamp <= 0) return FALSE;
 
   GDateTime *gdt = dt_datetime_gtimespan_to_gdatetime(img->change_timestamp);
-  if(!gdt) return FALSE;
+  if(IS_NULL_PTR(gdt)) return FALSE;
   const int64_t change_timestamp_unix = g_date_time_to_unix(gdt);
   g_date_time_unref(gdt);
   dt_print(DT_DEBUG_CONTROL,
@@ -2580,7 +2563,7 @@ static gboolean _sidecar_is_up_to_date(const dt_image_t *img)
 
 static int _write_sidecar_file_from_image_locked(const dt_image_t *img)
 {
-  if(!img || img->id <= 0) return 1;
+  if(IS_NULL_PTR(img) || img->id <= 0) return 1;
 
   char imgpath[PATH_MAX] = { 0 };
   if(dt_image_choose_input_path(img, imgpath, sizeof(imgpath), FALSE) == DT_IMAGE_PATH_NONE)
@@ -2618,7 +2601,7 @@ int dt_image_write_sidecar_file(const int32_t imgid)
 
   dt_print(DT_DEBUG_CONTROL, "[xmp] imgid %d write start\n", imgid);
   dt_image_t *img = dt_image_cache_get(darktable.image_cache, imgid, 'w');
-  if(!img)
+  if(IS_NULL_PTR(img))
   {
     dt_print(DT_DEBUG_CONTROL, "[xmp] imgid %d cache lock failed\n", imgid);
     return 1;
@@ -2633,7 +2616,7 @@ int dt_image_write_sidecar_file(const int32_t imgid)
 
 void dt_image_synch_xmps(const GList *img)
 {
-  if(!img) return;
+  if(IS_NULL_PTR(img)) return;
   if(dt_image_get_xmp_mode())
   {
     dt_control_save_xmps(img, FALSE);
@@ -2712,10 +2695,10 @@ void dt_image_local_copy_synch()
 
 void dt_image_get_datetime(const int32_t imgid, char *datetime)
 {
-  if(!datetime) return;
+  if(IS_NULL_PTR(datetime)) return;
   datetime[0] = '\0';
   const dt_image_t *cimg = dt_image_cache_get(darktable.image_cache, imgid, 'r');
-  if(!cimg) return;
+  if(IS_NULL_PTR(cimg)) return;
   dt_datetime_img_to_exif(datetime, DT_DATETIME_LENGTH, cimg);
   dt_image_cache_read_release(darktable.image_cache, cimg);
 }
@@ -2759,7 +2742,7 @@ static void _image_set_datetimes(const GList *img, const GArray *dtime,
 
 void dt_image_set_datetimes(const GList *imgs, const GArray *dtime, const gboolean undo_on)
 {
-  if(!imgs || !dtime || (g_list_length((GList *)imgs) != dtime->len))
+  if(IS_NULL_PTR(imgs) || IS_NULL_PTR(dtime) || (g_list_length((GList *)imgs) != dtime->len))
     return;
   GList *undo = NULL;
   if(undo_on) dt_undo_start_group(darktable.undo, DT_UNDO_DATETIME);
@@ -2796,7 +2779,7 @@ static void _image_set_datetime(const GList *img, const char *datetime,
 
 void dt_image_set_datetime(const GList *imgs, const char *datetime, const gboolean undo_on)
 {
-  if(!imgs)
+  if(IS_NULL_PTR(imgs))
     return;
   GList *undo = NULL;
   if(undo_on) dt_undo_start_group(darktable.undo, DT_UNDO_DATETIME);
@@ -2881,24 +2864,24 @@ static char *_text_path_legacy_build(const char *image_path)
 
 char *dt_image_get_text_path_from_path(const char *image_path)
 {
-  if(!image_path) return NULL;
+  if(IS_NULL_PTR(image_path)) return NULL;
 
   return _text_path_legacy_if_exists(image_path);
 }
 
 char *dt_image_build_text_path_from_path(const char *image_path)
 {
-  if(!image_path) return NULL;
+  if(IS_NULL_PTR(image_path)) return NULL;
 
   return _text_path_legacy_build(image_path);
 }
 
 static void _copy_text_sidecar_if_present(const char *src_image_path, const char *dest_image_path)
 {
-  if(!src_image_path || !dest_image_path) return;
+  if(IS_NULL_PTR(src_image_path) || IS_NULL_PTR(dest_image_path)) return;
 
   char *src_txt = dt_image_get_text_path_from_path(src_image_path);
-  if(!src_txt) return;
+  if(IS_NULL_PTR(src_txt)) return;
 
   char *dest_txt = _text_path_legacy_build(dest_image_path);
   if(dest_txt)
@@ -2926,10 +2909,10 @@ static void _copy_text_sidecar_if_present(const char *src_image_path, const char
 
 static void _move_text_sidecar_if_present(const char *src_image_path, const char *dest_image_path, const gboolean overwrite)
 {
-  if(!src_image_path || !dest_image_path) return;
+  if(IS_NULL_PTR(src_image_path) || IS_NULL_PTR(dest_image_path)) return;
 
   char *src_txt = dt_image_get_text_path_from_path(src_image_path);
-  if(!src_txt) return;
+  if(IS_NULL_PTR(src_txt)) return;
 
   char *dest_txt = _text_path_legacy_build(dest_image_path);
   if(dest_txt)
@@ -2978,9 +2961,7 @@ float dt_image_get_exposure_bias(const struct dt_image_t *image_storage)
   if((image_storage) && (image_storage->exif_exposure_bias))
   {
     // sanity checks because I don't trust exif tags too much
-    if(image_storage->exif_exposure_bias == NAN
-       || image_storage->exif_exposure_bias != image_storage->exif_exposure_bias
-       || isnan(image_storage->exif_exposure_bias)
+    if(isnan(image_storage->exif_exposure_bias)
        || CLAMP(image_storage->exif_exposure_bias, -5.0f, 5.0f) != image_storage->exif_exposure_bias)
       return 0.0f; // isnan
     else

@@ -30,6 +30,7 @@
    I've extended the basic idea to work with non-Bayer filter arrays.
    Gradients are numbered clockwise from NW=0 to W=7.
  */
+__DT_CLONE_TARGETS__
 static int vng_interpolate(float *out, const float *const in,
                            const dt_iop_roi_t *const roi_out, const dt_iop_roi_t *const roi_in,
                            const uint32_t filters, const uint8_t (*const xtrans)[6], const int only_vng_linear)
@@ -79,7 +80,7 @@ static int vng_interpolate(float *out, const float *const in,
   char *buffer = (char *)dt_pixelpipe_cache_alloc_align_cache(
       sizeof(**brow) * width * 3 + sizeof(*ip) * prow * pcol * 320,
       0);
-  if(!buffer)
+  if(IS_NULL_PTR(buffer))
   {
     fprintf(stderr, "[demosaic] not able to allocate VNG buffer\n");
     return 1;
@@ -129,13 +130,7 @@ static int vng_interpolate(float *out, const float *const in,
 
   for(int row = 2; row < height - 2; row++) /* Do VNG interpolation */
   {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(colors, pcol, prow, roi_in, width, xtrans) \
-    shared(row, code, brow, out, filters4) \
-    private(ip) \
-    schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__(private(ip) )
     for(int col = 2; col < width - 2; col++)
     {
       int g;
@@ -198,45 +193,44 @@ static int vng_interpolate(float *out, const float *const in,
 
   if(filters != 9 && !FILTERS_ARE_4BAYER(filters)) // x-trans or CYGM/RGBE
 // for Bayer mix the two greens to make VNG4
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(height, width) \
-    shared(out) \
-    schedule(static)
-#endif
-    for(int i = 0; i < height * width; i++) out[i * 4 + 1] = (out[i * 4 + 1] + out[i * 4 + 3]) / 2.0f;
+    __OMP_PARALLEL_FOR__()
+    for(int i = 0; i < height * width; i++) 
+      out[i * 4 + 1] = (out[i * 4 + 1] + out[i * 4 + 3]) / 2.0f;
+    
+    
   return 0;
 }
 
 #ifdef HAVE_OPENCL
 
-static int process_vng_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in,
-                          cl_mem dev_out, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out,
+static int process_vng_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                          const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
+                          const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out,
                           const gboolean smooth, const int only_vng_linear)
 {
   dt_iop_demosaic_data_t *data = (dt_iop_demosaic_data_t *)piece->data;
   dt_iop_demosaic_global_data_t *gd = (dt_iop_demosaic_global_data_t *)self->global_data;
 
-  const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->pipe->dsc.xtrans;
+  const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->dsc_in.xtrans;
 
   // separate out G1 and G2 in Bayer patterns
   uint32_t filters4;
-  if(piece->pipe->dsc.filters == 9u)
-    filters4 = piece->pipe->dsc.filters;
-  else if((piece->pipe->dsc.filters & 3) == 1)
-    filters4 = piece->pipe->dsc.filters | 0x03030303u;
+  if(piece->dsc_in.filters == 9u)
+    filters4 = piece->dsc_in.filters;
+  else if((piece->dsc_in.filters & 3) == 1)
+    filters4 = piece->dsc_in.filters | 0x03030303u;
   else
-    filters4 = piece->pipe->dsc.filters | 0x0c0c0c0cu;
+    filters4 = piece->dsc_in.filters | 0x0c0c0c0cu;
 
   const int size = (filters4 == 9u) ? 6 : 16;
   const int colors = (filters4 == 9u) ? 3 : 4;
   const int prow = (filters4 == 9u) ? 6 : 8;
   const int pcol = (filters4 == 9u) ? 6 : 2;
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
 
   const float processed_maximum[4]
-      = { piece->pipe->dsc.processed_maximum[0], piece->pipe->dsc.processed_maximum[1],
-          piece->pipe->dsc.processed_maximum[2], 1.0f };
+      = { piece->dsc_in.processed_maximum[0], piece->dsc_in.processed_maximum[1],
+          piece->dsc_in.processed_maximum[2], 1.0f };
 
   int *ips = NULL;
 
@@ -251,11 +245,10 @@ static int process_vng_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *
 
   int32_t(*lookup)[16][32] = NULL;
 
-  if(piece->pipe->dsc.filters == 9u)
+  if(piece->dsc_in.filters == 9u)
   {
-    dev_xtrans
-        = dt_opencl_copy_host_to_device_constant(devid, sizeof(piece->pipe->dsc.xtrans), piece->pipe->dsc.xtrans);
-    if(dev_xtrans == NULL) goto error;
+    dev_xtrans = dt_opencl_copy_host_to_device_constant(devid, sizeof(piece->dsc_in.xtrans), (void *)piece->dsc_in.xtrans);
+    if(IS_NULL_PTR(dev_xtrans)) goto error;
   }
 
   // build interpolation lookup table for linear interpolation which for a given offset in the sensor
@@ -375,21 +368,21 @@ static int process_vng_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *
 
 
   dev_lookup = dt_opencl_copy_host_to_device_constant(devid, lookup_size, lookup);
-  if(dev_lookup == NULL) goto error;
+  if(IS_NULL_PTR(dev_lookup)) goto error;
 
   dev_code = dt_opencl_copy_host_to_device_constant(devid, sizeof(code), code);
-  if(dev_code == NULL) goto error;
+  if(IS_NULL_PTR(dev_code)) goto error;
 
   dev_ips = dt_opencl_copy_host_to_device_constant(devid, ips_size, ips);
-  if(dev_ips == NULL) goto error;
+  if(IS_NULL_PTR(dev_ips)) goto error;
 
   // green equilibration for Bayer sensors
-  if(piece->pipe->dsc.filters != 9u && data->green_eq != DT_IOP_GREEN_EQ_NO)
+  if(piece->dsc_in.filters != 9u && data->green_eq != DT_IOP_GREEN_EQ_NO)
   {
     dev_green_eq = dt_opencl_alloc_device(devid, roi_in->width, roi_in->height, sizeof(float));
-    if(dev_green_eq == NULL) goto error;
+    if(IS_NULL_PTR(dev_green_eq)) goto error;
 
-    if(!green_equilibration_cl(self, piece, dev_in, dev_green_eq, roi_in))
+    if(!green_equilibration_cl(self, pipe, piece, dev_in, dev_green_eq, roi_in))
       goto error;
 
     dev_in = dev_green_eq;
@@ -401,7 +394,7 @@ static int process_vng_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *
   dev_aux = dev_out;
 
   dev_tmp = dt_opencl_alloc_device(devid, roi_in->width, roi_in->height, sizeof(float) * 4);
-  if(dev_tmp == NULL) goto error;
+  if(IS_NULL_PTR(dev_tmp)) goto error;
 
   {
     // manage borders for linear interpolation part
@@ -507,8 +500,6 @@ static int process_vng_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_vng_green_equilibrate, sizes);
     if(err != CL_SUCCESS) goto error;
   }
-  dt_dev_write_rawdetail_mask_cl(piece, dev_aux, roi_in, DT_DEV_DETAIL_MASK_DEMOSAIC);
-
   if(dev_aux != dev_out) dt_opencl_release_mem_object(dev_aux);
   dev_aux = NULL;
 
@@ -537,7 +528,7 @@ static int process_vng_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *
   // color smoothing
   if((data->color_smoothing) && smooth)
   {
-    if(!color_smoothing_cl(self, piece, dev_out, dev_out, roi_out, data->color_smoothing))
+    if(!color_smoothing_cl(self, pipe, piece, dev_out, dev_out, roi_out, data->color_smoothing))
       goto error;
   }
 

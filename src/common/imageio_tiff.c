@@ -379,7 +379,7 @@ dt_imageio_retval_t dt_imageio_open_tiff(dt_image_t *img, const char *filename, 
   t.tiff = TIFFOpen(filename, "rb");
 #endif
 
-  if(t.tiff == NULL) return DT_IMAGEIO_FILE_CORRUPTED;
+  if(IS_NULL_PTR(t.tiff)) return DT_IMAGEIO_FILE_CORRUPTED;
 
   TIFFGetField(t.tiff, TIFFTAG_IMAGEWIDTH, &t.width);
   TIFFGetField(t.tiff, TIFFTAG_IMAGELENGTH, &t.height);
@@ -429,10 +429,11 @@ dt_imageio_retval_t dt_imageio_open_tiff(dt_image_t *img, const char *filename, 
   t.image->width = t.width;
   t.image->height = t.height;
 
-  t.image->buf_dsc.channels = 4;
-  t.image->buf_dsc.datatype = TYPE_FLOAT;
-  t.image->buf_dsc.cst = IOP_CS_RGB;
-  t.image->buf_dsc.filters = 0u;
+  t.image->dsc.channels = 4;
+  t.image->dsc.datatype = TYPE_FLOAT;
+  t.image->dsc.bpp = 4 * sizeof(float);
+  t.image->dsc.cst = IOP_CS_RGB;
+  t.image->dsc.filters = 0u;
 
   // flag the image buffer properly depending on sample format
   if(t.sampleformat == SAMPLEFORMAT_IEEEFP)
@@ -449,20 +450,20 @@ dt_imageio_retval_t dt_imageio_open_tiff(dt_image_t *img, const char *filename, 
   }
 
   if(photometric == PHOTOMETRIC_CIELAB || photometric == PHOTOMETRIC_ICCLAB)
-    t.image->buf_dsc.cst = IOP_CS_LAB;
+    t.image->dsc.cst = IOP_CS_LAB;
 
   t.image->flags &= ~DT_IMAGE_RAW;
   t.image->flags &= ~DT_IMAGE_S_RAW;
   t.image->loader = LOADER_TIFF;
 
-  if(!mbuf)
+  if(IS_NULL_PTR(mbuf))
   {
     TIFFClose(t.tiff);
     return DT_IMAGEIO_OK;
   }
 
   t.mipbuf = (float *)dt_mipmap_cache_alloc(mbuf, t.image);
-  if(!t.mipbuf)
+  if(IS_NULL_PTR(t.mipbuf))
   {
     fprintf(stderr, "[tiff_open] error: could not alloc full buffer for image `%s'\n", t.image->filename);
     TIFFClose(t.tiff);
@@ -480,12 +481,12 @@ dt_imageio_retval_t dt_imageio_open_tiff(dt_image_t *img, const char *filename, 
   if((photometric == PHOTOMETRIC_CIELAB || photometric == PHOTOMETRIC_ICCLAB) && t.bpp == 8 && t.sampleformat == SAMPLEFORMAT_UINT)
   {
     ok = _read_chunky_8_Lab(&t, photometric);
-    t.image->buf_dsc.cst = IOP_CS_LAB;
+    t.image->dsc.cst = IOP_CS_LAB;
   }
   else if((photometric == PHOTOMETRIC_CIELAB || photometric == PHOTOMETRIC_ICCLAB) && t.bpp == 16 && t.sampleformat == SAMPLEFORMAT_UINT)
   {
     ok = _read_chunky_16_Lab(&t, photometric);
-    t.image->buf_dsc.cst = IOP_CS_LAB;
+    t.image->dsc.cst = IOP_CS_LAB;
   }
   else if(t.bpp == 8 && t.sampleformat == SAMPLEFORMAT_UINT)
     ok = _read_chunky_8(&t);
@@ -529,7 +530,7 @@ int dt_imageio_tiff_read_profile(const char *filename, uint8_t **out)
   tiff = TIFFOpen(filename, "rb");
 #endif
 
-  if(tiff == NULL) return 0;
+  if(IS_NULL_PTR(tiff)) return 0;
 
   TIFFGetField(tiff, TIFFTAG_PHOTOMETRIC, &photometric);
 

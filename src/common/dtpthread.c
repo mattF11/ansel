@@ -28,6 +28,9 @@
 #include "config.h"
 #endif
 
+#include "control/conf.h"
+#include "common/fp_mode.h"
+
 #include <sched.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -41,6 +44,8 @@
 
 int dt_pthread_create(pthread_t *thread, void *(*start_routine)(void *), void *arg, const gboolean realtime)
 {
+  dt_fp_init(dt_conf_get_int("cpu_fp_mode"));
+
   int ret;
 
   pthread_attr_t attr;
@@ -65,7 +70,7 @@ int dt_pthread_create(pthread_t *thread, void *(*start_routine)(void *), void *a
   {
     // looks like we need to bump/set it...
 
-    fprintf(stderr, "[dt_pthread_create] info: bumping pthread's stacksize from %zu to %"PRIuMAX"\n", stacksize,
+    fprintf(stderr, "[dt_pthread_create] info: bumping pthread's stacksize from %" G_GSIZE_FORMAT " to %"PRIuMAX"\n", stacksize,
             (uintmax_t)WANTED_THREADS_STACK_SIZE);
 
     ret = pthread_attr_setstacksize(&attr, WANTED_THREADS_STACK_SIZE);

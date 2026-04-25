@@ -38,7 +38,7 @@ installDir="${scriptDir}/../../install"
 homebrewHome=$(brew --prefix)
 
 # Build and install ansel here
-# ../../build.sh --install --build-type Release --prefix ${PWD}
+# ../../build.sh --install --build-type RelWithDebInfo --prefix ${PWD}
 
 # Check for previous attempt and clean
 if [[ -d "$buildDir" ]]; then
@@ -69,14 +69,11 @@ cmake .. \
     -DRAWSPEED_ENABLE_LTO=ON \
     -DBUILD_CURVE_TOOLS=OFF \
     -DBUILD_NOISE_TOOLS=OFF \
-    -DUSE_LUA=OFF \
-    -DUSE_BUNDLED_LUA=OFF \
     -DUSE_LIBRAW=ON \
     -DUSE_BUNDLED_LIBRAW=OFF \
     -DUSE_GRAPHICSMAGICK=ON \
     -DUSE_IMAGEMAGICK=OFF \
-    -DBUILD_SSE2_CODEPATHS=OFF \
-    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DUSE_COLORD=OFF \
     -DUSE_KWALLET=OFF \
     -DBUILD_CMSTEST=OFF \

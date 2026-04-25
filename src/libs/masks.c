@@ -72,6 +72,8 @@ typedef struct dt_lib_masks_t
   dt_iop_module_t *active_module;
   dt_iop_module_t *hosted_module;
 
+  dt_gui_collapsible_section_t shape_manager_expander;
+
   GdkPixbuf *ic_inverse, *ic_union, *ic_intersection, *ic_difference, *ic_exclusion, *ic_wired;
   int gui_reset;
 } dt_lib_masks_t;
@@ -166,7 +168,7 @@ static gboolean _lib_masks_module_is_current(const dt_iop_module_t *module)
 
 static void _lib_masks_clear_blending_box(dt_lib_masks_t *lm)
 {
-  if(!lm || !lm->blending_box) return;
+  if(IS_NULL_PTR(lm) || !lm->blending_box) return;
 
   GList *children = gtk_container_get_children(GTK_CONTAINER(lm->blending_box));
   for(GList *iter = children; iter; iter = g_list_next(iter))
@@ -186,7 +188,7 @@ static gboolean _lib_masks_can_host_blending(const dt_iop_module_t *module)
 
 static void _lib_masks_release_blending(dt_lib_masks_t *lm)
 {
-  if(!lm) return;
+  if(IS_NULL_PTR(lm)) return;
 
   dt_iop_module_t *hosted_module = lm->hosted_module;
   lm->hosted_module = NULL;
@@ -199,7 +201,7 @@ static void _lib_masks_release_blending(dt_lib_masks_t *lm)
 
 static void _lib_masks_show_blending_message(dt_lib_masks_t *lm, gchar *markup)
 {
-  if(!lm || !lm->blending_box || !markup) return;
+  if(IS_NULL_PTR(lm) || !lm->blending_box || IS_NULL_PTR(markup)) return;
 
   GtkWidget *label = gtk_label_new(NULL);
   gtk_label_set_markup(GTK_LABEL(label), markup);
@@ -212,6 +214,7 @@ static void _lib_masks_show_blending_message(dt_lib_masks_t *lm, gchar *markup)
   gtk_widget_show_all(lm->blending_box);
 }
 
+/*
 static void _lib_masks_reveal(dt_lib_module_t *self)
 {
   if(!dt_ui_panel_visible(darktable.gui->ui, DT_UI_PANEL_LEFT))
@@ -226,15 +229,16 @@ static void _lib_masks_reveal(dt_lib_module_t *self)
     gtk_widget_grab_focus(self->expander);
   }
 }
+*/
 
 static void _lib_masks_blending_gui_changed_callback(gpointer instance, dt_lib_module_t *self)
 {
-  if(!self || !self->data) return;
+  if(IS_NULL_PTR(self) || IS_NULL_PTR(self->data)) return;
 
   dt_lib_masks_t *lm = (dt_lib_masks_t *)self->data;
   dt_iop_module_t *module = darktable.develop ? darktable.develop->gui_module : NULL;
 
-  if(!darktable.develop || !darktable.develop->history || !module)
+  if(IS_NULL_PTR(darktable.develop) || !darktable.develop->history || !module)
   {
     _lib_masks_release_blending(lm);
     _lib_masks_clear_blending_box(lm);
@@ -275,7 +279,7 @@ static void _lib_masks_blending_gui_changed_callback(gpointer instance, dt_lib_m
 
   dt_iop_gui_update_blending(module);
 
-  if(module_changed) _lib_masks_reveal(self);
+  //if(module_changed) _lib_masks_reveal(self);
 }
 
 static void _tree_add_circle(GtkButton *button, dt_iop_module_t *module)
@@ -383,7 +387,7 @@ static void _bt_add_brush(GtkWidget *widget, GdkEventButton *event, dt_lib_modul
 
 static void _tree_add_exist(GtkButton *button, dt_masks_form_t *grp)
 {
-  if(!grp || !(grp->type & DT_MASKS_GROUP)) return;
+  if(IS_NULL_PTR(grp) || !(grp->type & DT_MASKS_GROUP)) return;
   // we get the new formid
   const int id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "formid"));
   dt_iop_module_t *module = g_object_get_data(G_OBJECT(button), "module");
@@ -449,7 +453,7 @@ static void _tree_group(GtkButton *button, dt_lib_module_t *self)
 static int _tree_format_form_usage_label(char *str, const size_t str_size,
                                          const dt_masks_form_t *form, const dt_iop_module_t *module)
 {
-  if(!str || !form) return -1;
+  if(IS_NULL_PTR(str) || IS_NULL_PTR(form)) return -1;
 
   str[0] = '\0';
   g_strlcat(str, form->name, str_size);
@@ -486,16 +490,18 @@ static int _tree_format_form_usage_label(char *str, const size_t str_size,
 static void _set_iter_name(dt_lib_masks_t *lm, dt_masks_form_t *form, int state, float opacity,
                            GtkTreeModel *model, GtkTreeIter *iter, int index)
 {
-  if(!form) return;
+  if(IS_NULL_PTR(form)) return;
 
   char str[256] = "";
-  g_strlcat(str, form->name, sizeof(str));
 
   if(opacity != 1.0f)
   {
-    char str2[256] = "";
-    g_strlcpy(str2, str, sizeof(str2));
-    snprintf(str, sizeof(str), "%s %d%%", str2, (int)(opacity * 100));
+    g_snprintf(str, sizeof(str), "%s %d%%",
+              form->name, (int)(opacity * 100));
+  }
+  else
+  {
+    g_strlcpy(str, form->name, sizeof(str));
   }
 
   GdkPixbuf *icop = NULL;
@@ -514,7 +520,7 @@ static void _set_iter_name(dt_lib_masks_t *lm, dt_masks_form_t *form, int state,
   if(state & DT_MASKS_STATE_INVERSE) icinv = lm->ic_inverse;
 
   gtk_tree_store_set(GTK_TREE_STORE(model), iter, TREE_TEXT, str, TREE_IC_OP, icop, TREE_IC_OP_VISIBLE,
-                     (icop != NULL), TREE_IC_INVERSE, icinv, TREE_IC_INVERSE_VISIBLE, (icinv != NULL), -1);
+                     (!IS_NULL_PTR(icop)), TREE_IC_INVERSE, icinv, TREE_IC_INVERSE_VISIBLE, (!IS_NULL_PTR(icinv)), -1);
 }
 
 static void _tree_cleanup(GtkButton *button, dt_lib_module_t *self)
@@ -896,7 +902,7 @@ static void _tree_delete_shape(GtkButton *button, dt_lib_module_t *self)
       int id = -1;
       _lib_masks_get_values(model, &iter, &module, &grid, &id);
 
-      dt_masks_form_remove(module, dt_masks_get_from_id(darktable.develop, grid),
+      dt_masks_form_delete(module, dt_masks_get_from_id(darktable.develop, grid),
                            dt_masks_get_from_id(darktable.develop, id));
     }
   }
@@ -915,7 +921,7 @@ static void _tree_duplicate_shape(GtkButton *button, dt_lib_module_t *self)
   GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(lm->treeview));
   GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(lm->treeview));
   GList *items = gtk_tree_selection_get_selected_rows(selection, NULL);
-  if(!items) return;
+  if(IS_NULL_PTR(items)) return;
   GtkTreePath *item = (GtkTreePath *)items->data;
   GtkTreeIter iter;
   if(gtk_tree_model_get_iter(model, &iter, item))
@@ -945,7 +951,7 @@ static void _tree_cell_edited(GtkCellRendererText *cell, gchar *path_string, gch
   int id = -1;
   _lib_masks_get_values(model, &iter, NULL, NULL, &id);
   dt_masks_form_t *form = dt_masks_get_from_id(darktable.develop, id);
-  if(!form) return;
+  if(IS_NULL_PTR(form)) return;
 
   // we want to make sure that the new name is not an empty string. else this would convert
   // in the xmp file into "<rdf:li/>" which produces problems. we use a single whitespace
@@ -1349,7 +1355,7 @@ static gboolean _tree_query_tooltip(GtkWidget *widget, gint x, gint y, gboolean 
 
 static void _is_form_used(int formid, dt_masks_form_t *grp, char *text, size_t text_length, int *nb)
 {
-  if(!grp)
+  if(IS_NULL_PTR(grp))
   {
     for(const GList *forms = darktable.develop->forms; forms; forms = g_list_next(forms))
     {
@@ -1413,8 +1419,8 @@ static void _lib_masks_list_recurs(GtkTreeStore *treestore, GtkTreeIter *topleve
     gtk_tree_store_append(treestore, &child, toplevel);
     gtk_tree_store_set(treestore, &child, TREE_TEXT, str, TREE_MODULE, module, TREE_GROUPID, grp_id,
                        TREE_FORMID, form->formid, TREE_EDITABLE, (grp_id == 0), TREE_IC_OP, icop,
-                       TREE_IC_OP_VISIBLE, (icop != NULL), TREE_IC_INVERSE, icinv, TREE_IC_INVERSE_VISIBLE,
-                       (icinv != NULL), TREE_IC_USED, icuse, TREE_IC_USED_VISIBLE, (nbuse > 0),
+                       TREE_IC_OP_VISIBLE, (!IS_NULL_PTR(icop)), TREE_IC_INVERSE, icinv, TREE_IC_INVERSE_VISIBLE,
+                       (!IS_NULL_PTR(icinv)), TREE_IC_USED, icuse, TREE_IC_USED_VISIBLE, (nbuse > 0),
                        TREE_USED_TEXT, str2, -1);
     _set_iter_name(lm, form, gstate, opacity, GTK_TREE_MODEL(treestore), &child, index);
   }
@@ -1440,8 +1446,8 @@ static void _lib_masks_list_recurs(GtkTreeStore *treestore, GtkTreeIter *topleve
     gtk_tree_store_append(treestore, &child, toplevel);
     gtk_tree_store_set(treestore, &child, TREE_TEXT, str, TREE_MODULE, module, TREE_GROUPID, grp_id,
                        TREE_FORMID, form->formid, TREE_EDITABLE, (grp_id == 0), TREE_IC_OP, icop,
-                       TREE_IC_OP_VISIBLE, (icop != NULL), TREE_IC_INVERSE, icinv, TREE_IC_INVERSE_VISIBLE,
-                       (icinv != NULL), TREE_IC_USED, icuse, TREE_IC_USED_VISIBLE, (nbuse > 0),
+                       TREE_IC_OP_VISIBLE, (!IS_NULL_PTR(icop)), TREE_IC_INVERSE, icinv, TREE_IC_INVERSE_VISIBLE,
+                       (!IS_NULL_PTR(icinv)), TREE_IC_USED, icuse, TREE_IC_USED_VISIBLE, (nbuse > 0),
                        TREE_USED_TEXT, str2, -1);
     _set_iter_name(lm, form, gstate, opacity, GTK_TREE_MODEL(treestore), &child, index);
 
@@ -1469,7 +1475,7 @@ gboolean _find_mask_iter_by_values(GtkTreeModel *model, GtkTreeIter *iter,
     _lib_masks_get_values(model, iter, &mod, NULL, &fid);
     found = (fid == formid)
       && ((level == 1)
-          || (module == NULL || (mod && (!g_strcmp0(module->op, mod->op)))));
+          || (IS_NULL_PTR(module) || (mod && (!g_strcmp0(module->op, mod->op)))));
     if(found) return found;
     GtkTreeIter child, parent = *iter;
     if(gtk_tree_model_iter_children(model, &child, &parent))
@@ -1523,12 +1529,12 @@ static void _lib_masks_recreate_list(dt_lib_module_t *self)
 {
   /* first destroy all buttons in list */
   dt_lib_masks_t *lm = (dt_lib_masks_t *)self->data;
-  if(!lm) return;
+  if(IS_NULL_PTR(lm)) return;
   if(lm->gui_reset) return;
 
   const int gui_reset = lm->gui_reset;
   lm->gui_reset = 1;
-  // if (lm->treeview) gtk_widget_destroy(lm->treeview);
+  gboolean sync_center_view = FALSE;
 
   // if a treeview is already present, let's get the currently selected items
   // as we are going to recreate the tree.
@@ -1596,16 +1602,54 @@ static void _lib_masks_recreate_list(dt_lib_module_t *self)
     selectids = NULL;
   }
 
+  // After list refresh, keep the tree selection aligned with the current GUI module mask group.
+  dt_iop_module_t *const current_module = darktable.develop ? darktable.develop->gui_module : NULL;
+  const int current_group_id
+      = (!IS_NULL_PTR(current_module) && current_module->blend_params
+         && (current_module->flags() & IOP_FLAGS_SUPPORTS_BLENDING)
+         && !(current_module->flags() & IOP_FLAGS_NO_MASKS))
+            ? current_module->blend_params->mask_id
+            : 0;
+
+  if(current_group_id > 0)
+  {
+    GtkTreeModel *model = GTK_TREE_MODEL(treestore);
+    GtkTreeIter iter;
+    if(gtk_tree_model_get_iter_first(model, &iter))
+    {
+      const gboolean found = _find_mask_iter_by_values(model, &iter, current_module, current_group_id, 1);
+      if(found)
+      {
+        GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(lm->treeview));
+        GtkTreePath *path = gtk_tree_model_get_path(model, &iter);
+        gtk_tree_selection_unselect_all(selection);
+        gtk_tree_view_expand_to_path(GTK_TREE_VIEW(lm->treeview), path);
+        gtk_tree_view_scroll_to_cell(GTK_TREE_VIEW(lm->treeview), path, NULL, TRUE, 0.5, 0.5);
+        gtk_tree_selection_select_iter(selection, &iter);
+        gtk_tree_path_free(path);
+        sync_center_view = TRUE;
+      }
+    }
+  }
+
   g_object_unref(treestore);
 
+  dt_gui_update_collapsible_section(&lm->shape_manager_expander);
+
   lm->gui_reset = gui_reset;
+
+  if(sync_center_view)
+  {
+    GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(lm->treeview));
+    _tree_selection_change(selection, lm);
+  }
 }
 
 static void _lib_masks_update_item(dt_lib_module_t *self, int formid, int parentid, dt_lib_masks_t *lm, GtkTreeModel *model, GtkTreeIter *iter)
 {
   // we retrieve the forms
   dt_masks_form_t *form = dt_masks_get_from_id(darktable.develop, formid);
-  if(!form) return;
+  if(IS_NULL_PTR(form)) return;
   dt_masks_form_t *grp = dt_masks_get_from_id(darktable.develop, parentid);
 
   // and the values
@@ -1634,7 +1678,7 @@ static void _lib_masks_update_item(dt_lib_module_t *self, int formid, int parent
 
 static gboolean _update_foreach(GtkTreeModel *model, GtkTreePath *path, GtkTreeIter *iter, gpointer data)
 {
-  if(!iter) return 0;
+  if(IS_NULL_PTR(iter)) return 0;
 
   // we retrieve the ids
   int grid = -1;
@@ -1643,7 +1687,7 @@ static gboolean _update_foreach(GtkTreeModel *model, GtkTreePath *path, GtkTreeI
 
   // we retrieve the forms
   dt_masks_form_t *form = dt_masks_get_from_id(darktable.develop, id);
-  if(!form) return 0;
+  if(IS_NULL_PTR(form)) return 0;
   dt_masks_form_t *grp = dt_masks_get_from_id(darktable.develop, grid);
 
   // and the values
@@ -1674,14 +1718,19 @@ static gboolean _update_foreach(GtkTreeModel *model, GtkTreePath *path, GtkTreeI
 static void _lib_masks_update_list(dt_lib_module_t *self)
 {
   dt_lib_masks_t *lm = (dt_lib_masks_t *)self->data;
+  if(IS_NULL_PTR(lm)) return;
+  if(IS_NULL_PTR(lm->treeview)) return;
+
   // for each node , we refresh the string
   GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(lm->treeview));
+  if(!GTK_IS_TREE_MODEL(model)) return;
   gtk_tree_model_foreach(model, _update_foreach, lm);
+  dt_gui_update_collapsible_section(&lm->shape_manager_expander);
 }
 
 static gboolean _remove_foreach(GtkTreeModel *model, GtkTreePath *path, GtkTreeIter *iter, gpointer data)
 {
-  if(!iter) return 0;
+  if(IS_NULL_PTR(iter)) return 0;
   GList **rl = (GList **)data;
   const int refid = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(model), "formid"));
   const int refgid = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(model), "groupid"));
@@ -1742,7 +1791,7 @@ static gboolean _lib_masks_selection_change_r(GtkTreeModel *model, GtkTreeSelect
 
     if((id == selectid)
        && ((level == 1)
-           || (module == NULL || (mod && (!g_strcmp0(module->op, mod->op))))))
+           || (IS_NULL_PTR(module) || (mod && (!g_strcmp0(module->op, mod->op))))))
     {
       gtk_tree_selection_select_iter(selection, &i);
       found = TRUE;
@@ -1767,7 +1816,7 @@ static gboolean _lib_masks_selection_change_r(GtkTreeModel *model, GtkTreeSelect
 static void _lib_masks_selection_change(dt_lib_module_t *self, struct dt_iop_module_t *module, const int selectid, const int throw_event)
 {
   dt_lib_masks_t *lm = (dt_lib_masks_t *)self->data;
-  if(!lm->treeview) return;
+  if(IS_NULL_PTR(lm->treeview)) return;
 
   // we first unselect all
   GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(lm->treeview));
@@ -1847,10 +1896,10 @@ static gboolean _find_iter_by_parentid_and_formid(GtkTreeModel *model, int paren
 
 static void _lib_masks_handler_callback(gpointer instance, const int formid, const int parentid, const dt_masks_event_t event, dt_lib_module_t *self)
 {
-  if(!self) return;
+  if(IS_NULL_PTR(self)) return;
 
   dt_lib_masks_t *lm = (dt_lib_masks_t *)self->data;
-  if(!lm) return;
+  if(IS_NULL_PTR(lm)) return;
   GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(lm->treeview));
   if(!GTK_IS_TREE_MODEL(model)) return;
   GtkTreeIter iter;
@@ -1899,6 +1948,13 @@ static void _lib_masks_handler_callback(gpointer instance, const int formid, con
     _lib_masks_recreate_list(self);
   }
 
+  else if(event == DT_MASKS_EVENT_DELETE || event == DT_MASKS_EVENT_REMOVE)
+  {
+    // When a shape is deleted from the model, we may no longer find its previous row in the current tree.
+    // In that case, force a full list refresh so stale rows don't remain visible.
+    _lib_masks_recreate_list(self);
+  }
+
   else if(event == DT_MASKS_EVENT_ADD)
   {
     _lib_masks_recreate_list(self);
@@ -1928,12 +1984,8 @@ void gui_init(dt_lib_module_t *self)
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
 
-  dt_gui_collapsible_section_t *shape_manager_expander = malloc(sizeof(dt_gui_collapsible_section_t));
-
-  dt_gui_new_collapsible_section(shape_manager_expander, "plugins/darkroom/shape_manager/expanded",
+  dt_gui_new_collapsible_section(&d->shape_manager_expander, "plugins/darkroom/shape_manager/expanded",
                                  _("Shape manager"), GTK_BOX(self->widget), GTK_PACK_START);
-  GtkWidget *shape_manager_box = GTK_WIDGET(shape_manager_expander->container); // gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-  //gtk_box_pack_start(GTK_BOX(shape_manager_expander->container), shape_manager_box, TRUE, TRUE, 0);
 
   GtkWidget *label = gtk_label_new(_("created shapes"));
   gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
@@ -1945,7 +1997,7 @@ void gui_init(dt_lib_module_t *self)
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(d->bt_gradient), FALSE);
   gtk_box_pack_end(GTK_BOX(hbox), d->bt_gradient, FALSE, FALSE, 0);
 
-  d->bt_path = dtgtk_togglebutton_new(dtgtk_cairo_paint_masks_path, 0, NULL);
+  d->bt_path = dtgtk_togglebutton_new(dtgtk_cairo_paint_masks_polygon, 0, NULL);
   g_signal_connect(G_OBJECT(d->bt_path), "button-press-event", G_CALLBACK(_bt_add_path), self);
   gtk_widget_set_tooltip_text(d->bt_path, _("add path"));
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(d->bt_path), FALSE);
@@ -1969,7 +2021,7 @@ void gui_init(dt_lib_module_t *self)
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(d->bt_brush), FALSE);
   gtk_box_pack_end(GTK_BOX(hbox), d->bt_brush, FALSE, FALSE, 0);
 
-  gtk_box_pack_start(GTK_BOX(shape_manager_box), hbox, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(d->shape_manager_expander.container), hbox, TRUE, TRUE, 0);
 
   d->treeview = gtk_tree_view_new();
   GtkTreeViewColumn *col = gtk_tree_view_column_new();
@@ -2004,7 +2056,7 @@ void gui_init(dt_lib_module_t *self)
   g_signal_connect(selection, "changed", G_CALLBACK(_tree_selection_change), d);
   g_signal_connect(d->treeview, "button-press-event", (GCallback)_tree_button_pressed, self);
 
-  gtk_box_pack_start(GTK_BOX(shape_manager_box), d->treeview, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(d->shape_manager_expander.container), d->treeview, TRUE, TRUE, 0);
   dt_gui_widget_init_auto_height(d->treeview, TREE_LIST_MIN_ROWS, TREE_LIST_MAX_ROWS);
 
   

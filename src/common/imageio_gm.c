@@ -51,9 +51,9 @@ static gboolean _supported_image(const gchar *filename)
                                          "miff", "mng",  "pbm", "pnm", "ppm", "pgm", "webp", NULL };
   gboolean supported = FALSE;
   char *ext = g_strrstr(filename, ".");
-  if(!ext) return FALSE;
+  if(IS_NULL_PTR(ext)) return FALSE;
   ext++;
-  for(const char **i = extensions_whitelist; *i != NULL; i++)
+  for(const char **i = extensions_whitelist; !IS_NULL_PTR(*i); i++)
     if(!g_ascii_strncasecmp(ext, *i, strlen(*i)))
     {
       supported = TRUE;
@@ -82,7 +82,7 @@ dt_imageio_retval_t dt_imageio_open_gm(dt_image_t *img, const char *filename, dt
 
   image = ReadImage(image_info, &exception);
   if(exception.severity != UndefinedException) CatchException(&exception);
-  if(!image)
+  if(IS_NULL_PTR(image))
   {
     fprintf(stderr, "[GraphicsMagick_open] image `%s' not found\n", img->filename);
     err = DT_IMAGEIO_FILE_NOT_FOUND;
@@ -104,10 +104,11 @@ dt_imageio_retval_t dt_imageio_open_gm(dt_image_t *img, const char *filename, dt
   img->width = width;
   img->height = height;
 
-  img->buf_dsc.channels = 4;
-  img->buf_dsc.datatype = TYPE_FLOAT;
-  img->buf_dsc.cst = IOP_CS_RGB;
-  img->buf_dsc.filters = 0u;
+  img->dsc.channels = 4;
+  img->dsc.datatype = TYPE_FLOAT;
+  img->dsc.bpp = 4 * sizeof(float);
+  img->dsc.cst = IOP_CS_RGB;
+  img->dsc.filters = 0u;
   img->flags &= ~DT_IMAGE_RAW;
   img->flags &= ~DT_IMAGE_HDR;
   img->flags &= ~DT_IMAGE_S_RAW;
@@ -115,7 +116,7 @@ dt_imageio_retval_t dt_imageio_open_gm(dt_image_t *img, const char *filename, dt
 
   img->loader = LOADER_GM;
 
-  if(!mbuf)
+  if(IS_NULL_PTR(mbuf))
   {
     if(image) DestroyImage(image);
     if(image_info) DestroyImageInfo(image_info);
@@ -124,7 +125,7 @@ dt_imageio_retval_t dt_imageio_open_gm(dt_image_t *img, const char *filename, dt
   }
 
   float *mipbuf = (float *)dt_mipmap_cache_alloc(mbuf, img);
-  if(!mipbuf)
+  if(IS_NULL_PTR(mipbuf))
   {
     fprintf(stderr, "[GraphicsMagick_open] could not alloc full buffer for image `%s'\n", img->filename);
     err = DT_IMAGEIO_CACHE_FULL;

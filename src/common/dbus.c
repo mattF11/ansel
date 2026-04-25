@@ -29,10 +29,6 @@
 #include "control/control.h"
 #include "common/file_location.h"
 
-#ifdef USE_LUA
-#include "lua/call.h"
-#endif
-
 /* Introspection data for the service we are exporting */
 static const gchar introspection_xml[] = "<node>"
                                          "  <interface name='org.darktable.service.Remote'>"
@@ -41,43 +37,11 @@ static const gchar introspection_xml[] = "<node>"
                                          "      <arg type='s' name='FileName' direction='in'/>"
                                          "      <arg type='i' name='id' direction='out' />"
                                          "    </method>"
-#ifdef USE_LUA
-                                         "    <method name='Lua'>"
-                                         "      <arg type='s' name='Command' direction='in'/>"
-                                         "      <arg type='s' name='Result' direction='out' />"
-                                         "    </method>"
-#endif
                                          "    <property type='s' name='DataDir' access='read'/>"
                                          "    <property type='s' name='ConfigDir' access='read'/>"
                                          "    <property type='b' name='LuaEnabled' access='read'/>"
                                          "  </interface>"
                                          "</node>";
-
-
-#ifdef USE_LUA
-static void dbus_lua_call_finished(lua_State* L,int result,void* data)
-{
-  GDBusMethodInvocation *invocation = (GDBusMethodInvocation*)data;
-  if(result == LUA_OK)
-  {
-    if(lua_isnil(L, -1))
-    {
-      g_dbus_method_invocation_return_value(invocation, g_variant_new("(s)", ""));
-    }
-    else
-    {
-      const char *checkres = luaL_checkstring(L, -1);
-      g_dbus_method_invocation_return_value(invocation, g_variant_new("(s)", checkres));
-    }
-  }
-  else
-  {
-    const char *msg = luaL_checkstring(L, -1);
-    g_dbus_method_invocation_return_dbus_error(invocation, "org.darktable.Error.LuaError", msg);
-    dt_lua_check_print_error(L,result);
-  }
-}
-#endif
 
 static void _handle_method_call(GDBusConnection *connection, const gchar *sender, const gchar *object_path,
                                 const gchar *interface_name, const gchar *method_name, GVariant *parameters,
@@ -95,15 +59,6 @@ static void _handle_method_call(GDBusConnection *connection, const gchar *sender
     int32_t id = dt_load_from_string(filename, TRUE, NULL);
     g_dbus_method_invocation_return_value(invocation, g_variant_new("(i)", id));
   }
-#ifdef USE_LUA
-  else if(!g_strcmp0(method_name, "Lua"))
-  {
-    const gchar *command;
-    g_variant_get(parameters, "(&s)", &command);
-    dt_lua_async_call_string(command, 1,dbus_lua_call_finished,invocation);
-    // we don't finish the invocation, the async task will do this for us
-  }
-#endif
 }
 
 // TODO: expose the conf? partly? completely?
@@ -129,11 +84,7 @@ static GVariant *_handle_get_property(GDBusConnection *connection, const gchar *
   }
   else if(!g_strcmp0(property_name, "LuaEnabled"))
   {
-#ifdef USE_LUA
-    ret = g_variant_new_boolean(TRUE);
-#else
     ret = g_variant_new_boolean(FALSE);
-#endif
   }
   return ret;
 }
@@ -148,7 +99,7 @@ static GVariant *_handle_get_property(GDBusConnection *connection, const gchar *
 //                      GError          **error,
 //                      gpointer          user_data)
 // {
-//   return *error == NULL;
+//   return IS_NULL_PTR(*error);
 // }
 
 static const GDBusInterfaceVTable interface_vtable = { _handle_method_call, _handle_get_property,
@@ -185,11 +136,11 @@ static void _on_name_lost(GDBusConnection *connection, const gchar *name, gpoint
 struct dt_dbus_t *dt_dbus_init()
 {
   dt_dbus_t *dbus = (dt_dbus_t *)g_malloc0(sizeof(dt_dbus_t));
-  if(!dbus) return NULL;
+  if(IS_NULL_PTR(dbus)) return NULL;
 
   dbus->introspection_data = g_dbus_node_info_new_for_xml(introspection_xml, NULL);
 
-  if(dbus->introspection_data == NULL) return dbus;
+  if(IS_NULL_PTR(dbus->introspection_data)) return dbus;
 
   dbus->owner_id = g_bus_own_name(G_BUS_TYPE_SESSION,
                                   "org.darktable.service", // FIXME
@@ -204,7 +155,7 @@ struct dt_dbus_t *dt_dbus_init()
 
 void dt_dbus_destroy(const dt_dbus_t *dbus)
 {
-  if(!dbus) return;
+  if(IS_NULL_PTR(dbus)) return;
   g_bus_unown_name(dbus->owner_id);
 
   if(dbus->introspection_data)

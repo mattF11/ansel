@@ -140,7 +140,7 @@ int default_group()
   return IOP_GROUP_SHARPNESS;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
 }
@@ -200,23 +200,23 @@ void init_presets(dt_iop_module_so_t *self)
 
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_bilat_data_t *d = (dt_iop_bilat_data_t *)piece->data;
 
   if(d->mode == s_mode_bilateral)
   {
     // the total scale is composed of scale before input to the pipeline (iscale),
     // and the scale of the roi.
-    const float scale = fmaxf(1.f / roi_in->scale, 1.f);
+    const float scale = fmaxf(dt_dev_get_module_scale(pipe, roi_in), 1.f);
     const float sigma_r = d->sigma_r; // does not depend on scale
     const float sigma_s = d->sigma_s / scale;
     cl_int err = -666;
 
     dt_bilateral_cl_t *b
-      = dt_bilateral_init_cl(piece->pipe->devid, roi_in->width, roi_in->height, sigma_s, sigma_r);
-    if(!b) goto error;
+      = dt_bilateral_init_cl(pipe->devid, roi_in->width, roi_in->height, sigma_s, sigma_r);
+    if(IS_NULL_PTR(b)) goto error;
     err = dt_bilateral_splat_cl(b, dev_in);
     if(err != CL_SUCCESS) goto error;
     err = dt_bilateral_blur_cl(b);
@@ -232,9 +232,9 @@ error:
   }
   else // mode == s_mode_local_laplacian
   {
-    dt_local_laplacian_cl_t *b = dt_local_laplacian_init_cl(piece->pipe->devid, roi_in->width, roi_in->height,
+    dt_local_laplacian_cl_t *b = dt_local_laplacian_init_cl(pipe->devid, roi_in->width, roi_in->height,
         d->midtone, d->sigma_s, d->sigma_r, d->detail);
-    if(!b) goto error_ll;
+    if(IS_NULL_PTR(b)) goto error_ll;
     if(dt_local_laplacian_cl(b, dev_in, dev_out) != CL_SUCCESS) goto error_ll;
     dt_local_laplacian_free_cl(b);
     return TRUE;
@@ -246,10 +246,9 @@ error_ll:
 #endif
 
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_bilat_data_t *d = (dt_iop_bilat_data_t *)piece->data;
   // the total scale is composed of scale before input to the pipeline (iscale),
   // and the scale of the roi.
@@ -257,13 +256,13 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
   if(d->mode == s_mode_bilateral)
   {
     // used to adjuste blur level depending on size. Don't amplify noise if magnified > 100%
-    const float scale = fmaxf(1.f / roi_in->scale, 1.f);
+    const float scale = fmaxf(dt_dev_get_module_scale(pipe, roi_in), 1.f);
     const float sigma_r = d->sigma_r;
     const float sigma_s = d->sigma_s / scale;
 
     const int width = roi_in->width;
     const int height = roi_in->height;
-    const int channels = piece->colors;
+    const int channels = piece->dsc_in.channels;
 
     const size_t basebuffer = sizeof(float) * channels * width * height;
 
@@ -279,10 +278,10 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
   {
     const int width = roi_in->width;
     const int height = roi_in->height;
-    const int channels = piece->colors;
+    const int channels = piece->dsc_in.channels;
 
     const size_t basebuffer = sizeof(float) * channels * width * height;
-    const int rad = MIN(roi_in->width, ceilf(256 * roi_in->scale));
+    const int rad = MIN(roi_in->width, ceilf(256.0f / dt_dev_get_module_scale(pipe, roi_in)));
 
     tiling->factor = 2.0f + (float)local_laplacian_memory_use(width, height) / basebuffer;
     tiling->maxbuf
@@ -325,59 +324,23 @@ void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev
   piece->data = NULL;
 }
 
-
-#if defined(__SSE2__)
-int process_sse2(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o,
-             const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   // this is called for preview and full pipe separately, each with its own pixelpipe piece.
   // get our data struct:
   dt_iop_bilat_data_t *d = (dt_iop_bilat_data_t *)piece->data;
   // the total scale is composed of scale before input to the pipeline (iscale),
   // and the scale of the roi.
   // used to adjuste blur level depending on size. Don't amplify noise if magnified > 100%
-  const float scale = fmaxf(1.f / roi_in->scale, 1.f);
+  const float scale = fmaxf(dt_dev_get_module_scale(pipe, roi_in), 1.f);
   const float sigma_r = d->sigma_r; // does not depend on scale
   const float sigma_s = d->sigma_s / scale;
 
   if(d->mode == s_mode_bilateral)
   {
     dt_bilateral_t *b = dt_bilateral_init(roi_in->width, roi_in->height, sigma_s, sigma_r);
-    if(!b) return 1;
-    dt_bilateral_splat(b, (float *)i);
-    dt_bilateral_blur(b);
-    dt_bilateral_slice(b, (float *)i, (float *)o, d->detail);
-    dt_bilateral_free(b);
-  }
-  else // s_mode_local_laplacian
-  {
-    if(local_laplacian_sse2(i, o, roi_in->width, roi_in->height, d->midtone, d->sigma_s,
-                            d->sigma_r, d->detail, 0) != 0)
-      return 1;
-  }
-
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(i, o, roi_in->width, roi_in->height);
-  return 0;
-}
-#endif
-
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o,
-             const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
-{
-  // this is called for preview and full pipe separately, each with its own pixelpipe piece.
-  // get our data struct:
-  dt_iop_bilat_data_t *d = (dt_iop_bilat_data_t *)piece->data;
-  // the total scale is composed of scale before input to the pipeline (iscale),
-  // and the scale of the roi.
-  // used to adjuste blur level depending on size. Don't amplify noise if magnified > 100%
-  const float scale = fmaxf(1.f / roi_in->scale, 1.f);
-  const float sigma_r = d->sigma_r; // does not depend on scale
-  const float sigma_s = d->sigma_s / scale;
-
-  if(d->mode == s_mode_bilateral)
-  {
-    dt_bilateral_t *b = dt_bilateral_init(roi_in->width, roi_in->height, sigma_s, sigma_r);
-    if(!b) return 1;
+    if(IS_NULL_PTR(b)) return 1;
     dt_bilateral_splat(b, (float *)i);
     dt_bilateral_blur(b);
     dt_bilateral_slice(b, (float *)i, (float *)o, d->detail);
@@ -390,7 +353,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
       return 1;
   }
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(i, o, roi_in->width, roi_in->height);
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(i, o, roi_in->width, roi_in->height);
   return 0;
 }
 
@@ -420,7 +383,7 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
     }
   }
 
-  if(!w || w == g->mode)
+  if(IS_NULL_PTR(w) || w == g->mode)
   {
     gtk_widget_set_visible(g->highlights, p->mode == s_mode_local_laplacian);
     gtk_widget_set_visible(g->shadows, p->mode == s_mode_local_laplacian);

@@ -117,7 +117,7 @@ char *_hm_make_node_id(const char *op, const char *multi_name)
 
 static void _hm_free_input_node(dt_digraph_node_t *n)
 {
-  if(!n) return;
+  if(IS_NULL_PTR(n)) return;
   g_list_free(n->previous);
   n->previous = NULL;
   if(n->tag)
@@ -161,7 +161,7 @@ void _hm_id_to_op_name(const char *id, char *op, char *name)
   op[0] = '\0';
   name[0] = '\0';
   const char *sep = strchr(id, '|');
-  if(!sep)
+  if(IS_NULL_PTR(sep))
   {
     g_strlcpy(op, id, sizeof(((dt_dev_history_item_t *)0)->op_name));
     return;
@@ -188,7 +188,7 @@ static int _hm_build_prev_map_from_ids(const GList *ids, GHashTable **out_prev)
    * - Returns a hashtable owning both keys and values (g_hash_table_destroy()).
    */
   GHashTable *prev = g_hash_table_new_full(g_str_hash, g_str_equal, dt_free_gpointer, dt_free_gpointer);
-  if(!prev) return 1;
+  if(IS_NULL_PTR(prev)) return 1;
 
   const char *prev_id = NULL;
   // Walk the list in order to record each element's immediate predecessor.
@@ -216,7 +216,7 @@ static int _hm_build_next_map_from_ids(const GList *ids, GHashTable **out_next)
    * - Returns a hashtable owning both keys and values (g_hash_table_destroy()).
    */
   GHashTable *next = g_hash_table_new_full(g_str_hash, g_str_equal, dt_free_gpointer, dt_free_gpointer);
-  if(!next) return 1;
+  if(IS_NULL_PTR(next)) return 1;
 
   const char *prev_id = NULL;
   // Walk the list in order to record each element's immediate successor.
@@ -297,7 +297,7 @@ typedef struct
 static int _hm_build_last_history_by_id_from_history(GList *history, const int history_end, GHashTable **out_map)
 {
   GHashTable *map = g_hash_table_new_full(g_str_hash, g_str_equal, dt_free_gpointer, NULL);
-  if(!map) return 1;
+  if(IS_NULL_PTR(map)) return 1;
 
   int idx = 0;
   for(GList *l = g_list_first(history); l && idx < history_end; l = g_list_next(l), idx++)
@@ -316,12 +316,12 @@ static int _hm_backup_dest(const dt_develop_t *dev_dest, const GHashTable *mod_l
   backup->history = dt_history_duplicate(dev_dest->history);
   backup->history_end = dt_dev_get_history_end_ext((dt_develop_t *)dev_dest);
   backup->iop_order_list = dt_ioppr_iop_order_copy_deep(dev_dest->iop_order_list);
-  if(!backup->iop_order_list) return 1;
+  if(IS_NULL_PTR(backup->iop_order_list)) return 1;
 
   GHashTable *last_by_id = NULL;
   if(_hm_build_last_history_by_id_from_history(backup->history, backup->history_end, &last_by_id)) return 1;
   backup->orig_labels = _hm_collect_labels_from_history_map(last_by_id, mod_list_ids, &backup->orig_styles);
-  if(!backup->orig_labels || !backup->orig_styles)
+  if(IS_NULL_PTR(backup->orig_labels) || IS_NULL_PTR(backup->orig_styles))
   {
     if(backup->orig_labels) g_ptr_array_free(backup->orig_labels, TRUE);
     if(backup->orig_styles) g_ptr_array_free(backup->orig_styles, TRUE);
@@ -379,7 +379,7 @@ int _hm_build_last_history_by_id(const dt_develop_t *dev, GHashTable **out_map)
    * This is used to decide whether a post-merge history item matches the source or destination history.
    */
   GHashTable *map = g_hash_table_new_full(g_str_hash, g_str_equal, dt_free_gpointer, NULL);
-  if(!map) return 1;
+  if(IS_NULL_PTR(map)) return 1;
 
   const int history_end = dt_dev_get_history_end_ext((dt_develop_t *)dev);
   for(GList *modules = g_list_first(dev->iop); modules; modules = g_list_next(modules))
@@ -397,7 +397,7 @@ static int _hm_build_id_set_from_mod_list(const GList *mod_list, GHashTable **ou
 {
   /* Build a set of node ids from the pasted module list. */
   GHashTable *ids = g_hash_table_new_full(g_str_hash, g_str_equal, dt_free_gpointer, NULL);
-  if(!ids) return 1;
+  if(IS_NULL_PTR(ids)) return 1;
   for(const GList *l = g_list_first((GList *)mod_list); l; l = g_list_next(l))
   {
     const dt_iop_module_t *mod = (const dt_iop_module_t *)l->data;
@@ -432,7 +432,7 @@ static _hm_id_info_t *_hm_id_info_upsert(GHashTable *id_ht, const char *op, cons
 
   char *id = _hm_make_node_id(op, multi_name);
   _hm_id_info_t *info = (_hm_id_info_t *)g_hash_table_lookup(id_ht, id);
-  if(!info)
+  if(IS_NULL_PTR(info))
   {
     if(origin & HM_ID_FROM_MOD_LIST)
       dt_print(DT_DEBUG_HISTORY,
@@ -448,8 +448,8 @@ static _hm_id_info_t *_hm_id_info_upsert(GHashTable *id_ht, const char *op, cons
 
   info->flags |= origin;
   if(mod_list) info->mod_list = mod_list;
-  if(src_iop && !info->src_iop) info->src_iop = src_iop;
-  if(dst_iop && !info->dst_iop) info->dst_iop = dst_iop;
+  if(src_iop && IS_NULL_PTR(info->src_iop)) info->src_iop = src_iop;
+  if(dst_iop && IS_NULL_PTR(info->dst_iop)) info->dst_iop = dst_iop;
 
   return info;
 }
@@ -503,7 +503,7 @@ static int _hm_build_input_nodes_from_ids(const GList *ids, const char *tag, GLi
     const char *id = (const char *)l->data;
 
     dt_digraph_node_t *n = dt_digraph_node_new(id);
-    if(!n)
+    if(IS_NULL_PTR(n))
     {
       _hm_free_input_nodes(nodes);
       return 1;
@@ -511,7 +511,7 @@ static int _hm_build_input_nodes_from_ids(const GList *ids, const char *tag, GLi
     if(tag)
     {
       n->tag = g_strdup(tag);
-      if(!n->tag)
+      if(IS_NULL_PTR(n->tag))
       {
         _hm_free_input_node(n);
         _hm_free_input_nodes(nodes);
@@ -550,7 +550,7 @@ static int _hm_build_input_nodes_from_ids_filtered(const GList *ids, const char 
     const char *id = (const char *)l->data;
 
     dt_digraph_node_t *n = dt_digraph_node_new(id);
-    if(!n)
+    if(IS_NULL_PTR(n))
     {
       _hm_free_input_nodes(nodes);
       return 1;
@@ -558,7 +558,7 @@ static int _hm_build_input_nodes_from_ids_filtered(const GList *ids, const char 
     if(tag)
     {
       n->tag = g_strdup(tag);
-      if(!n->tag)
+      if(IS_NULL_PTR(n->tag))
       {
         _hm_free_input_node(n);
         _hm_free_input_nodes(nodes);
@@ -590,7 +590,7 @@ static int _hm_build_isolated_nodes_from_modules(const GList *modules, const cha
 
     char *id = _hm_make_node_id(mod->op, mod->multi_name);
     dt_digraph_node_t *n = dt_digraph_node_new(id);
-    if(!n)
+    if(IS_NULL_PTR(n))
     {
       dt_free(id);
       _hm_free_input_nodes(nodes);
@@ -599,7 +599,7 @@ static int _hm_build_isolated_nodes_from_modules(const GList *modules, const cha
     if(tag)
     {
       n->tag = g_strdup(tag);
-      if(!n->tag)
+      if(IS_NULL_PTR(n->tag))
       {
         dt_free(id);
         _hm_free_input_node(n);
@@ -624,7 +624,7 @@ static int _hm_build_raster_mask_nodes_from_modules(const GList *modules, GHashT
   {
     const dt_iop_module_t *mod = (const dt_iop_module_t *)l->data;
     const dt_iop_module_t *producer = mod->raster_mask.sink.source;
-    if(!producer) continue;
+    if(IS_NULL_PTR(producer)) continue;
 
     char *user_id = _hm_make_node_id(mod->op, mod->multi_name);
     char *prod_id = _hm_make_node_id(producer->op, producer->multi_name);
@@ -640,7 +640,7 @@ static int _hm_build_raster_mask_nodes_from_modules(const GList *modules, GHashT
 
     dt_digraph_node_t *prod = dt_digraph_node_new(prod_id);
     dt_digraph_node_t *user = dt_digraph_node_new(user_id);
-    if(!prod || !user)
+    if(IS_NULL_PTR(prod) || IS_NULL_PTR(user))
     {
       _hm_free_input_node(prod);
       _hm_free_input_node(user);
@@ -651,7 +651,7 @@ static int _hm_build_raster_mask_nodes_from_modules(const GList *modules, GHashT
     {
       prod->tag = g_strdup(tag);
       user->tag = g_strdup(tag);
-      if(!prod->tag || !user->tag)
+      if(IS_NULL_PTR(prod->tag) || IS_NULL_PTR(user->tag))
       {
         _hm_free_input_node(prod);
         _hm_free_input_node(user);
@@ -694,7 +694,7 @@ static int _iop_rules(GHashTable *keep, GList **out_nodes)
 
     dt_digraph_node_t *next = dt_digraph_node_new(next_id);
     dt_digraph_node_t *prev = dt_digraph_node_new(prev_id);
-    if(!next || !prev)
+    if(IS_NULL_PTR(next) || IS_NULL_PTR(prev))
     {
       _hm_free_input_node(next);
       _hm_free_input_node(prev);
@@ -703,7 +703,7 @@ static int _iop_rules(GHashTable *keep, GList **out_nodes)
     }
     next->tag = g_strdup("rule");
     prev->tag = g_strdup("rule");
-    if(!next->tag || !prev->tag)
+    if(IS_NULL_PTR(next->tag) || IS_NULL_PTR(prev->tag))
     {
       _hm_free_input_node(next);
       _hm_free_input_node(prev);
@@ -800,7 +800,7 @@ static int _hm_topo_build_id_info_table(_hm_topo_merge_ctx_t *ctx, dt_develop_t 
   // Build a single ID->info table, filled in the requested order:
   // 1) mod_list, 2) dev_src->iop, 3) dev_dest->iop.
   ctx->id_ht = g_hash_table_new_full(g_str_hash, g_str_equal, dt_free_gpointer, dt_free_gpointer);
-  if(!ctx->id_ht) return 1;
+  if(IS_NULL_PTR(ctx->id_ht)) return 1;
 
   // Register ids for modules we intend to paste.
   for(const GList *l = g_list_first((GList *)mod_list); l; l = g_list_next(l))
@@ -854,7 +854,7 @@ static int _hm_topo_build_constraint_ids(_hm_topo_merge_ctx_t *ctx, dt_develop_t
   // - merge_iop_order=FALSE: import ordering constraints only around modules that are missing in destination,
   //   to determine where they should be inserted into the existing destination pipeline.
   ctx->src_focus_ids = g_hash_table_new_full(g_str_hash, g_str_equal, dt_free_gpointer, NULL);
-  if(!ctx->src_focus_ids) return 1;
+  if(IS_NULL_PTR(ctx->src_focus_ids)) return 1;
   for(const GList *l = g_list_first((GList *)mod_list); l; l = g_list_next(l))
   {
     const dt_iop_module_t *mod = (const dt_iop_module_t *)l->data;
@@ -1014,7 +1014,7 @@ static int _hm_topo_resolve_incompatible_constraints(GList *flat, GHashTable *id
       }
 
       gchar *key = g_strdup_printf("%s<->%s", id1, id2);
-      if(!key) goto cleanup;
+      if(IS_NULL_PTR(key)) goto cleanup;
       if(g_hash_table_contains(seen_cycles, key))
       {
         dt_free(key);
@@ -1023,7 +1023,7 @@ static int _hm_topo_resolve_incompatible_constraints(GList *flat, GHashTable *id
       g_hash_table_add(seen_cycles, key);
 
       _hm_cycle_t *c = g_new0(_hm_cycle_t, 1);
-      if(!c) goto cleanup;
+      if(IS_NULL_PTR(c)) goto cleanup;
       c->a = a;
       c->b = b;
 
@@ -1198,10 +1198,10 @@ static int _hm_topo_apply_solution(_hm_topo_merge_ctx_t *ctx, dt_develop_t *dev_
 
     // Resolve (or create) the destination instance for this id.
     dt_iop_module_t *mod_dest = info->dst_iop ? info->dst_iop : dt_dev_get_module_instance(dev_dest, op, name, 0);
-    if(!mod_dest)
+    if(IS_NULL_PTR(mod_dest))
     {
       mod_dest = dt_dev_create_module_instance(dev_dest, op, name, 0, TRUE);
-      if(!mod_dest) return 1;
+      if(IS_NULL_PTR(mod_dest)) return 1;
       created++;
       info->dst_iop = mod_dest;
       info->flags |= HM_ID_FROM_DST_IOP;
@@ -1356,7 +1356,7 @@ int dt_history_merge(dt_develop_t *dev_dest, dt_develop_t *dev_src, const int32_
    * - `dev_src` is non-NULL when `merge_iop_order` is requested.
    */
   if(dest_imgid <= 0) return 1;
-  if(!mod_list) return 0;
+  if(IS_NULL_PTR(mod_list)) return 0;
 
   if(!_hm_warn_missing_raster_producers(mod_list)) return 1;
 

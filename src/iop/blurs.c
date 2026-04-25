@@ -116,7 +116,7 @@ int default_group()
 }
 
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -133,11 +133,7 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
 inline static void blur_2D_Bspline(const float *const restrict in, float *const restrict out,
                                    const size_t width, const size_t height)
 {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) dt_omp_firstprivate(width, height, in, out) \
-    schedule(simd: static)    \
-    collapse(2)
-#endif
+  __OMP_PARALLEL_FOR__( collapse(2))
   for(size_t i = 0; i < height; i++)
   {
     for(size_t j = 0; j < width; j++)
@@ -164,20 +160,19 @@ inline static void blur_2D_Bspline(const float *const restrict in, float *const 
 }
 
 
+__DT_CLONE_TARGETS__
 static inline void init_kernel(float *const restrict buffer, const size_t width, const size_t height)
 {
   // init an empty kernel with zeros
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) dt_omp_firstprivate(width, height, buffer) \
-    schedule(simd: static) aligned(buffer:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(buffer:64))
   for(size_t k = 0; k < height * width; k++) buffer[k] = 0.f;
 }
 
 
-static inline void create_lens_kernel(float *const restrict buffer,
-                                      const size_t width, const size_t height,
-                                      const float n, const float m, const float k, const float rotation)
+__DT_CLONE_TARGETS__
+static inline void create_lens_kernel(float *const restrict buffer, const size_t width,
+                                      const size_t height, const float n, const float m,
+                                      const float k, const float rotation)
 {
   // n is number of diaphragm blades
   // m is the concavity, aka the number of vertices on straight lines (?)
@@ -188,11 +183,7 @@ static inline void create_lens_kernel(float *const restrict buffer,
   // Spatial coordinates rounding error
   const float eps = 1.f / (float)width;
   const float radius = (float)(width - 1) / 2.f - 1;
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) dt_omp_firstprivate(width, height, buffer, n, m, k, rotation, eps, radius) \
-    schedule(simd: static) aligned(buffer:64) collapse(2)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(buffer:64) collapse(2))
   for(size_t i = 0; i < height; i++)
     for(size_t j = 0; j < width; j++)
     {
@@ -213,9 +204,10 @@ static inline void create_lens_kernel(float *const restrict buffer,
 }
 
 
-static inline void create_motion_kernel(float *const restrict buffer,
-                                        const size_t width, const size_t height,
-                                        const float angle, const float curvature, const float offset)
+__DT_CLONE_TARGETS__
+static inline void create_motion_kernel(float *const restrict buffer, const size_t width,
+                                        const size_t height, const float angle,
+                                        const float curvature, const float offset)
 {
   // Compute the polynomial params from user params
   const float A = curvature / 2.f;
@@ -234,11 +226,7 @@ static inline void create_motion_kernel(float *const restrict buffer,
   // Matrix of rotation
   const float M[2][2] = { { cosf(corr_angle), -sinf(corr_angle) },
                           { sinf(corr_angle), cosf(corr_angle) } };
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) dt_omp_firstprivate(width, height, buffer, A, B, C, radius, offset, M, eps) \
-    schedule(simd: static) aligned(buffer:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(buffer:64))
   for(size_t i = 0; i < 8 * width; i++)
   {
     // Note : for better smoothness of the polynomial discretization,
@@ -275,17 +263,14 @@ static inline void create_motion_kernel(float *const restrict buffer,
 }
 
 
-static inline void create_gauss_kernel(float *const restrict buffer,
-                                       const size_t width, const size_t height)
+__DT_CLONE_TARGETS__
+static inline void create_gauss_kernel(float *const restrict buffer, const size_t width,
+                                       const size_t height)
 {
   // This is not optimized. Gauss kernel is separable and can be turned into
   // 2 x 1D convolutions.
   const float radius = (width - 1) / 2.f - 1;
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) dt_omp_firstprivate(width, height, buffer, radius) \
-    schedule(simd: static) aligned(buffer:64) collapse(2)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(buffer:64) collapse(2))
   for(size_t i = 0; i < height; i++)
     for(size_t j = 0; j < width; j++)
     {
@@ -301,12 +286,13 @@ static inline void create_gauss_kernel(float *const restrict buffer,
 
 
 
-static inline int build_gui_kernel(unsigned char *const buffer, const size_t width, const size_t height,
-                                   dt_iop_blurs_params_t *p)
+__DT_CLONE_TARGETS__
+static inline int build_gui_kernel(unsigned char *const buffer, const size_t width,
+                                   const size_t height, dt_iop_blurs_params_t *p)
 {
   float *const restrict kernel_1 = dt_alloc_align_float(width * height);
   float *const restrict kernel_2 = dt_alloc_align_float(width * height);
-  if(kernel_1 == NULL || kernel_2 == NULL) goto error;
+  if(IS_NULL_PTR(kernel_1) || IS_NULL_PTR(kernel_2)) goto error;
 
   if(p->type == DT_BLUR_LENS)
   {
@@ -329,31 +315,25 @@ static inline int build_gui_kernel(unsigned char *const buffer, const size_t wid
   }
 
   // Convert to Gtk/Cairo RGBA 8x4 bits
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) dt_omp_firstprivate(width, height, buffer, kernel_2) \
-    schedule(simd: static) aligned(buffer, kernel_2:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(buffer, kernel_2:64))
   for(size_t k = 0; k < height * width; k++)
   {
     buffer[k * 4] = buffer[k * 4 + 1] = buffer[k * 4 + 2] = buffer[k * 4 + 3] = roundf(255.f * kernel_2[k]);
   }
 
 error:;
-  int err = (kernel_1 == NULL || kernel_2 == NULL);
+  int err = (IS_NULL_PTR(kernel_1) || IS_NULL_PTR(kernel_2));
   dt_free_align(kernel_1);
   dt_free_align(kernel_2);
   return err;
 }
 
 
+__DT_CLONE_TARGETS__
 static inline float compute_norm(float *const buffer, const size_t width, const size_t height)
 {
   float norm = 0.f;
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) dt_omp_firstprivate(width, height, buffer) \
-    schedule(simd: static) aligned(buffer:64) reduction(+:norm)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(buffer:64) reduction(+:norm))
   for(size_t i = 0; i < width * height; i++)
   {
     norm += buffer[i];
@@ -363,12 +343,11 @@ static inline float compute_norm(float *const buffer, const size_t width, const 
 }
 
 
-static inline void normalize(float *const buffer, const size_t width, const size_t height, const float norm)
+__DT_CLONE_TARGETS__
+static inline void normalize(float *const buffer, const size_t width, const size_t height,
+                             const float norm)
 {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) dt_omp_firstprivate(width, height, buffer, norm) \
-    schedule(simd: static) aligned(buffer:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(buffer:64))
   for(size_t i = 0; i < width * height; i++)
   {
     buffer[i] /= norm;
@@ -380,7 +359,7 @@ static inline int build_pixel_kernel(float *const buffer, const size_t width, co
                                      dt_iop_blurs_params_t *p)
 {
   float *const restrict kernel_1 = dt_alloc_align_float(width * height);
-  if(kernel_1 == NULL) return 1;
+  if(IS_NULL_PTR(kernel_1)) return 1;
 
   if(p->type == DT_BLUR_LENS)
   {
@@ -422,10 +401,7 @@ static void process_fft(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
                         const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   dt_iop_blurs_params_t *p = (dt_iop_blurs_params_t *)piece->data;
-  const float scale = 1.f / roi_in->scale;
-
-  if (!dt_iop_have_required_input_format(4, self, piece->colors, ivoid, ovoid, roi_in, roi_out))
-    return;
+  const float scale = dt_dev_get_module_scale(pipe, roi_in);
 
   const float *const restrict in = __builtin_assume_aligned(ivoid, 64);
   //float *const restrict out = __builtin_assume_aligned(ovoid, 64);
@@ -440,10 +416,7 @@ static void process_fft(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
   float *const restrict padded_out = dt_alloc_align_float(padded_width * padded_height * 4);
 
   // Write the image in the padded buffer
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) dt_omp_firstprivate(padded_width, padded_height, roi_in, in, padded_in) \
-    schedule(simd: static) aligned(in, padded_in:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(in, padded_in:64))
   for(size_t i = 0; i < roi_in->height; i++)
     for(size_t j = 0; j < roi_in->width; j++)
     {
@@ -455,10 +428,7 @@ static void process_fft(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
   // Write the padding if needed
   if(padded_width > roi_in->width)
   {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) dt_omp_firstprivate(padded_width, padded_height, roi_in, in, padded_in) \
-    schedule(simd: static) aligned(in, padded_in:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(in, padded_in:64))
   for(size_t i = 0; i < roi_in->height; i++)
     {
       const size_t index_in = (i * (roi_in->width - 1)) * 4;
@@ -469,10 +439,7 @@ static void process_fft(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 
   if(padded_height > roi_in->height)
   {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) dt_omp_firstprivate(padded_width, padded_height, roi_in, in, padded_in) \
-    schedule(simd: static) aligned(in, padded_in:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(in, padded_in:64))
   for(size_t j = 0; j < roi_in->width; j++)
     {
       const size_t index_in = ((roi_in->height - 1) * roi_in->width + j) * 4;
@@ -494,12 +461,7 @@ static void process_fft(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
   const size_t offset_j = (padded_width - 1) / 2 - (kernel_width - 1) / 2;
   const size_t i_reach = offset_i + kernel_width;
   const size_t j_reach = offset_j + kernel_width;
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-    dt_omp_firstprivate(padded_width, padded_height, padded_kernel, kernel, offset_i, offset_j, i_reach, j_reach, kernel_width) \
-    schedule(simd: static) aligned(kernel, padded_kernel:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(kernel, padded_kernel:64))
   for(size_t i = 0; i < padded_width; i++)
     for(size_t j = 0; j < padded_width; j++)
     {
@@ -562,15 +524,14 @@ static void process_fft(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 // Spatial convolution should be slower for large blurs because it is o(N²) where N is the width of the kernel
 // but code is much simpler and easier to debug
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
-                    const void *const restrict ivoid, void *const restrict ovoid,
-                    const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+                    const void *const restrict ivoid, void *const restrict ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_blurs_params_t *p = (dt_iop_blurs_params_t *)piece->data;
-  const float scale = fmaxf(1.f / roi_in->scale, 1.f);
-
-  if (!dt_iop_have_required_input_format(4, self, piece->colors, ivoid, ovoid, roi_in, roi_out))
-    return 0;
+  const float scale = fmaxf(dt_dev_get_module_scale(pipe, roi_in), 1.f);
 
   const float *const restrict in = __builtin_assume_aligned(ivoid, 64);
   float *const restrict out = __builtin_assume_aligned(ovoid, 64);
@@ -580,18 +541,13 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   const size_t kernel_width = 2 * radius + 1;
 
   float *restrict kernel = dt_alloc_align_float(kernel_width * kernel_width);
-  if(kernel == NULL) return 1;
+  if(IS_NULL_PTR(kernel)) return 1;
   if(build_pixel_kernel(kernel, kernel_width, kernel_width, p))
   {
     dt_free_align(kernel);
     return 1;
   }
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(roi_out, in, out, kernel, kernel_width, radius) \
-    schedule(simd: static) collapse(2)
-#endif
+  __OMP_PARALLEL_FOR__(collapse(2))
   for(int i = 0; i < roi_out->height; i++)
     for(int j = 0; j < roi_out->width; j++)
     {
@@ -647,27 +603,28 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
 
 
 #if HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_blurs_params_t *p = (dt_iop_blurs_params_t *)piece->data;
   dt_iop_blurs_global_data_t *const gd = (dt_iop_blurs_global_data_t *)self->global_data;
 
   cl_int err = -999;
 
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   const int width = roi_in->width;
   const int height = roi_in->height;
 
   size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
 
   // Init the blur kernel
-  const float scale = fmaxf(1.f / roi_in->scale, 1.f);
+  const float scale = fmaxf(dt_dev_get_module_scale(pipe, roi_in), 1.f);
   const int radius = MAX(roundf(p->radius / scale), 2);
   const size_t kernel_width = 2 * radius + 1;
 
   float *const restrict kernel = dt_alloc_align_float(kernel_width * kernel_width);
-  if(kernel == NULL) return FALSE;
+  if(IS_NULL_PTR(kernel)) return FALSE;
   if(build_pixel_kernel(kernel, kernel_width, kernel_width, p))
   {
     dt_free_align(kernel);
@@ -721,7 +678,7 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
   dt_iop_blurs_params_t *p = (dt_iop_blurs_params_t *)self->params;
   dt_iop_blurs_gui_data_t *g = (dt_iop_blurs_gui_data_t *)self->gui_data;
 
-  if(!w || w == g->type)
+  if(IS_NULL_PTR(w) || w == g->type)
   {
     if(p->type == DT_BLUR_LENS)
     {
@@ -788,7 +745,7 @@ static gboolean dt_iop_tonecurve_draw(GtkWidget *widget, cairo_t *crf, gpointer 
   if(!g->img_cached)
   {
     g->img = dt_alloc_align(sizeof(unsigned char) * 4 * allocation.width * allocation.width);
-    if(!g->img) return FALSE;
+    if(IS_NULL_PTR(g->img)) return FALSE;
     g->img_width = allocation.width;
     g->img_cached = TRUE;
     if(build_gui_kernel(g->img, g->img_width, g->img_width, p)) 

@@ -172,7 +172,7 @@ int default_group()
   return IOP_GROUP_REPAIR;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
 }
@@ -251,16 +251,16 @@ static inline void grid_rescale(const dt_iop_colorreconstruct_bilateral_t *const
   *py = (roi->y + j) * scale - b->y;
 }
 
-static void dt_iop_colorreconstruct_bilateral_dump(dt_iop_colorreconstruct_bilateral_frozen_t *bf)
+static inline __attribute__((always_inline)) void dt_iop_colorreconstruct_bilateral_dump(dt_iop_colorreconstruct_bilateral_frozen_t *bf)
 {
-  if(!bf) return;
+  if(IS_NULL_PTR(bf)) return;
   dt_pixelpipe_cache_free_align(bf->buf);
   dt_free(bf);
 }
 
-static void dt_iop_colorreconstruct_bilateral_free(dt_iop_colorreconstruct_bilateral_t *b)
+static inline __attribute__((always_inline)) void dt_iop_colorreconstruct_bilateral_free(dt_iop_colorreconstruct_bilateral_t *b)
 {
-  if(!b) return;
+  if(IS_NULL_PTR(b)) return;
   dt_pixelpipe_cache_free_align(b->buf);
   dt_free(b);
 }
@@ -271,7 +271,7 @@ static dt_iop_colorreconstruct_bilateral_t *dt_iop_colorreconstruct_bilateral_in
                                                                                    const float sigma_r)     // range sigma (blur luma values)
 {
   dt_iop_colorreconstruct_bilateral_t *b = (dt_iop_colorreconstruct_bilateral_t *)malloc(sizeof(dt_iop_colorreconstruct_bilateral_t));
-  if(!b)
+  if(IS_NULL_PTR(b))
   {
     fprintf(stderr, "[color reconstruction] not able to allocate buffer (a)\n");
     return NULL;
@@ -292,7 +292,7 @@ static dt_iop_colorreconstruct_bilateral_t *dt_iop_colorreconstruct_bilateral_in
   b->buf = dt_pixelpipe_cache_alloc_align_cache(
       sizeof(dt_iop_colorreconstruct_Lab_t) * b->size_x * b->size_y * b->size_z,
       0);
-  if(!b->buf)
+  if(IS_NULL_PTR(b->buf))
   {
     fprintf(stderr, "[color reconstruction] not able to allocate buffer (b)\n");
     dt_iop_colorreconstruct_bilateral_free(b);
@@ -310,10 +310,10 @@ static dt_iop_colorreconstruct_bilateral_t *dt_iop_colorreconstruct_bilateral_in
 
 static dt_iop_colorreconstruct_bilateral_frozen_t *dt_iop_colorreconstruct_bilateral_freeze(dt_iop_colorreconstruct_bilateral_t *b)
 {
-  if(!b) return NULL;
+  if(IS_NULL_PTR(b)) return NULL;
 
   dt_iop_colorreconstruct_bilateral_frozen_t *bf = (dt_iop_colorreconstruct_bilateral_frozen_t *)malloc(sizeof(dt_iop_colorreconstruct_bilateral_frozen_t));
-  if(!bf)
+  if(IS_NULL_PTR(bf))
   {
     fprintf(stderr, "[color reconstruction] not able to allocate buffer (c)\n");
     return NULL;
@@ -347,17 +347,14 @@ static dt_iop_colorreconstruct_bilateral_frozen_t *dt_iop_colorreconstruct_bilat
 }
 
 
+__DT_CLONE_TARGETS__
 static void dt_iop_colorreconstruct_bilateral_splat(dt_iop_colorreconstruct_bilateral_t *b, const float *const in, const float threshold,
                                                     dt_iop_colorreconstruct_precedence_t precedence, const float *params)
 {
-  if(!b) return;
+  if(IS_NULL_PTR(b)) return;
 
   // splat into downsampled grid
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(in, threshold) \
-  shared(b, precedence, params)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int j = 0; j < b->height; j++)
   {
     size_t index = (size_t)4 * j * b->width;
@@ -421,19 +418,16 @@ static void dt_iop_colorreconstruct_bilateral_splat(dt_iop_colorreconstruct_bila
 }
 
 
+__DT_CLONE_TARGETS__
 static void blur_line(dt_iop_colorreconstruct_Lab_t *buf, const int offset1, const int offset2, const int offset3, const int size1,
                       const int size2, const int size3)
 {
-  if(!buf) return;
+  if(IS_NULL_PTR(buf)) return;
 
   const float w0 = 6.f / 16.f;
   const float w1 = 4.f / 16.f;
   const float w2 = 1.f / 16.f;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(offset1, offset2, offset3, size1, size2, size3, w0, w1, w2) \
-  shared(buf)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int k = 0; k < size1; k++)
   {
     size_t index = (size_t)k * offset1;
@@ -484,9 +478,9 @@ static void blur_line(dt_iop_colorreconstruct_Lab_t *buf, const int offset1, con
 }
 
 
-static void dt_iop_colorreconstruct_bilateral_blur(dt_iop_colorreconstruct_bilateral_t *b)
+static inline __attribute__((always_inline)) void dt_iop_colorreconstruct_bilateral_blur(dt_iop_colorreconstruct_bilateral_t *b)
 {
-  if(!b) return;
+  if(IS_NULL_PTR(b)) return;
 
   // gaussian up to 3 sigma
   blur_line(b->buf, b->size_x * b->size_y, b->size_x, 1, b->size_z, b->size_y, b->size_x);
@@ -496,21 +490,19 @@ static void dt_iop_colorreconstruct_bilateral_blur(dt_iop_colorreconstruct_bilat
   blur_line(b->buf, 1, b->size_x, b->size_x * b->size_y, b->size_x, b->size_y, b->size_z);
 }
 
+__DT_CLONE_TARGETS__
 static void dt_iop_colorreconstruct_bilateral_slice(const dt_iop_colorreconstruct_bilateral_t *const b,
                                                     const float *const in, float *const out,
                                                     const float threshold, const dt_iop_roi_t *const roi,
                                                     const float iscale)
 {
-  if(!b) return;
+  if(IS_NULL_PTR(b)) return;
 
   const float rescale = iscale / (roi->scale * b->scale);
   const int ox = 1;
   const int oy = b->size_x;
   const int oz = b->size_y * b->size_x;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(b, in, out, oy, oz, rescale, roi, threshold, ox)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int j = 0; j < roi->height; j++)
   {
     size_t index = (size_t)4 * j * roi->width;
@@ -580,15 +572,17 @@ static void dt_iop_colorreconstruct_bilateral_slice(const dt_iop_colorreconstruc
 }
 
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_colorreconstruct_data_t *data = (dt_iop_colorreconstruct_data_t *)piece->data;
   dt_iop_colorreconstruct_gui_data_t *g = (dt_iop_colorreconstruct_gui_data_t *)self->gui_data;
   float *in = (float *)ivoid;
   float *out = (float *)ovoid;
 
-  const float scale = fmaxf(1.f / roi_in->scale, 1.f);
+  const float scale = fmaxf(dt_dev_get_module_scale(pipe, roi_in), 1.f);
   const float sigma_r = fmax(data->range, 0.1f);
   const float sigma_s = fmax(data->spatial, 1.0f) / scale;
   const float hue = hue_conversion(data->hue); // convert to LCH hue which better fits to Lab colorspace
@@ -597,16 +591,16 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
   dt_iop_colorreconstruct_bilateral_t *b;
 
-  b = dt_iop_colorreconstruct_bilateral_init(roi_in, 1.f, sigma_s, sigma_r);
-  if(!b) goto error;
+  b = dt_iop_colorreconstruct_bilateral_init(roi_in, pipe->iscale, sigma_s, sigma_r);
+  if(IS_NULL_PTR(b)) goto error;
   dt_iop_colorreconstruct_bilateral_splat(b, in, data->threshold, data->precedence, params);
   dt_iop_colorreconstruct_bilateral_blur(b);
 
-  dt_iop_colorreconstruct_bilateral_slice(b, in, out, data->threshold, roi_in, 1.f);
+  dt_iop_colorreconstruct_bilateral_slice(b, in, out, data->threshold, roi_in, pipe->iscale);
 
   // here is where we generate the canned bilateral grid of the preview pipe for later use
   int err = 0;
-  if(self->dev->gui_attached && g && dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, roi_out))
+  if(self->dev->gui_attached && !IS_NULL_PTR(g) && dt_dev_pixelpipe_has_preview_output(self->dev, pipe, roi_out))
   {
     uint64_t hash = piece->global_hash;
     dt_iop_gui_enter_critical_section(self);
@@ -624,7 +618,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 error:
   dt_control_log(_("module `color reconstruction' failed"));
   dt_iop_colorreconstruct_bilateral_free(b);
-  dt_iop_image_copy_by_size(ovoid, ivoid, roi_out->width, roi_out->height, piece->colors);
+  dt_iop_image_copy_by_size(ovoid, ivoid, roi_out->width, roi_out->height, piece->dsc_in.channels);
   return 1;
 }
 
@@ -644,7 +638,7 @@ typedef struct dt_iop_colorreconstruct_bilateral_cl_t
 
 static void dt_iop_colorreconstruct_bilateral_free_cl(dt_iop_colorreconstruct_bilateral_cl_t *b)
 {
-  if(!b) return;
+  if(IS_NULL_PTR(b)) return;
   // be sure we're done with the memory:
   dt_opencl_finish(b->devid);
   // free device mem
@@ -685,7 +679,7 @@ static dt_iop_colorreconstruct_bilateral_cl_t *dt_iop_colorreconstruct_bilateral
   }
 
   dt_iop_colorreconstruct_bilateral_cl_t *b = (dt_iop_colorreconstruct_bilateral_cl_t *)malloc(sizeof(dt_iop_colorreconstruct_bilateral_cl_t));
-  if(!b)
+  if(IS_NULL_PTR(b))
   {
     dt_print(DT_DEBUG_OPENCL, "[opencl_colorreconstruction] not able to allocate host buffer (a)\n");
     return NULL;
@@ -756,10 +750,10 @@ static dt_iop_colorreconstruct_bilateral_cl_t *dt_iop_colorreconstruct_bilateral
 
 static dt_iop_colorreconstruct_bilateral_frozen_t *dt_iop_colorreconstruct_bilateral_freeze_cl(dt_iop_colorreconstruct_bilateral_cl_t *b)
 {
-  if(!b) return NULL;
+  if(IS_NULL_PTR(b)) return NULL;
 
   dt_iop_colorreconstruct_bilateral_frozen_t *bf = (dt_iop_colorreconstruct_bilateral_frozen_t *)malloc(sizeof(dt_iop_colorreconstruct_bilateral_frozen_t));
-  if(!bf)
+  if(IS_NULL_PTR(bf))
   {
     dt_print(DT_DEBUG_OPENCL, "[opencl_colorreconstruction] not able to allocate host buffer (d)\n");
     return NULL;
@@ -806,7 +800,7 @@ static cl_int dt_iop_colorreconstruct_bilateral_splat_cl(dt_iop_colorreconstruct
                                                          dt_iop_colorreconstruct_precedence_t precedence, const float *params)
 {
   cl_int err = -666;
-  if(!b) return err;
+  if(IS_NULL_PTR(b)) return err;
   int pref = precedence;
   size_t sizes[] = { ROUNDUP(b->width, b->blocksizex), ROUNDUP(b->height, b->blocksizey), 1 };
   size_t local[] = { b->blocksizex, b->blocksizey, 1 };
@@ -833,7 +827,7 @@ static cl_int dt_iop_colorreconstruct_bilateral_splat_cl(dt_iop_colorreconstruct
 static cl_int dt_iop_colorreconstruct_bilateral_blur_cl(dt_iop_colorreconstruct_bilateral_cl_t *b)
 {
   cl_int err = -666;
-  if(!b) return err;
+  if(IS_NULL_PTR(b)) return err;
   size_t sizes[3] = { 0, 0, 1 };
 
   err = dt_opencl_enqueue_copy_buffer_to_buffer(b->devid, b->dev_grid, b->dev_grid_tmp, 0, 0,
@@ -895,7 +889,7 @@ static cl_int dt_iop_colorreconstruct_bilateral_slice_cl(dt_iop_colorreconstruct
                                                          const float threshold, const dt_iop_roi_t *roi, const float iscale)
 {
   cl_int err = -666;
-  if(!b) return err;
+  if(IS_NULL_PTR(b)) return err;
   const int bxy[2] = { b->x, b->y };
   const int roixy[2] = { roi->x, roi->y };
   const float rescale = iscale / (roi->scale * b->scale);
@@ -919,14 +913,15 @@ static cl_int dt_iop_colorreconstruct_bilateral_slice_cl(dt_iop_colorreconstruct
   return err;
 }
 
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_colorreconstruct_data_t *d = (dt_iop_colorreconstruct_data_t *)piece->data;
   dt_iop_colorreconstruct_global_data_t *gd = (dt_iop_colorreconstruct_global_data_t *)self->global_data;
   dt_iop_colorreconstruct_gui_data_t *g = (dt_iop_colorreconstruct_gui_data_t *)self->gui_data;
 
-  const float scale = 1.f / roi_in->scale;
+  const float scale = dt_dev_get_module_scale(pipe, roi_in);
   const float sigma_r = fmax(d->range, 0.1f); // does not depend on scale
   const float sigma_s = fmax(d->spatial, 1.0f) / scale;
   const float hue = hue_conversion(d->hue); // convert to LCH hue which better fits to Lab colorspace
@@ -937,17 +932,17 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   dt_iop_colorreconstruct_bilateral_cl_t *b;
 
-  b = dt_iop_colorreconstruct_bilateral_init_cl(piece->pipe->devid, gd, roi_in, 1.f, sigma_s, sigma_r);
-  if(!b) goto error;
+  b = dt_iop_colorreconstruct_bilateral_init_cl(pipe->devid, gd, roi_in, pipe->iscale, sigma_s, sigma_r);
+  if(IS_NULL_PTR(b)) goto error;
   err = dt_iop_colorreconstruct_bilateral_splat_cl(b, dev_in, d->threshold, d->precedence, params);
   if(err != CL_SUCCESS) goto error;
   err = dt_iop_colorreconstruct_bilateral_blur_cl(b);
   if(err != CL_SUCCESS) goto error;
 
-  err = dt_iop_colorreconstruct_bilateral_slice_cl(b, dev_in, dev_out, d->threshold, roi_in, 1.f);
+  err = dt_iop_colorreconstruct_bilateral_slice_cl(b, dev_in, dev_out, d->threshold, roi_in, pipe->iscale);
   if(err != CL_SUCCESS) goto error;
 
-  if(self->dev->gui_attached && g && dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, roi_out))
+  if(self->dev->gui_attached && g && dt_dev_pixelpipe_has_preview_output(self->dev, pipe, roi_out))
   {
     uint64_t hash = piece->global_hash;
     dt_iop_gui_enter_critical_section(self);
@@ -1004,20 +999,17 @@ static size_t dt_iop_colorreconstruct_bilateral_singlebuffer_size(const int widt
   return size_x * size_y * size_z * 4 * sizeof(float);
 }
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_colorreconstruct_data_t *d = (dt_iop_colorreconstruct_data_t *)piece->data;
-  // the total scale is composed of scale before input to the pipeline (iscale),
-  // and the scale of the roi.
-  const float scale = 1.f / roi_in->scale;
+  const float scale = dt_dev_get_module_scale(pipe, roi_in);
   const float sigma_r = fmax(d->range, 0.1f);
   const float sigma_s = fmax(d->spatial, 1.0f) / scale;
 
   const int width = roi_in->width;
   const int height = roi_in->height;
-  const int channels = piece->colors;
+  const int channels = piece->dsc_in.channels;
 
   const size_t basebuffer = sizeof(float) * channels * width * height;
 

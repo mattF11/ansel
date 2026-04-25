@@ -408,10 +408,10 @@ static gboolean _osx_quit_callback(GtkosxApplication *OSXapp, gpointer user_data
 {
   GList *windows, *window;
   windows = gtk_window_list_toplevels();
-  for(window = windows; window != NULL; window = g_list_next(window))
+  for(window = windows; !IS_NULL_PTR(window); window = g_list_next(window))
     if(gtk_window_get_modal(GTK_WINDOW(window->data)) && gtk_widget_get_visible(GTK_WIDGET(window->data)))
       break;
-  if(window == NULL) dt_control_quit();
+  if(IS_NULL_PTR(window)) dt_control_quit();
   g_list_free(windows);
   windows = NULL;
   return TRUE;
@@ -501,7 +501,7 @@ static inline double _clamp01d(const double value)
 
 static const gdouble *_event_axes(const GdkEvent *event)
 {
-  if(!event) return NULL;
+  if(IS_NULL_PTR(event)) return NULL;
   switch(event->type)
   {
     case GDK_MOTION_NOTIFY:
@@ -520,7 +520,7 @@ static gboolean _get_axis_value_for_source(const GdkEvent *event, GdkDevice *sou
                                            const GdkAxisUse axis, double *value, gboolean *from_source_map)
 {
   if(from_source_map) *from_source_map = FALSE;
-  if(!value) return FALSE;
+  if(IS_NULL_PTR(value)) return FALSE;
 
   const gdouble *axes = _event_axes(event);
   if(source_device && axes)
@@ -540,7 +540,7 @@ static gboolean _get_axis_value_for_source(const GdkEvent *event, GdkDevice *sou
 static gboolean _sample_axis_from_device_state(GdkWindow *window, GdkDevice *device,
                                                 const GdkAxisUse axis, double *value)
 {
-  if(!window || !device || !value) return FALSE;
+  if(IS_NULL_PTR(window) || IS_NULL_PTR(device) || IS_NULL_PTR(value)) return FALSE;
   if(gdk_device_get_source(device) == GDK_SOURCE_KEYBOARD) return FALSE;
   if(gdk_device_get_device_type(device) == GDK_DEVICE_TYPE_SLAVE)
   {
@@ -570,10 +570,10 @@ static gboolean _sample_tablet_state_from_devices(const GdkEvent *event,
   if(have_tilt) *have_tilt = FALSE;
   if(picked_device_name) *picked_device_name = NULL;
 
-  if(!darktable.gui) return FALSE;
+  if(IS_NULL_PTR(darktable.gui)) return FALSE;
   GdkWindow *window = gdk_event_get_window((GdkEvent *)event);
-  if(!window) window = gtk_widget_get_window(dt_ui_center(darktable.gui->ui));
-  if(!window) return FALSE;
+  if(IS_NULL_PTR(window)) window = gtk_widget_get_window(dt_ui_center(darktable.gui->ui));
+  if(IS_NULL_PTR(window)) return FALSE;
 
   int best_score = -1;
   double best_p = 0.0;
@@ -589,7 +589,7 @@ static gboolean _sample_tablet_state_from_devices(const GdkEvent *event,
   for(GList *l = runtime_devices; l; l = g_list_next(l))
   {
     GdkDevice *device = (GdkDevice *)l->data;
-    if(!device) continue;
+    if(IS_NULL_PTR(device)) continue;
     const GdkInputSource source = gdk_device_get_source(device);
     if(source == GDK_SOURCE_KEYBOARD) continue;
     if(gdk_device_get_device_type(device) == GDK_DEVICE_TYPE_SLAVE)
@@ -707,7 +707,7 @@ static dt_control_pointer_input_t _extract_pointer_input(const GdkEvent *event, 
                  || tool_type == GDK_DEVICE_TOOL_TYPE_AIRBRUSH);
   gboolean is_tablet_like = supports_pressure || supports_x_tilt || supports_y_tilt || tool_is_stylus;
   GdkWindow *window = gdk_event_get_window((GdkEvent *)event);
-  if(!window && darktable.gui) window = gtk_widget_get_window(dt_ui_center(darktable.gui->ui));
+  if(IS_NULL_PTR(window) && darktable.gui) window = gtk_widget_get_window(dt_ui_center(darktable.gui->ui));
 
   {
     double pressure = 0.0;
@@ -1069,9 +1069,9 @@ int dt_gui_gtk_init(dt_gui_gtk_t *gui)
   //init overlay colors
   dt_guides_set_overlay_colors();
 
-  snprintf(path, sizeof(path), "%s/icons", datadir);
+  dt_concat_path_file(path, datadir, "icons");
   gtk_icon_theme_append_search_path(gtk_icon_theme_get_default(), path);
-  snprintf(path, sizeof(path), "%s/icons", sharedir);
+  dt_concat_path_file(path, sharedir, "icons");
   gtk_icon_theme_append_search_path(gtk_icon_theme_get_default(), path);
 
   GtkWidget *center = dt_ui_center(darktable.gui->ui);
@@ -1117,10 +1117,10 @@ int dt_gui_gtk_init(dt_gui_gtk_t *gui)
   dt_print(DT_DEBUG_INPUT, "[input device] stylus-capable devices reported by seat: %d\n", g_list_length(stylus_devices));
   dt_print(DT_DEBUG_INPUT, "[input device] manager fallback devices: slave=%d floating=%d merged_total=%d\n",
            manager_slave_count, manager_floating_count, g_list_length(input_devices));
-  for(GList *l = stylus_devices; l != NULL; l = g_list_next(l))
+  for(GList *l = stylus_devices; !IS_NULL_PTR(l); l = g_list_next(l))
   {
     GdkDevice *device = (GdkDevice *)l->data;
-    if(!device) continue;
+    if(IS_NULL_PTR(device)) continue;
     dt_print(DT_DEBUG_INPUT, "  [tablet seat] %s source=%s axes_flags=%u n_axes=%d\n",
              gdk_device_get_name(device), _get_source_name(gdk_device_get_source(device)),
              (unsigned int)gdk_device_get_axes(device), gdk_device_get_n_axes(device));
@@ -1130,10 +1130,10 @@ int dt_gui_gtk_init(dt_gui_gtk_t *gui)
     g_list_free(stylus_devices);
     stylus_devices = NULL;
   }
-  for(GList *l = input_devices; l != NULL; l = g_list_next(l))
+  for(GList *l = input_devices; !IS_NULL_PTR(l); l = g_list_next(l))
   {
     GdkDevice *device = (GdkDevice *)l->data;
-    if(!device) continue;
+    if(IS_NULL_PTR(device)) continue;
     const GdkInputSource source = gdk_device_get_source(device);
     const gint n_axes = (source == GDK_SOURCE_KEYBOARD ? 0 : gdk_device_get_n_axes(device));
 
@@ -1312,6 +1312,7 @@ static void _init_widgets(dt_gui_gtk_t *gui)
   g_signal_connect(G_OBJECT(gui->ui->main_window ), "delete_event", G_CALLBACK(dt_gui_quit_callback), NULL);
   g_signal_connect(G_OBJECT(gui->ui->main_window ), "focus-in-event", G_CALLBACK(_focus_in_out_event), NULL);
   g_signal_connect(G_OBJECT(gui->ui->main_window ), "focus-out-event", G_CALLBACK(_focus_in_out_event), NULL);
+  g_signal_connect_after(G_OBJECT(gui->ui->main_window ), "key-press-event", G_CALLBACK(_key_pressed), NULL);
 
   container = gui->ui->main_window;
 
@@ -1746,11 +1747,11 @@ void dt_gui_load_theme(const char *theme)
   usercsspath = g_build_filename(configdir, "user.css", NULL);
 
   gchar *path_uri = g_filename_to_uri(path, NULL, &error);
-  if(path_uri == NULL)
+  if(IS_NULL_PTR(path_uri))
     fprintf(stderr, "%s: could not convert path %s to URI. Error: %s\n", G_STRFUNC, path, error->message);
 
   gchar *usercsspath_uri = g_filename_to_uri(usercsspath, NULL, &error);
-  if(usercsspath_uri == NULL)
+  if(IS_NULL_PTR(usercsspath_uri))
     fprintf(stderr, "%s: could not convert path %s to URI. Error: %s\n", G_STRFUNC, usercsspath, error->message);
 
   gchar *themecss = NULL;
@@ -2208,7 +2209,7 @@ static void dt_gui_widget_update_list_height(GtkWidget *widget, int rows, int mi
 
 static void _widget_auto_disconnect_model(dt_gui_widget_auto_height_t *state, GtkWidget *treeview)
 {
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
 
   GtkTreeModel *model = state->model;
   if(model)
@@ -2237,7 +2238,7 @@ static void _widget_auto_disconnect_model(dt_gui_widget_auto_height_t *state, Gt
 
 static void _widget_auto_disconnect_buffer(dt_gui_widget_auto_height_t *state)
 {
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
 
   GtkTextBuffer *buffer = state->buffer;
   if(buffer)
@@ -2253,7 +2254,7 @@ static void _widget_auto_disconnect_buffer(dt_gui_widget_auto_height_t *state)
 static void _widget_auto_update(GtkWidget *widget)
 {
   const dt_gui_widget_auto_height_t *state = g_object_get_data(G_OBJECT(widget), DT_GUI_WIDGET_AUTO_HEIGHT_KEY);
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
 
   int rows = 0;
   if(GTK_IS_TREE_VIEW(widget))
@@ -2333,7 +2334,7 @@ static void _widget_auto_connect_model(GtkWidget *treeview)
   if(!GTK_IS_TREE_VIEW(treeview)) return;
 
   dt_gui_widget_auto_height_t *state = g_object_get_data(G_OBJECT(treeview), DT_GUI_WIDGET_AUTO_HEIGHT_KEY);
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
 
   GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeview));
   if(model == state->model) return;
@@ -2362,7 +2363,7 @@ static void _widget_auto_connect_buffer(GtkWidget *textview)
   if(!GTK_IS_TEXT_VIEW(textview)) return;
 
   dt_gui_widget_auto_height_t *state = g_object_get_data(G_OBJECT(textview), DT_GUI_WIDGET_AUTO_HEIGHT_KEY);
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
 
   GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textview));
   if(buffer == state->buffer) return;
@@ -2395,7 +2396,7 @@ static void _widget_auto_on_buffer_changed(GObject *textview, GParamSpec *pspec,
 static void _widget_auto_height_free(gpointer data)
 {
   dt_gui_widget_auto_height_t *state = (dt_gui_widget_auto_height_t *)data;
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
   _widget_auto_disconnect_model(state, NULL);
   _widget_auto_disconnect_buffer(state);
   dt_free(state);
@@ -2408,7 +2409,7 @@ void dt_gui_widget_init_auto_height(GtkWidget *w, const int min_rows, const int 
   _widget_auto_ensure_scrolled_window(w);
 
   dt_gui_widget_auto_height_t *state = g_object_get_data(G_OBJECT(w), DT_GUI_WIDGET_AUTO_HEIGHT_KEY);
-  if(!state)
+  if(IS_NULL_PTR(state))
   {
     state = calloc(1, sizeof(*state));
     g_object_set_data_full(G_OBJECT(w), DT_GUI_WIDGET_AUTO_HEIGHT_KEY, state,
@@ -2438,7 +2439,7 @@ gboolean dt_gui_container_has_children(GtkContainer *container)
 {
   g_return_val_if_fail(GTK_IS_CONTAINER(container), FALSE);
   GList *children = gtk_container_get_children(container);
-  gboolean has_children = children != NULL;
+  gboolean has_children = !IS_NULL_PTR(children);
   g_list_free(children);
   children = NULL;
   return has_children;
@@ -2499,7 +2500,7 @@ void dt_gui_container_destroy_children(GtkContainer *container)
 
 GtkWidget *dt_gui_get_popup_relative_widget(GtkWidget *widget, GdkRectangle *rect)
 {
-  if(!widget) return NULL;
+  if(IS_NULL_PTR(widget)) return NULL;
 
   GtkWidget *relative = widget;
 
@@ -2542,7 +2543,7 @@ void dt_gui_menu_popup(GtkMenu *menu, GtkWidget *button, GdkGravity widget_ancho
   }
   else
   {
-    if(!event)
+    if(IS_NULL_PTR(event))
     {
       event = gdk_event_new(GDK_BUTTON_PRESS);
       event->button.device = gdk_seat_get_pointer(gdk_display_get_default_seat(gdk_display_get_default()));

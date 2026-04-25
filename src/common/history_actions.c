@@ -50,7 +50,7 @@ typedef gboolean (*dt_history_action_fn)(const int32_t imgid, void *user_data);
 static gboolean _history_action_on_list_with_undo(const GList *list, dt_history_action_fn action, void *user_data,
                                                   const gboolean use_undo)
 {
-  if(!list) return FALSE;
+  if(IS_NULL_PTR(list)) return FALSE;
 
   if(use_undo) dt_undo_start_group(darktable.undo, DT_UNDO_LT_HISTORY);
   gboolean changed = FALSE;
@@ -281,7 +281,7 @@ static gboolean _history_paste_parts_apply(const int32_t imgid, void *user_data)
 {
   (void)user_data;
   if(darktable.view_manager->copy_paste.copied_imageid <= 0) return FALSE;
-  if(!darktable.view_manager->copy_paste.selops) return FALSE;
+  if(IS_NULL_PTR(darktable.view_manager->copy_paste.selops)) return FALSE;
   if(imgid <= 0) return FALSE;
 
   const gboolean pasted = dt_history_copy_and_paste_on_image(darktable.view_manager->copy_paste.copied_imageid,
@@ -300,7 +300,7 @@ gboolean dt_history_paste_parts_on_image(const int32_t imgid)
 gboolean dt_history_paste_parts_on_list(const GList *list)
 {
   if(darktable.view_manager->copy_paste.copied_imageid <= 0) return FALSE;
-  if(!darktable.view_manager->copy_paste.selops)
+  if(IS_NULL_PTR(darktable.view_manager->copy_paste.selops))
     return FALSE;
   return _history_action_on_list(list, _history_paste_parts_apply, NULL);
 }
@@ -341,7 +341,7 @@ static gboolean _history_load_and_apply_apply(const int32_t imgid, void *user_da
 {
   dt_history_load_params_t *params = (dt_history_load_params_t *)user_data;
   dt_image_t *img = dt_image_cache_get(darktable.image_cache, imgid, 'w');
-  if(!img) return FALSE;
+  if(IS_NULL_PTR(img)) return FALSE;
 
   dt_undo_lt_history_t *hist = dt_history_snapshot_item_init();
   hist->imgid = imgid;
@@ -433,7 +433,7 @@ typedef struct dt_history_style_params_t
 static gboolean _history_style_apply(const int32_t imgid, void *user_data)
 {
   const dt_history_style_params_t *params = (dt_history_style_params_t *)user_data;
-  if(!params || params->style_id == 0 || !params->name || !*params->name) return FALSE;
+  if(IS_NULL_PTR(params) || params->style_id == 0 || IS_NULL_PTR(params->name) || !*params->name) return FALSE;
 
   int32_t newimgid = imgid;
   if(params->duplicate)
@@ -461,7 +461,7 @@ static gboolean _history_style_apply(const int32_t imgid, void *user_data)
 
 gboolean dt_history_style_on_image(const int32_t imgid, const char *name, const gboolean duplicate)
 {
-  if(!name || !*name) return FALSE;
+  if(IS_NULL_PTR(name) || !*name) return FALSE;
 
   dt_history_style_params_t params = {
     .name = name,
@@ -476,7 +476,7 @@ gboolean dt_history_style_on_image(const int32_t imgid, const char *name, const 
 
 gboolean dt_history_style_on_list(const GList *list, const char *name, const gboolean duplicate)
 {
-  if(!name || !*name) return FALSE;
+  if(IS_NULL_PTR(name) || !*name) return FALSE;
 
   dt_history_style_params_t params = {
     .name = name,

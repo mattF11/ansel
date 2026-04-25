@@ -115,7 +115,7 @@ int flags()
   return IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_DEPRECATED;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
 }
@@ -141,11 +141,12 @@ void init_presets(dt_iop_module_so_t *self)
                             self->version(), FOR_RAW);
 }
 
+__DT_CLONE_TARGETS__
 static float *const init_gaussian_kernel(const int rad, const size_t mat_size, const float sigma2)
 {
   float weight = 0.0f;
   float *const mat = dt_pixelpipe_cache_alloc_align_float_cache(mat_size, 0);
-  if(!mat) return NULL;
+  if(IS_NULL_PTR(mat)) return NULL;
   memset(mat, 0, sizeof(float) * mat_size);
   for(int l = -rad; l <= rad; l++) weight += mat[l + rad] = expf(-l * l / (2.f * sigma2));
   for(int l = -rad; l <= rad; l++) mat[l + rad] /= weight;
@@ -153,16 +154,16 @@ static float *const init_gaussian_kernel(const int rad, const size_t mat_size, c
 }
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_sharpen_data_t *d = (dt_iop_sharpen_data_t *)piece->data;
   dt_iop_sharpen_global_data_t *gd = (dt_iop_sharpen_global_data_t *)self->global_data;
   cl_mem dev_m = NULL;
   cl_mem dev_tmp = NULL;
   cl_int err = -999;
 
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   const int width = roi_in->width;
   const int height = roi_in->height;
   const int rad = MIN(MAXR, ceilf(d->radius * roi_in->scale));
@@ -192,7 +193,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   const float sigma2 = (1.0f / (2.5 * 2.5)) * (d->radius * roi_in->scale)
                        * (d->radius * roi_in->scale);
   mat = init_gaussian_kernel(rad, wd, sigma2);
-  if(!mat) goto error;
+  if(IS_NULL_PTR(mat)) goto error;
 
   int hblocksize;
   dt_opencl_local_buffer_t hlocopt
@@ -224,10 +225,10 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   size_t local[3];
 
   dev_tmp = dt_opencl_alloc_device(devid, width, height, sizeof(float) * 4);
-  if(dev_tmp == NULL) goto error;
+  if(IS_NULL_PTR(dev_tmp)) goto error;
 
   dev_m = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * wd, mat);
-  if(dev_m == NULL) goto error;
+  if(IS_NULL_PTR(dev_m)) goto error;
 
   /* horizontal blur */
   sizes[0] = bwidth;
@@ -294,10 +295,9 @@ error:
 #endif
 
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_sharpen_data_t *d = (dt_iop_sharpen_data_t *)piece->data;
   const int rad = MIN(MAXR, ceilf(d->radius * roi_in->scale));
 
@@ -311,12 +311,12 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
   return;
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
-                                         ivoid, ovoid, roi_in, roi_out))
-    return 0;
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const dt_iop_sharpen_data_t *const data = (dt_iop_sharpen_data_t *)piece->data;
   const int rad = MIN(MAXR, ceilf(data->radius * roi_in->scale));
   // Special case handling: very small image with one or two dimensions below 2*rad+1 treat as no sharpening and just
@@ -345,7 +345,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   const float sigma2 = (1.0f / (2.5 * 2.5)) * (data->radius * roi_in->scale)
                        * (data->radius * roi_in->scale);
   float *const mat = init_gaussian_kernel(rad, mat_size, sigma2);
-  if(!mat)
+  if(IS_NULL_PTR(mat))
   {
     dt_pixelpipe_cache_free_align(tmp);
     dt_iop_copy_image_roi(ovoid, ivoid, 4, roi_in, roi_out, TRUE);
@@ -354,11 +354,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
   const float *const restrict in = (float*)ivoid;
   const size_t width = roi_out->width;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(in, ovoid, mat, rad, width, roi_in, roi_out, tmp, padded_size, data) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int j = 0; j < roi_out->height; j++)
   {
     // We skip the top and bottom 'rad' rows because the kernel would extend beyond the edge of the image, resulting
@@ -433,7 +429,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   dt_pixelpipe_cache_free_align(mat);
   dt_pixelpipe_cache_free_align(tmp);
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
     dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
   return 0;
 }
@@ -467,7 +463,7 @@ void init_global(dt_iop_module_so_t *module)
   const int program = 7; // sharpen.cl, from programs.conf
   dt_iop_sharpen_global_data_t *gd
       = (dt_iop_sharpen_global_data_t *)calloc(1, sizeof(dt_iop_sharpen_global_data_t));
-  if(!gd) return;
+  if(IS_NULL_PTR(gd)) return;
   module->data = gd;
   gd->kernel_sharpen_hblur = dt_opencl_create_kernel(program, "sharpen_hblur");
   gd->kernel_sharpen_vblur = dt_opencl_create_kernel(program, "sharpen_vblur");

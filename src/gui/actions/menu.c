@@ -60,7 +60,7 @@ static void _activate_callback_to_action_callback(GtkMenuItem* menu_item, gpoint
 static gboolean _menu_icon_draw(GtkWidget *widget, cairo_t *cr, gpointer user_data)
 {
   dt_menu_icon_data_t *data = (dt_menu_icon_data_t *)user_data;
-  if(!data || data->shape == DT_MENU_ICON_NONE) return FALSE;
+  if(IS_NULL_PTR(data) || data->shape == DT_MENU_ICON_NONE) return FALSE;
 
   GtkStyleContext *context = gtk_widget_get_style_context(widget);
   GdkRGBA color;
@@ -331,7 +331,7 @@ dt_menu_entry_t *set_menu_entry(GtkWidget **menus, GList **items_list,
                                 gboolean (*sensitive_callback)(GtkWidget *widget), guint key_val,
                                 GdkModifierType mods, GtkAccelGroup *accel_group)
 {
-  if(!label) label = "";
+  if(IS_NULL_PTR(label)) label = "";
 
   // Alloc and set to 0
   dt_menu_entry_t *entry = calloc(1, sizeof(dt_menu_entry_t));
@@ -367,10 +367,10 @@ dt_menu_entry_t *set_menu_entry(GtkWidget **menus, GList **items_list,
 
   // Wire the accelerator
   // Publish a new accel to the global map and attach it to the menu entry widget
-  if(action_callback != NULL)
+  if(!IS_NULL_PTR(action_callback))
   {    
     // Register accel only if requested
-    if(accel_group != NULL)
+    if(!IS_NULL_PTR(accel_group))
     {
       gchar *clean_label = strip_markup(label);
       // Slash is not allowed in control names because that makes accel paths fail.
@@ -386,7 +386,7 @@ dt_menu_entry_t *set_menu_entry(GtkWidget **menus, GList **items_list,
           key_val, mods, FALSE, _("Triggers the action"));
 
       gchar *path = dt_accels_build_path(parent_path, clean_label);
-      gtk_widget_set_accel_path(entry->widget, path, (action_callback != NULL) ? accel_group : NULL);
+      gtk_widget_set_accel_path(entry->widget, path, (!IS_NULL_PTR(action_callback)) ? accel_group : NULL);
       dt_free(path);
       dt_free(clean_label);
     }
@@ -652,17 +652,16 @@ gboolean has_active_image_in_lighttable()
 
 gboolean dt_menu_is_image_in_dev(GList *imgs)
 {
-  return darktable.develop != NULL
+  return !IS_NULL_PTR(darktable.develop)
     && g_list_find(imgs, GINT_TO_POINTER(darktable.develop->image_storage.id));
 }
 
 void dt_menu_apply_dev_history_update(dt_develop_t *dev, const gboolean history_inited)
 {
-  if(!dev) return;
+  if(IS_NULL_PTR(dev)) return;
 
   dt_dev_reload_history_items(dev, dev->image_storage.id);
   dt_dev_history_gui_update(dev);
   dt_dev_history_pixelpipe_update(dev, TRUE);
-  dt_dev_history_notify_change(dev, dev->image_storage.id);
   DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_DEVELOP_HISTORY_CHANGE);
 }

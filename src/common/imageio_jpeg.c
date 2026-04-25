@@ -309,19 +309,17 @@ int dt_imageio_jpeg_compress(const uint8_t *in, uint8_t *out, const int width, c
   if(quality > 90) jpg.cinfo.comp_info[0].v_samp_factor = 1;
   if(quality > 92) jpg.cinfo.comp_info[0].h_samp_factor = 1;
   jpeg_start_compress(&(jpg.cinfo), TRUE);
-  uint8_t *row = dt_pixelpipe_cache_alloc_align_cache(sizeof(uint8_t) * 3 * width, 0);
+  JSAMPARRAY row = (*jpg.cinfo.mem->alloc_sarray)((j_common_ptr)&jpg.cinfo, JPOOL_IMAGE,
+                                                  (JDIMENSION)(3 * width), 1);
   const uint8_t *buf;
   while(jpg.cinfo.next_scanline < jpg.cinfo.image_height)
   {
-    JSAMPROW tmp[1];
     buf = in + jpg.cinfo.next_scanline * jpg.cinfo.image_width * 4;
     for(int i = 0; i < width; i++)
-      for(int k = 0; k < 3; k++) row[3 * i + k] = buf[4 * i + k];
-    tmp[0] = row;
-    jpeg_write_scanlines(&(jpg.cinfo), tmp, 1);
+      for(int k = 0; k < 3; k++) row[0][3 * i + k] = buf[4 * i + k];
+    jpeg_write_scanlines(&(jpg.cinfo), row, 1);
   }
   jpeg_finish_compress(&(jpg.cinfo));
-  dt_pixelpipe_cache_free_align(row);
   jpeg_destroy_compress(&(jpg.cinfo));
   return sizeof(uint8_t) * 4 * width * height - jpg.dest.free_in_buffer;
 }
@@ -444,7 +442,7 @@ static boolean read_icc_profile(j_decompress_ptr dinfo, JOCTET **icc_data_ptr, u
 
   for(seq_no = 1; seq_no <= MAX_SEQ_NO; seq_no++) marker_present[seq_no] = 0;
 
-  for(marker = dinfo->marker_list; marker != NULL; marker = marker->next)
+  for(marker = dinfo->marker_list; !IS_NULL_PTR(marker); marker = marker->next)
   {
     if(marker_is_icc(marker))
     {
@@ -480,7 +478,7 @@ static boolean read_icc_profile(j_decompress_ptr dinfo, JOCTET **icc_data_ptr, u
   icc_data = (JOCTET *)g_malloc(total_length * sizeof(JOCTET));
 
   /* and fill it in */
-  for(marker = dinfo->marker_list; marker != NULL; marker = marker->next)
+  for(marker = dinfo->marker_list; !IS_NULL_PTR(marker); marker = marker->next)
   {
     if(marker_is_icc(marker))
     {
@@ -526,7 +524,7 @@ int dt_imageio_jpeg_write_with_icc_profile(const char *filename, const uint8_t *
   }
   jpeg_create_compress(&(jpg.cinfo));
   FILE *f = g_fopen(filename, "wb");
-  if(!f) return 1;
+  if(IS_NULL_PTR(f)) return 1;
   jpeg_stdio_dest(&(jpg.cinfo), f);
 
   jpg.cinfo.image_width = width;
@@ -558,19 +556,17 @@ int dt_imageio_jpeg_write_with_icc_profile(const char *filename, const uint8_t *
 
   if(exif && exif_len > 0 && exif_len < 65534) jpeg_write_marker(&(jpg.cinfo), JPEG_APP0 + 1, exif, exif_len);
 
-  uint8_t *row = dt_pixelpipe_cache_alloc_align_cache(sizeof(uint8_t) * 3 * width, 0);
+  JSAMPARRAY row = (*jpg.cinfo.mem->alloc_sarray)((j_common_ptr)&jpg.cinfo, JPOOL_IMAGE,
+                                                  (JDIMENSION)(3 * width), 1);
   const uint8_t *buf;
   while(jpg.cinfo.next_scanline < jpg.cinfo.image_height)
   {
-    JSAMPROW tmp[1];
     buf = in + jpg.cinfo.next_scanline * jpg.cinfo.image_width * 4;
     for(int i = 0; i < width; i++)
-      for(int k = 0; k < 3; k++) row[3 * i + k] = buf[4 * i + k];
-    tmp[0] = row;
-    jpeg_write_scanlines(&(jpg.cinfo), tmp, 1);
+      for(int k = 0; k < 3; k++) row[0][3 * i + k] = buf[4 * i + k];
+    jpeg_write_scanlines(&(jpg.cinfo), row, 1);
   }
   jpeg_finish_compress(&(jpg.cinfo));
-  dt_pixelpipe_cache_free_align(row);
   jpeg_destroy_compress(&(jpg.cinfo));
   fclose(f);
   return 0;
@@ -585,7 +581,7 @@ int dt_imageio_jpeg_write(const char *filename, const uint8_t *in, const int wid
 int dt_imageio_jpeg_read_header(const char *filename, dt_imageio_jpeg_t *jpg)
 {
   jpg->f = g_fopen(filename, "rb");
-  if(!jpg->f) return 1;
+  if(IS_NULL_PTR(jpg->f)) return 1;
 
   struct dt_imageio_jpeg_error_mgr jerr;
   jpg->dinfo.err = jpeg_std_error(&jerr.pub);
@@ -734,7 +730,7 @@ int dt_imageio_jpeg_read_profile(dt_imageio_jpeg_t *jpg, uint8_t **out)
 
 dt_colorspaces_color_profile_type_t dt_imageio_jpeg_read_color_space(dt_imageio_jpeg_t *jpg)
 {
-  for(jpeg_saved_marker_ptr marker = jpg->dinfo.marker_list; marker != NULL; marker = marker->next)
+  for(jpeg_saved_marker_ptr marker = jpg->dinfo.marker_list; !IS_NULL_PTR(marker); marker = marker->next)
   {
     if(marker->marker == EXIF_MARKER && marker->data_length > 6)
       return dt_exif_get_color_space(marker->data + 6, marker->data_length - 6);
@@ -758,17 +754,18 @@ dt_imageio_retval_t dt_imageio_open_jpeg(dt_image_t *img, const char *filename, 
   img->width = jpg.width;
   img->height = jpg.height;
 
-  img->buf_dsc.channels = 4;
-  img->buf_dsc.datatype = TYPE_FLOAT;
-  img->buf_dsc.cst = IOP_CS_RGB; // jpeg is always RGB
-  img->buf_dsc.filters = 0u;
+  img->dsc.channels = 4;
+  img->dsc.datatype = TYPE_FLOAT;
+  img->dsc.bpp = 4 * sizeof(float);
+  img->dsc.cst = IOP_CS_RGB; // jpeg is always RGB
+  img->dsc.filters = 0u;
   img->flags &= ~DT_IMAGE_RAW;
   img->flags &= ~DT_IMAGE_S_RAW;
   img->flags &= ~DT_IMAGE_HDR;
   img->flags |= DT_IMAGE_LDR;
   img->loader = LOADER_JPEG;
 
-  if(!mbuf)
+  if(IS_NULL_PTR(mbuf))
   {
     jpeg_destroy_decompress(&(jpg.dinfo));
     fclose(jpg.f);
@@ -785,7 +782,7 @@ dt_imageio_retval_t dt_imageio_open_jpeg(dt_image_t *img, const char *filename, 
   }
 
   void *buf = dt_mipmap_cache_alloc(mbuf, img);
-  if(!buf)
+  if(IS_NULL_PTR(buf))
   {
     dt_pixelpipe_cache_free_align(tmp);
     return DT_IMAGEIO_CACHE_FULL;

@@ -378,7 +378,7 @@ int flags()
   return IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_DEPRECATED;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -431,16 +431,15 @@ void init_presets(dt_iop_module_so_t *self)
   dt_database_release_transaction(darktable.db);
 }
 
-static float exposure_increment(float stops, int e, float fusion, float bias)
+static inline __attribute__((always_inline)) float exposure_increment(float stops, int e, float fusion, float bias)
 {
   float offset = stops * fusion * (bias - 1.0f) / 2.0f;
   return powf(2.0f, stops * e + offset);
 }
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_basecurve_data_t *const d = (dt_iop_basecurve_data_t *)piece->data;
 
   if(d->exposure_fusion)
@@ -466,6 +465,7 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
 }
 
 // See comments of opencl version in data/kernels/basecurve.cl for description of the meaning of "legacy"
+__DT_CLONE_TARGETS__
 static inline void apply_legacy_curve(
     const float *const in,
     float *const out,
@@ -476,12 +476,7 @@ static inline void apply_legacy_curve(
     const float *const unbounded_coeffs)
 {
   const size_t npixels = (size_t)width * height;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(npixels) \
-  dt_omp_sharedconst(in, out, mul, table, unbounded_coeffs) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < 4*npixels; k += 4)
   {
     for(int i = 0; i < 3; i++)
@@ -498,6 +493,7 @@ static inline void apply_legacy_curve(
 }
 
 // See description of the equivalent OpenCL function in data/kernels/basecurve.cl
+__DT_CLONE_TARGETS__
 static inline void apply_curve(
     const float *const in,
     float *const out,
@@ -510,12 +506,7 @@ static inline void apply_curve(
     const dt_iop_order_iccprofile_info_t *const work_profile)
 {
   const size_t npixels = (size_t)width * height;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(npixels, preserve_colors, work_profile) \
-  dt_omp_sharedconst(in, out, mul, table, unbounded_coeffs) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < 4*npixels; k += 4)
   {
     float ratio = 1.f;
@@ -537,6 +528,7 @@ static inline void apply_curve(
   }
 }
 
+__DT_CLONE_TARGETS__
 static inline void compute_features(
     float *const col,
     const int wd,
@@ -547,11 +539,7 @@ static inline void compute_features(
   // 2) saturation
   // 3) local contrast (handled in laplacian form later)
   const size_t npixels = (size_t)wd * ht;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(col, npixels) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t x = 0; x < 4*npixels; x += 4)
   {
     const float max = MAX(col[x], MAX(col[x+1], col[x+2]));
@@ -568,6 +556,7 @@ static inline void compute_features(
   }
 }
 
+__DT_CLONE_TARGETS__
 static inline int gauss_blur(
     const float *const input,
     float *const output,
@@ -576,15 +565,10 @@ static inline int gauss_blur(
 {
   const float w[5] = { 1.f / 16.f, 4.f / 16.f, 6.f / 16.f, 4.f / 16.f, 1.f / 16.f };
   float *tmp = dt_pixelpipe_cache_alloc_align_float_cache((size_t)4 * wd * ht, 0);
-  if(tmp == NULL) return 1;
+  if(IS_NULL_PTR(tmp)) return 1;
 
   memset(tmp, 0, sizeof(float) * 4 * wd * ht);
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ht, input, w, wd) \
-  shared(tmp) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int j=0;j<ht;j++)
   { // horizontal pass
     // left borders
@@ -601,12 +585,7 @@ static inline int gauss_blur(
         tmp[4*(j*wd+i)+c] += input[4*(j*wd+MIN(i+ii, wd-(i+ii-wd+1) ))+c] * w[ii+2];
   }
   memset(output, 0, sizeof(float) * 4 * wd * ht);
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ht, output, w, wd) \
-  shared(tmp) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int i=0;i<wd;i++)
   { // vertical pass
     for(int j=0;j<2;j++) for(int c=0;c<4;c++)
@@ -623,6 +602,7 @@ static inline int gauss_blur(
   return 0;
 }
 
+__DT_CLONE_TARGETS__
 static inline int gauss_expand(
     const float *const input, // coarse input
     float *const fine,        // upsampled, blurry output
@@ -632,12 +612,7 @@ static inline int gauss_expand(
   const size_t cw = (wd-1)/2+1;
   // fill numbers in even pixels, zero odd ones
   memset(fine, 0, sizeof(float) * 4 * wd * ht);
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(cw, fine, ht, input, wd) \
-  schedule(static) \
-  collapse(2)
-#endif
+  __OMP_PARALLEL_FOR__(collapse(2))
   for(int j=0;j<ht;j+=2)
     for(int i=0;i<wd;i+=2)
       for(int c=0;c<4;c++)
@@ -663,7 +638,7 @@ static inline int gauss_reduce(
   const size_t cw = (wd-1)/2+1, ch = (ht-1)/2+1;
 
   float *blurred = dt_pixelpipe_cache_alloc_align_float_cache((size_t)4 * wd * ht, 0);
-  if(blurred == NULL) return 1;
+  if(IS_NULL_PTR(blurred)) return 1;
 
   if(gauss_blur(input, blurred, wd, ht))
   {
@@ -674,7 +649,7 @@ static inline int gauss_reduce(
     for(int c=0;c<4;c++) coarse[4*(j*cw+i)+c] = blurred[4*(2*j*wd+2*i)+c];
   dt_pixelpipe_cache_free_align(blurred);
 
-  if(detail)
+  if(!IS_NULL_PTR(detail))
   {
     // compute laplacian/details: expand coarse buffer into detail
     // buffer subtract expanded buffer from input in place
@@ -685,7 +660,8 @@ static inline int gauss_reduce(
   return 0;
 }
 
-int process_fusion(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+__DT_CLONE_TARGETS__
+int process_fusion(struct dt_iop_module_t *self, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
                    void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   const float *const in = (const float *)ivoid;
@@ -699,7 +675,7 @@ int process_fusion(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, 
   int num_levels = 8;
   float **col = calloc(num_levels, sizeof(float *));
   float **comb = calloc(num_levels, sizeof(float *));
-  if(col == NULL || comb == NULL)
+  if(IS_NULL_PTR(col) || IS_NULL_PTR(comb))
   {
     err = 1;
     goto error;
@@ -756,12 +732,7 @@ int process_fusion(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, 
       err = 1;
       goto error;
     }
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(ht, out, wd) \
-    shared(col) \
-    schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(size_t k = 0; k < 4ul * wd * ht; k += 4)
       col[0][k + 3] *= .1f + sqrtf(out[k] * out[k] + out[k + 1] * out[k + 1] + out[k + 2] * out[k + 2]);
 
@@ -806,12 +777,7 @@ int process_fusion(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, 
           goto error;
         }
       }
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-      dt_omp_firstprivate(out) \
-      shared(col, comb, w, h, num_levels, k) \
-      schedule(static)
-#endif
+      __OMP_PARALLEL_FOR__()
       for(size_t x = 0; x < (size_t)4 * h * w; x += 4)
       {
         // blend images into output pyramid
@@ -847,9 +813,7 @@ int process_fusion(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, 
     }
 
     // normalise both gaussian base and laplacians:
-#ifdef _OPENMP
-#pragma omp parallel for default(none) shared(comb, w, h, k) schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(size_t i = 0; i < (size_t)4 * w * h; i += 4)
       if(comb[k][i + 3] > 1e-8f)
         for(int c = 0; c < 3; c++) comb[k][i + c] /= comb[k][i + 3];
@@ -861,12 +825,7 @@ int process_fusion(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, 
         err = 1;
         goto error;
       }
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-      dt_omp_firstprivate(out, w, h, k) \
-      shared(comb) \
-      schedule(static)
-#endif
+      __OMP_PARALLEL_FOR__()
       for(size_t x = 0; x < (size_t)4 * h * w; x += 4)
         {
         for(int c = 0; c < 3; c++)
@@ -876,12 +835,7 @@ int process_fusion(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, 
   }
 #endif
   // copy output buffer
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(col, in, ht, out, wd) \
-  shared(comb) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < (size_t)4 * wd * ht; k += 4)
   {
     out[k + 0] = fmaxf(comb[0][k + 0], 0.f);
@@ -902,12 +856,12 @@ error:;
   return err;
 }
 
-void process_lut(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+void process_lut(struct dt_iop_module_t *self, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
                  void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   const float *const in = (const float *)ivoid;
   float *const out = (float *)ovoid;
-  //const int ch = piece->colors; <-- it appears someone was trying to make this handle monochrome data,
+  //const int ch = piece->dsc_in.channels; <-- it appears someone was trying to make this handle monochrome data,
   //however the for loops only handled RGBA - FIXME, determine what possible data formats and channel
   //configurations we might encounter here and handle those too
   dt_iop_basecurve_data_t *const d = (dt_iop_basecurve_data_t *)(piece->data);
@@ -924,9 +878,11 @@ void process_lut(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, co
 }
 
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_basecurve_data_t *const d = (dt_iop_basecurve_data_t *)(piece->data);
 
   // are we doing exposure fusion?

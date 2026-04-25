@@ -67,7 +67,8 @@ typedef enum dtgtk_cairo_paint_flags_t
   CPF_ACTIVE = 1 << 11,
   CPF_PRELIGHT = 1 << 12,
   CPF_FOCUS = 1 << 13,
-  CPF_SPECIAL_FLAG = 1 << 14, // this needs to be the last one. also update shift in dtgtk_cairo_paint_alignment
+  CPF_ALTER = 1 << 14, // used to indicate an altered state for the icon
+  CPF_SPECIAL_FLAG = 1 << 15, // this needs to be the last one. also update shift in dtgtk_cairo_paint_alignment
 } dtgtk_cairo_paint_flags_t;
 
 
@@ -255,6 +256,8 @@ void dtgtk_cairo_paint_luv(cairo_t *cr, gint x, gint y, gint w, gint h, gint fla
 void dtgtk_cairo_paint_jzazbz(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data);
 /** paint RYB icon */
 void dtgtk_cairo_paint_ryb(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data);
+/** paint flowchart icon */
+void dtgtk_cairo_paint_flowchart(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data);
 
 /** paint active modulegroup icon */
 void dtgtk_cairo_paint_modulegroup_active(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data);
@@ -281,7 +284,7 @@ void dtgtk_cairo_paint_modulegroup_technical(cairo_t *cr, gint x, gint y, gint w
 void dtgtk_cairo_paint_map_pin(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data);
 
 /** Paint an eye icon for masks */
-void dtgtk_cairo_paint_masks_eye(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data);
+void dtgtk_cairo_paint_masks_edit(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data);
 /** Paint a circle icon for masks */
 void dtgtk_cairo_paint_masks_circle(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data);
 /** Paint an ellipse icon for masks */
@@ -289,7 +292,7 @@ void dtgtk_cairo_paint_masks_ellipse(cairo_t *cr, gint x, gint y, gint w, gint h
 /** Paint a gradient icon for masks */
 void dtgtk_cairo_paint_masks_gradient(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data);
 /** Paint a path icon for masks */
-void dtgtk_cairo_paint_masks_path(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data);
+void dtgtk_cairo_paint_masks_polygon(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data);
 
 // FLO
 
@@ -370,6 +373,14 @@ void dtgtk_cairo_paint_pin(cairo_t *cr, gint x, gint y, gint w, gint h, gint fla
 /** Paint a chained link icon for shapes */
 void dtgtk_cairo_paint_link_chain(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data);
 
+
+/** Paint button for Liquify */
+void dtgtk_liquify_cairo_paint_node_tool(cairo_t *cr, const gint x, const gint y, const gint w, const gint h,
+                                            const gint flags, void *data);
+void dtgtk_liquify_cairo_paint_line_tool(cairo_t *cr, const gint x, const gint y, const gint w, const gint h,
+                                            const gint flags, void *data);
+void dtgtk_liquify_cairo_paint_curve_tool(cairo_t *cr, const gint x, const gint y, const gint w, const gint h,
+                                             const gint flags, void *data);
 
 #ifdef __cplusplus
 }

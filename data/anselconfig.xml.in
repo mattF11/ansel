@@ -157,6 +157,13 @@
     <shortdescription>CPU cores</shortdescription>
     <longdescription>Number of CPU cores to use for image processing, including virtual cores (hyperthreading). -1 or 0 uses all available/detected cores.</longdescription>
   </dtconfig>
+  <dtconfig prefs="processing">
+    <name>cpu_fp_mode</name>
+    <type min="0">int</type>
+    <default>1</default>
+    <shortdescription>Floating Point mode</shortdescription>
+    <longdescription>Enable fast floating-point arithmetic. 0 = system default, 1 = fast, 2 = strict (IEEE compliant). This flushes denormals to 0.</longdescription>
+  </dtconfig>
   <dtconfig prefs="processing" section="cpugpu" restart="true">
     <name>worker_threads</name>
     <type min="2">int</type>
@@ -1858,19 +1865,6 @@
     <shortdescription/>
     <longdescription/>
   </dtconfig>
-  <dtconfig>
-    <name>plugins/imageio/format/xcf/bpp</name>
-    <type>
-      <enum>
-        <option>8</option>
-        <option>16</option>
-        <option>32</option>
-      </enum>
-    </type>
-    <default>32</default>
-    <shortdescription>XCF bit depth (bpp)</shortdescription>
-    <longdescription/>
-  </dtconfig>
   <dtconfig prefs="security" section="other">
     <name>plugins/pwstorage/pwstorage_backend</name>
     <type>
@@ -1907,9 +1901,9 @@
     <longdescription>if non-negative, this overrides the per-image output color profile rendering intent on export.</longdescription>
   </dtconfig>
   <dtconfig>
-    <name>plugins/darkroom/groups</name>
+    <name>plugins/darkroom/moduletab</name>
     <type>int</type>
-    <default>2</default>
+    <default>1</default>
     <shortdescription/>
     <longdescription/>
   </dtconfig>
@@ -2337,20 +2331,6 @@
     <default>4</default>
     <shortdescription>maximum number of full-res images to load in memory</shortdescription>
     <longdescription>if more images are display in expose mode, zooming will be deactivated</longdescription>
-  </dtconfig>
-  <dtconfig>
-    <name>codepaths/sse2</name>
-    <type>bool</type>
-    <default>true</default>
-    <shortdescription>enable usage of SSE2-optimized codepaths</shortdescription>
-    <longdescription></longdescription>
-  </dtconfig>
-  <dtconfig>
-    <name>codepaths/openmp_simd</name>
-    <type>bool</type>
-    <default>false</default>
-    <shortdescription>enable usage of OpenMP SIMD codepaths. if enabled, and such codepath exists, it will have the highest priority</shortdescription>
-    <longdescription></longdescription>
   </dtconfig>
   <dtconfig>
     <name>allow_lab_output</name>

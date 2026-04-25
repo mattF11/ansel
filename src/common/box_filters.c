@@ -33,15 +33,8 @@
 #include "common/math.h"
 #include "develop/imageop.h"
 #include "develop/imageop_math.h"
-#if defined(__SSE__)
-#include <xmmintrin.h>
-#endif
 
-#ifdef __GNUC__
-#pragma GCC optimize ("finite-math-only")
-#endif
-
-#if defined(__SSE__)
+#if defined(__x86_64__) || defined(__i386__)
 #define DT_PREFETCH(addr) _mm_prefetch(addr, _MM_HINT_T2)
 #define PREFETCH_NTA(addr) _mm_prefetch(addr, _MM_HINT_NTA)
 #elif defined(__GNUC__) && __GNUC__ > 7
@@ -52,15 +45,11 @@
 #define PREFETCH_NTA(addr)
 #endif
 
+__DT_CLONE_TARGETS__
 static void blur_horizontal_1ch(float *const restrict buf, const int height, const int width, const int radius,
                                 float *const restrict scanlines, const size_t padded_size)
 {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(radius, height, width, padded_size) \
-  dt_omp_sharedconst(buf, scanlines) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int y = 0; y < height; y++)
   {
     float L = 0;
@@ -115,15 +104,11 @@ static void blur_horizontal_1ch(float *const restrict buf, const int height, con
   return;
 }
 
+__DT_CLONE_TARGETS__
 static void blur_horizontal_2ch(float *const restrict buf, const int height, const int width, const int radius,
                                 float *const restrict scanlines, const size_t padded_size)
 {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(radius, height, width, padded_size)   \
-  dt_omp_sharedconst(buf, scanlines) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int y = 0; y < height; y++)
   {
     float *const restrict scanline = dt_get_perthread(scanlines, padded_size);
@@ -190,7 +175,7 @@ static void blur_horizontal_2ch(float *const restrict buf, const int height, con
 // Put the to-be-vectorized loop into a function by itself to nudge the compiler into actually vectorizing...
 // With optimization enabled, this gets inlined and interleaved with other instructions as though it had been
 // written in place, so we get a net win from better vectorization.
-static void load_add_4wide(float *const restrict out, dt_aligned_pixel_t accum, const float *const restrict values)
+static inline __attribute__((always_inline)) void load_add_4wide(float *const restrict out, dt_aligned_pixel_t accum, const float *const restrict values)
 {
   for_four_channels(c,aligned(accum, out))
   {
@@ -200,7 +185,7 @@ static void load_add_4wide(float *const restrict out, dt_aligned_pixel_t accum, 
   }
 }
 
-static void sub_4wide(float *const restrict accum, const dt_aligned_pixel_t values)
+static inline __attribute__((always_inline)) void sub_4wide(float *const restrict accum, const dt_aligned_pixel_t values)
 {
   for_four_channels(c,aligned(accum))
     accum[c] -= values[c];
@@ -209,7 +194,7 @@ static void sub_4wide(float *const restrict accum, const dt_aligned_pixel_t valu
 // Put the to-be-vectorized loop into a function by itself to nudge the compiler into actually vectorizing...
 // With optimization enabled, this gets inlined and interleaved with other instructions as though it had been
 // written in place, so we get a net win from better vectorization.
-static void load_add_4wide_Kahan(float *const restrict out, dt_aligned_pixel_t accum,
+static inline __attribute__((always_inline)) void load_add_4wide_Kahan(float *const restrict out, dt_aligned_pixel_t accum,
                                  const float *const restrict values, float *const restrict comp)
 {
   for_four_channels(c,aligned(accum, comp, out))
@@ -224,7 +209,7 @@ static void load_add_4wide_Kahan(float *const restrict out, dt_aligned_pixel_t a
   }
 }
 
-static void sub_4wide_Kahan(float *const restrict accum, const dt_aligned_pixel_t values,
+static inline __attribute__((always_inline)) void sub_4wide_Kahan(float *const restrict accum, const dt_aligned_pixel_t values,
                             float *const restrict comp)
 {
   for_four_channels(c,aligned(accum,comp,values))
@@ -237,27 +222,25 @@ static void sub_4wide_Kahan(float *const restrict accum, const dt_aligned_pixel_
   }
 }
 
-static void store_scaled_4wide(float *const restrict out, const dt_aligned_pixel_t in, const float scale)
+static inline __attribute__((always_inline)) void store_scaled_4wide(float *const restrict out, const dt_aligned_pixel_t in, const float scale)
 {
   for_four_channels(c,aligned(in))
     out[c] = in[c] / scale;
 }
 
+__DT_CLONE_TARGETS__
 static void sub_16wide(float *const restrict accum, const float *const restrict values)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(accum : 64) aligned(values : 16)
-#endif
+  __OMP_SIMD__(aligned(accum : 64) aligned(values : 16))
   for(size_t c = 0; c < 16; c++)
     accum[c] -= values[c];
 }
 
 // copy 16 floats from a possibly-unaligned buffer into aligned temporary space, and also add to accumulator
+__DT_CLONE_TARGETS__
 static void load_add_16wide(float *const restrict out, float *const restrict accum, const float *const restrict in)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(accum, out : 64)
-#endif
+  __OMP_SIMD__(aligned(accum, out : 64))
   for (size_t c = 0; c < 16; c++)
   {
     const float v = in[c];
@@ -266,12 +249,11 @@ static void load_add_16wide(float *const restrict out, float *const restrict acc
   }
 }
 
+__DT_CLONE_TARGETS__
 static void sub_16wide_Kahan(float *const restrict accum, const float *const restrict values,
                              float *const restrict comp)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(accum,comp : 64) aligned(values : 16)
-#endif
+  __OMP_SIMD__(aligned(accum,comp : 64) aligned(values : 16))
   for(size_t c = 0; c < 16; c++)
   {
     const float v = -values[c];
@@ -284,12 +266,11 @@ static void sub_16wide_Kahan(float *const restrict accum, const float *const res
 }
 
 // copy 16 floats from a possibly-unaligned buffer into aligned temporary space, and also add to accumulator
+__DT_CLONE_TARGETS__
 static void load_add_16wide_Kahan(float *const restrict out, float *const restrict accum,
                                   const float *const restrict in, float *const restrict comp)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(accum, comp, out : 64)
-#endif
+  __OMP_SIMD__(aligned(accum, comp, out : 64))
   for (size_t c = 0; c < 16; c++)
   {
     const float v = in[c];
@@ -303,30 +284,27 @@ static void load_add_16wide_Kahan(float *const restrict out, float *const restri
 }
 
 // copy 16 floats from aligned temporary space back to the possibly-unaligned user buffer
+__DT_CLONE_TARGETS__
 static void store_16wide(float *const restrict out, const float *const restrict in)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(in : 64)
-#endif
+  __OMP_SIMD__(aligned(in : 64))
   for (size_t c = 0; c < 16; c++)
     out[c] = in[c];
 }
 
+__DT_CLONE_TARGETS__
 static void store_scaled_16wide(float *const restrict out, const float *const restrict in, const float scale)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(in : 64)
-#endif
+  __OMP_SIMD__(aligned(in : 64))
   for(size_t c = 0; c < 16; c++)
     out[c] = in[c] / scale;
 }
 
+__DT_CLONE_TARGETS__
 static void sub_Nwide_Kahan(const size_t N, float *const restrict accum, const float *const restrict values,
                             float *const restrict comp)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(accum,comp : 64)
-#endif
+  __OMP_SIMD__(aligned(accum,comp : 64))
   for(size_t c = 0; c < N; c++)
   {
     const float v = -values[c];
@@ -339,12 +317,11 @@ static void sub_Nwide_Kahan(const size_t N, float *const restrict accum, const f
 }
 
 // copy N (<=16) floats from a possibly-unaligned buffer into aligned temporary space, and also add to accumulator
+__DT_CLONE_TARGETS__
 static void load_add_Nwide_Kahan(const size_t N, float *const restrict out, float *const restrict accum,
                                  const float *const restrict in, float *const restrict comp)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(accum, comp : 64)
-#endif
+  __OMP_SIMD__(aligned(accum, comp : 64))
   for (size_t c = 0; c < N; c++)
   {
     const float v = in[c];
@@ -357,26 +334,21 @@ static void load_add_Nwide_Kahan(const size_t N, float *const restrict out, floa
   }
 }
 
+__DT_CLONE_TARGETS__
 static void store_scaled_Nwide(const size_t N, float *const restrict out, const float *const restrict in,
                                const float scale)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(in : 64)
-#endif
+  __OMP_SIMD__(aligned(in : 64))
   for(size_t c = 0; c < N; c++)
     out[c] = in[c] / scale;
 }
 
 
+__DT_CLONE_TARGETS__
 static void blur_horizontal_4ch(float *const restrict buf, const size_t height, const size_t width, const size_t radius,
                                 float *const restrict scanlines, const size_t padded_size)
 {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(radius, height, width, padded_size) \
-  dt_omp_sharedconst(buf, scanlines) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int y = 0; y < height; y++)
   {
     float *const restrict scratch = dt_get_perthread(scanlines,padded_size);
@@ -429,6 +401,7 @@ static void blur_horizontal_4ch(float *const restrict buf, const size_t height, 
 }
 
 // invoked inside an OpenMP parallel for, so no need to parallelize
+__DT_CLONE_TARGETS__
 static void blur_horizontal_4ch_Kahan(float *const restrict buf, const size_t width,
                                       const size_t radius, float *const restrict scratch)
 {
@@ -477,6 +450,7 @@ static void blur_horizontal_4ch_Kahan(float *const restrict buf, const size_t wi
 }
 
 // invoked inside an OpenMP parallel for, so no need to parallelize
+__DT_CLONE_TARGETS__
 static void blur_horizontal_Nch_Kahan(const size_t N, float *const restrict buf, const size_t width,
                                       const size_t radius, float *const restrict scratch)
 {
@@ -527,147 +501,8 @@ static void blur_horizontal_Nch_Kahan(const size_t N, float *const restrict buf,
   return;
 }
 
-#ifdef __SSE2__
-static void blur_vertical_1ch_sse(float *const restrict buf, const int height, const int width, const int radius,
-                                  __m128 *const restrict scratch)
-{
-  size_t mask = 1;
-  for(size_t r = (2*radius+1); r > 1 ; r >>= 1) mask = (mask << 1) | 1;
-
-  __m128 L = { 0, 0, 0, 0 };
-  __m128 hits = { 0, 0, 0, 0 };
-  const __m128 one = { 1.0f, 1.0f, 1.0f, 1.0f };
-  // add up the top half of the window
-  for (size_t y = 0; y < MIN(radius, height); y++)
-  {
-    PREFETCH_NTA(buf + (y+16)*width);
-    hits += one;
-    const __m128 v = _mm_loadu_ps(buf + y*width); // use unaligned load since width is not necessarily a multiple of 4
-    L += v;
-    scratch[y&mask] = v;
-  }
-  // process the blur up to the point where we start removing values
-  size_t y;
-  for (y = 0; y <= radius && y + radius < height; y++)
-  {
-    const size_t np = y + radius;
-    hits += one;
-    PREFETCH_NTA(buf + (np+16)*width);
-    const __m128 v = _mm_loadu_ps(buf+np*width);
-    L += v;
-    scratch[np&mask] = v;
-    // store the final result back into user buffer
-    _mm_storeu_ps(buf + y*width, L / hits);
-  }
-  // if radius > height/2, we have pixels for which we can neither add new values (y+radius >= height) nor
-  //  remove old values (y-radius < 0)
-  for(; y <= radius && y < height; y++)
-  {
-    _mm_storeu_ps(buf + y*width, L / hits);
-  }
-  // process the blur for the bulk of the column
-  for ( ; y + radius < height; y++)
-  {
-    const size_t np = y + radius;
-    const size_t op = y - radius - 1;
-    PREFETCH_NTA(buf + (np+16)*width);
-    const __m128 v = _mm_loadu_ps(buf + np*width);
-    L -= scratch[op&mask];
-    L += v;
-    scratch[np&mask] = v;
-    // store the final result back into user buffer
-    _mm_storeu_ps(buf + y*width, L / hits);
-  }
-  // process the blur for the end of the scan line, where we don't have any more values to add to the mean
-  for ( ; y < height; y++)
-  {
-    const size_t op = y - radius - 1;
-    hits -= one;
-    L -= scratch[op&mask];
-    // store the final result back into user buffer
-    _mm_storeu_ps(buf + y*width, L / hits);
-  }
-  return;
-}
-#endif /* __SSE2__ */
-
-#ifdef __SSE2__
-static void blur_vertical_4ch_sse(float *const restrict buf, const size_t height, const size_t width,
-                                  const size_t radius, __m128 *const restrict scratch)
-{
-  size_t mask = 1;
-  for(size_t r = (2*radius+1); r > 1 ; r >>= 1) mask = (mask << 1) | 1;
-
-  __m128 L[4] = { _mm_set1_ps(0), _mm_set1_ps(0), _mm_set1_ps(0), _mm_set1_ps(0) };
-  __m128 hits = { 0.0f, 0.0f, 0.0f, 0.0f };
-  const __m128 one = { 1.0f, 1.0f, 1.0f, 1.0f };
-  // add up the top half of the window
-  for (size_t y = 0; y < MIN(radius, height); y++)
-  {
-    PREFETCH_NTA(buf + (y+16)*width);
-    hits += one;
-    for (size_t c = 0; c < 4; c++)
-    {
-      const __m128 v = _mm_loadu_ps(buf + y*width + 4*c); // use unaligned load since width may not be a multiple of 4
-      L[c] += v;
-      scratch[4*(y&mask)+c] = v;
-    }
-  }
-  // process the blur up to the point where we start removing values
-  size_t y;
-  for (y = 0; y <= radius && y + radius < height; y++)
-  {
-    const size_t np = y + radius;
-    hits += one;
-    PREFETCH_NTA(buf + (np+16)*width);
-    for (size_t c = 0; c < 4; c++)
-    {
-      const __m128 v = _mm_loadu_ps(buf + np*width + 4*c);
-      L[c] += v;
-      scratch[4*(np&mask)+c] = v;
-      _mm_storeu_ps(buf + y*width + 4*c, L[c] / hits);
-    }
-  }
-  // if radius > height/2, we have pixels for which we can neither add new values (y+radius >= height) nor
-  //  remove old values (y-radius < 0)
-  for(; y <= radius && y < height; y++)
-  {
-    for (size_t c = 0; c < 4; c++)
-      _mm_storeu_ps(buf + y*width + 4*c, L[c] / hits);
-  }
-  // process the blur for the bulk of the scan line
-  for ( ; y + radius < height; y++)
-  {
-    const size_t np = y + radius;
-    const size_t op = y - radius - 1;
-    PREFETCH_NTA(buf + (np+32)*width);
-    for (size_t c = 0; c < 4; c++)
-    {
-      const __m128 v = _mm_loadu_ps(buf + np*width + 4*c);
-      L[c] -= scratch[4*(op&mask) + c];
-      L[c] += v;
-      scratch[4*(np&mask)+c] = v;
-      // store the final result while this line is still in cache
-      _mm_storeu_ps(buf + y*width + 4*c, L[c] / hits);
-    }
-  }
-  // process the blur for the end of the scan line, where we don't have any more values to add to the mean
-  for ( ; y < height; y++)
-  {
-    const size_t op = y - radius - 1;
-    hits -= one;
-    for (size_t c = 0; c < 4; c++)
-    {
-      L[c] -= scratch[4*(op&mask) + c];
-      // store the final result
-      _mm_storeu_ps(buf + y*width + 4*c, L[c] / hits);
-    }
-  }
-  return;
-}
-#endif /* __SSE2__ */
-
 // invoked inside an OpenMP parallel for, so no need to parallelize
+__DT_CLONE_TARGETS__
 static void blur_vertical_1wide(float *const restrict buf, const size_t height, const size_t width,
                                 const size_t radius, float *const restrict scratch)
 {
@@ -735,6 +570,7 @@ static void blur_vertical_1wide(float *const restrict buf, const size_t height, 
 }
 
 // invoked inside an OpenMP parallel for, so no need to parallelize
+__DT_CLONE_TARGETS__
 static void blur_vertical_1wide_Kahan(float *const restrict buf, const size_t height, const size_t width,
                                       const size_t radius, float *const restrict scratch)
 {
@@ -803,17 +639,10 @@ static void blur_vertical_1wide_Kahan(float *const restrict buf, const size_t he
 }
 
 // invoked inside an OpenMP parallel for, so no need to parallelize
+__DT_CLONE_TARGETS__
 static void blur_vertical_4wide(float *const restrict buf, const size_t height, const size_t width, const size_t radius,
                                 float *const restrict scratch)
 {
-#ifdef __SSE2__
-  if (darktable.codepath.SSE2)
-  {
-    blur_vertical_1ch_sse(buf, height, width, radius, (__m128*)scratch);
-    return;
-  }
-#endif /* __SSE2__ */
-
   // To improve cache hit rates, we copy the final result from the scratch space back to the original
   // location in the buffer as soon as we finish the final read of the buffer.  To reduce the working
   // set and further improve cache hits, we can treat the scratch space as a circular buffer and cycle
@@ -870,6 +699,7 @@ static void blur_vertical_4wide(float *const restrict buf, const size_t height, 
 }
 
 // invoked inside an OpenMP parallel for, so no need to parallelize
+__DT_CLONE_TARGETS__
 static void blur_vertical_4wide_Kahan(float *const restrict buf, const size_t height, const size_t width,
                                       const size_t radius, float *const restrict scratch)
 {
@@ -930,17 +760,10 @@ static void blur_vertical_4wide_Kahan(float *const restrict buf, const size_t he
 }
 
 // invoked inside an OpenMP parallel for, so no need to parallelize
+__DT_CLONE_TARGETS__
 static void blur_vertical_16wide(float *const restrict buf, const size_t height, const size_t width,
                                  const size_t radius, float *const restrict scratch)
 {
-#ifdef __SSE2__
-  if (darktable.codepath.SSE2)
-  {
-    blur_vertical_4ch_sse(buf, height, width, radius, (__m128*)scratch);
-    return;
-  }
-#endif /* __SSE2__ */
-
   // To improve cache hit rates, we copy the final result from the scratch space back to the original
   // location in the buffer as soon as we finish the final read of the buffer.  To reduce the working
   // set and further improve cache hits, we can treat the scratch space as a circular buffer and cycle
@@ -999,6 +822,7 @@ static void blur_vertical_16wide(float *const restrict buf, const size_t height,
 }
 
 // invoked inside an OpenMP parallel for, so no need to parallelize
+__DT_CLONE_TARGETS__
 static void blur_vertical_16wide_Kahan(float *const restrict buf, const size_t height, const size_t width,
                                        const size_t radius, float *const restrict scratch)
 {
@@ -1060,16 +884,11 @@ static void blur_vertical_16wide_Kahan(float *const restrict buf, const size_t h
   return;
 }
 
+__DT_CLONE_TARGETS__
 static void blur_vertical_1ch(float *const restrict buf, const size_t height, const size_t width, const size_t radius,
                               float *const restrict scanlines, const size_t padded_size)
 {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(radius, height, width, padded_size) \
-  shared(darktable) \
-  dt_omp_sharedconst(buf, scanlines) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int x = 0; x < width; x += 16)
   {
     float *const restrict scratch = dt_get_perthread(scanlines,padded_size);
@@ -1092,6 +911,7 @@ static void blur_vertical_1ch(float *const restrict buf, const size_t height, co
 
 // determine the size of the scratch buffer needed for vertical passes of the box-mean filter
 // filter_window = 2**ceil(lg2(2*radius+1))
+__DT_CLONE_TARGETS__
 static size_t _compute_effective_height(const size_t height, const size_t radius)
 {
   size_t eff_height = 2;
@@ -1100,6 +920,7 @@ static size_t _compute_effective_height(const size_t height, const size_t radius
   return eff_height;
 }
 
+__DT_CLONE_TARGETS__
 static int dt_box_mean_1ch(float *const buf, const size_t height, const size_t width, const size_t radius,
                            const unsigned iterations)
 {
@@ -1110,7 +931,7 @@ static int dt_box_mean_1ch(float *const buf, const size_t height, const size_t w
   const size_t size = MAX(width,16*eff_height);
   size_t padded_size;
   float *const restrict scanlines = dt_pixelpipe_cache_alloc_perthread_float(size, &padded_size);
-  if(scanlines == NULL) return 1;
+  if(IS_NULL_PTR(scanlines)) return 1;
 
   for(unsigned iteration = 0; iteration < iterations; iteration++)
   {
@@ -1122,6 +943,7 @@ static int dt_box_mean_1ch(float *const buf, const size_t height, const size_t w
   return 0;
 }
 
+__DT_CLONE_TARGETS__
 static int dt_box_mean_4ch(float *const buf, const int height, const int width, const int radius,
                            const unsigned iterations)
 {
@@ -1132,7 +954,7 @@ static int dt_box_mean_4ch(float *const buf, const int height, const int width, 
   const size_t size = MAX(4*width,16*eff_height);
   size_t padded_size;
   float *const restrict scanlines = dt_pixelpipe_cache_alloc_perthread_float(size, &padded_size);
-  if(scanlines == NULL) return 1;
+  if(IS_NULL_PTR(scanlines)) return 1;
 
   for(unsigned iteration = 0; iteration < iterations; iteration++)
   {
@@ -1145,19 +967,14 @@ static int dt_box_mean_4ch(float *const buf, const int height, const int width, 
   return 0;
 }
 
+__DT_CLONE_TARGETS__
 static int box_mean_vert_1ch_Kahan(float *const buf, const int height, const size_t width, const size_t radius)
 {
   const size_t eff_height = _compute_effective_height(height,radius);
   size_t padded_size;
   float *const restrict scratch_buf = dt_pixelpipe_cache_alloc_perthread_float(16*eff_height,&padded_size);
-  if(scratch_buf == NULL) return 1;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(width, height, radius, padded_size) \
-  dt_omp_sharedconst(buf, scratch_buf) \
-  schedule(static)
-#endif
+  if(IS_NULL_PTR(scratch_buf)) return 1;
+  __OMP_PARALLEL_FOR__()
   for (size_t col = 0; col < width; col += 16)
   {
     float *const restrict scratch = dt_get_perthread(scratch_buf,padded_size);
@@ -1180,6 +997,7 @@ static int box_mean_vert_1ch_Kahan(float *const buf, const int height, const siz
   return 0;
 }
 
+__DT_CLONE_TARGETS__
 static int dt_box_mean_4ch_Kahan(float *const buf, const size_t height, const size_t width, const int radius,
                                  const unsigned iterations)
 {
@@ -1188,14 +1006,8 @@ static int dt_box_mean_4ch_Kahan(float *const buf, const size_t height, const si
   {
     size_t padded_size;
     float *const restrict scanlines = dt_pixelpipe_cache_alloc_perthread_float(4*width,&padded_size);
-    if(scanlines == NULL) return 1;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(width, height, radius, padded_size) \
-  dt_omp_sharedconst(buf, scanlines) \
-  schedule(static)
-#endif
+    if(IS_NULL_PTR(scanlines)) return 1;
+    __OMP_PARALLEL_FOR__()
     for (size_t row = 0; row < height; row++)
     {
       float *const restrict scratch = dt_get_perthread(scanlines,padded_size);
@@ -1221,7 +1033,7 @@ static inline int box_mean_2ch(float *const restrict in, const size_t height, co
   const size_t Ndim = MAX(4*width,16*eff_height);
   size_t padded_size;
   float *const restrict temp = dt_pixelpipe_cache_alloc_perthread_float(Ndim, &padded_size);
-  if (temp == NULL) return 1;
+  if (IS_NULL_PTR(temp)) return 1;
 
   for (unsigned iteration = 0; iteration < iterations; iteration++)
   {
@@ -1263,10 +1075,10 @@ int dt_box_mean_horizontal(float *const restrict buf, const size_t width, const 
   {
     float *const restrict scratch = user_scratch ? user_scratch
                                                  : dt_pixelpipe_cache_alloc_align_float_cache(4 * width, 0);
-    if(scratch == NULL) return 1;
+    if(IS_NULL_PTR(scratch)) return 1;
 
     blur_horizontal_4ch_Kahan(buf, width, radius, scratch);
-    if (!user_scratch)
+    if (IS_NULL_PTR(user_scratch))
       dt_pixelpipe_cache_free_align(scratch);
     return 0;
   }
@@ -1274,10 +1086,10 @@ int dt_box_mean_horizontal(float *const restrict buf, const size_t width, const 
   {
     float *const restrict scratch = user_scratch ? user_scratch
                                                  : dt_pixelpipe_cache_alloc_align_float_cache(9 * width, 0);
-    if(scratch == NULL) return 1;
+    if(IS_NULL_PTR(scratch)) return 1;
 
     blur_horizontal_Nch_Kahan(9, buf, width, radius, scratch);
-    if (!user_scratch)
+    if (IS_NULL_PTR(user_scratch))
       dt_pixelpipe_cache_free_align(scratch);
     return 0;
   }
@@ -1301,9 +1113,7 @@ int dt_box_mean_vertical(float *const buf, const size_t height, const size_t wid
 static inline float window_max(const float *x, int n)
 {
   float m = -(FLT_MAX);
-#ifdef _OPENMP
-#pragma omp simd reduction(max : m)
-#endif
+  __OMP_SIMD__(reduction(max : m))
   for(int j = 0; j < n; j++)
     m = MAX(m, x[j]);
   return m;
@@ -1331,20 +1141,17 @@ static inline void box_max_1d(int N, const float *const restrict x, float *const
   }
 }
 
+__DT_CLONE_TARGETS__
 static void set_16wide(float *const restrict out, const float value)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(out : 64)
-#endif
+  __OMP_SIMD__(aligned(out : 64))
   for (size_t c = 0; c < 16; c++)
     out[c] = value;
 }
 
 static inline void update_max_16wide(float m[16], const float *const restrict base)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(m, base : 64)
-#endif
+  __OMP_SIMD__(aligned(m, base : 64))
   for (size_t c = 0; c < 16; c++)
   {
     m[c] = fmaxf(m[c], base[c]);
@@ -1353,9 +1160,7 @@ static inline void update_max_16wide(float m[16], const float *const restrict ba
 
 static inline void load_update_max_16wide(float *const restrict out, float m[16], const float *const restrict base)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(out, m : 64)
-#endif
+  __OMP_SIMD__(aligned(out, m : 64))
   for (size_t c = 0; c < 16; c++)
   {
     const float v = base[c];
@@ -1405,32 +1210,22 @@ static inline void box_max_vert_16wide(const int N, float *const restrict scratc
 
 // calculate the two-dimensional moving maximum over a box of size (2*w+1) x (2*w+1)
 // does the calculation in-place if input and output images are identical
+__DT_CLONE_TARGETS__
 static int box_max_1ch(float *const buf, const size_t height, const size_t width, const unsigned w)
 {
   const size_t eff_height = _compute_effective_height(height, w);
   const size_t scratch_size = MAX(width,MAX(height,16*eff_height));
   size_t allocsize;
   float *const restrict scratch_buffers = dt_pixelpipe_cache_alloc_perthread_float(scratch_size,&allocsize);
-  if(scratch_buffers == NULL) return 1;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(w, width, height, buf, allocsize) \
-  dt_omp_sharedconst(scratch_buffers) \
-  schedule(static)
-#endif
+  if(IS_NULL_PTR(scratch_buffers)) return 1;
+  __OMP_PARALLEL_FOR__()
   for(size_t row = 0; row < height; row++)
   {
     float *const restrict scratch = dt_get_perthread(scratch_buffers,allocsize);
     memcpy(scratch, buf + row * width, sizeof(float) * width);
     box_max_1d(width, scratch, buf + row * width, 1, w);
   }
-#ifdef _OPENMP
-#pragma omp parallel for default(none)           \
-  dt_omp_firstprivate(w, width, height, buf, allocsize, eff_height) \
-  dt_omp_sharedconst(scratch_buffers) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int col = 0; col < (width & ~15); col += 16)
   {
     float *const restrict scratch = dt_get_perthread(scratch_buffers,allocsize);
@@ -1463,9 +1258,7 @@ int dt_box_max(float *const buf, const size_t height, const size_t width, const 
 static inline float window_min(const float *x, int n)
 {
   float m = FLT_MAX;
-#ifdef _OPENMP
-#pragma omp simd reduction(min : m)
-#endif
+  __OMP_SIMD__(reduction(min : m))
   for(int j = 0; j < n; j++)
     m = MIN(m, x[j]);
   return m;
@@ -1492,9 +1285,7 @@ static inline void box_min_1d(int N, const float *x, float *y, size_t stride_y, 
 
 static inline void update_min_16wide(float m[16], const float *const restrict base)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(m, base : 64)
-#endif
+  __OMP_SIMD__(aligned(m, base : 64))
   for (size_t c = 0; c < 16; c++)
   {
     m[c] = fminf(m[c], base[c]);
@@ -1503,9 +1294,7 @@ static inline void update_min_16wide(float m[16], const float *const restrict ba
 
 static inline void load_update_min_16wide(float *const restrict out, float m[16], const float *const restrict base)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(out, m : 64)
-#endif
+  __OMP_SIMD__(aligned(out, m : 64))
   for (size_t c = 0; c < 16; c++)
   {
     const float v = base[c];
@@ -1556,32 +1345,22 @@ static inline void box_min_vert_16wide(const int N, float *const restrict scratc
 
 // calculate the two-dimensional moving minimum over a box of size (2*w+1) x (2*w+1)
 // does the calculation in-place if input and output images are identical
+__DT_CLONE_TARGETS__
 static int box_min_1ch(float *const buf, const size_t height, const size_t width, const int w)
 {
   const size_t eff_height = _compute_effective_height(height, w);
   const size_t scratch_size = MAX(width,MAX(height,16*eff_height));
   size_t allocsize;
   float *const restrict scratch_buffers = dt_pixelpipe_cache_alloc_perthread_float(scratch_size,&allocsize);
-  if(scratch_buffers == NULL) return 1;
-  
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(w, width, height, buf, allocsize) \
-  dt_omp_sharedconst(scratch_buffers) \
-  schedule(static)
-#endif
+  if(IS_NULL_PTR(scratch_buffers)) return 1;
+  __OMP_PARALLEL_FOR__()
   for(size_t row = 0; row < height; row++)
   {
     float *const restrict scratch = dt_get_perthread(scratch_buffers,allocsize);
     memcpy(scratch, buf + row * width, sizeof(float) * width);
     box_min_1d(width, scratch, buf + row * width, 1, w);
   }
-#ifdef _OPENMP
-#pragma omp parallel for default(none)           \
-  dt_omp_firstprivate(w, width, height, buf,allocsize, eff_height) \
-  dt_omp_sharedconst(scratch_buffers) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t col = 0; col < (width & ~15); col += 16)
   {
     float *const restrict scratch = dt_get_perthread(scratch_buffers,allocsize);

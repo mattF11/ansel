@@ -32,20 +32,6 @@
 
 #include "common/darktable.h"
 
-#if defined(__SSE__)
-#ifdef __PPC64__
-#ifdef NO_WARN_X86_INTRINSICS
-#include <xmmintrin.h>
-#else
-#define NO_WARN_X86_INTRINSICS 1
-#include <xmmintrin.h>
-#undef NO_WARN_X86_INTRINSICS
-#endif // NO_WARN_X86_INTRINSICS
-#else
-#include <xmmintrin.h>
-#endif // __PPC64__
-#endif
-
 #include "common/darktable.h"
 #include "common/opencl.h"
 
@@ -64,7 +50,7 @@ typedef struct gray_image
 static inline int new_gray_image(gray_image *img, int width, int height)
 {
   img->data = dt_pixelpipe_cache_alloc_align_float_cache(width * height, 0);
-  if(!img->data) return 1;
+  if(IS_NULL_PTR(img->data)) return 1;
   img->width = width;
   img->height = height;
   return 0;

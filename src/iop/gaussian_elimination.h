@@ -160,14 +160,14 @@ static inline int pseudo_solve_gaussian(double *const restrict A,
 
   if(m < n)
   {
-    fprintf(stderr, "pseudo solve: cannot cast %zu \303\227 %zu matrix\n", m, n);
+    fprintf(stderr, "pseudo solve: cannot cast %" G_GSIZE_FORMAT " \303\227 %" G_GSIZE_FORMAT " matrix\n", m, n);
     return 1;
   }
 
   double *const restrict A_square = dt_pixelpipe_cache_alloc_align_cache(n * n * sizeof(double), 0);
   double *const restrict y_square = dt_pixelpipe_cache_alloc_align_cache(n * sizeof(double), 0);
   
-  if(y_square == NULL || A_square == NULL)
+  if(IS_NULL_PTR(y_square) || IS_NULL_PTR(A_square))
   {
     err = 1;
     goto error;

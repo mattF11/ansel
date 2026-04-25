@@ -73,19 +73,76 @@ static inline void _image_cache_stmt_mutex_ensure(void)
 
 static inline uint64_t _image_cache_self_hash(const dt_image_t *img)
 {
-  dt_image_t tmp = *img;
+  struct
+  {
+    dt_image_orientation_t orientation;
+    float exif_exposure;
+    float exif_exposure_bias;
+    float exif_aperture;
+    float exif_iso;
+    float exif_focal_length;
+    float exif_focus_distance;
+    float exif_crop;
+    char exif_maker[64];
+    char exif_model[64];
+    char exif_lens[128];
+    GTimeSpan exif_datetime_taken;
+    char filename[DT_MAX_FILENAME_LEN];
+    int32_t width, height;
+    int32_t crop_x, crop_y, crop_width, crop_height;
+    int32_t flags, film_id, id, group_id, version;
+    uint64_t history_hash;
+    float d65_color_matrix[9];
+    dt_image_colorspace_t colorspace;
+    dt_image_raw_parameters_t legacy_flip;
+    dt_image_geoloc_t geoloc;
+    uint16_t raw_black_level;
+    uint32_t raw_white_point;
+    int color_labels;
+  } persisted = { 0 };
 
-  // These should be constant with regard to self integrity checks
-  // change_timestamp will be auto-updated if the hash changed,
-  // so it's handled out of the scope of what we do here
-  tmp.self_hash = 0;
-  tmp.mipmap_hash = 0;
-  tmp.change_timestamp = 0;
-  tmp.print_timestamp = 0;
-  tmp.import_timestamp = 0;
-  tmp.export_timestamp = 0;
+  /*
+   * Track only the dt_image_t fields that are explicitly written back to the database
+   * from dt_image_cache_write_release(), plus the history hash and color labels that
+   * are flushed through their own SQL paths right below it. Runtime-only fields such
+   * as cached ICC pointers, DNG gain-map lists, loader state or derived path strings
+   * must stay out of this hash, otherwise merely opening an image can look like an
+   * edit and spuriously bump change_timestamp.
+   */
+  persisted.orientation = img->orientation;
+  persisted.exif_exposure = img->exif_exposure;
+  persisted.exif_exposure_bias = img->exif_exposure_bias;
+  persisted.exif_aperture = img->exif_aperture;
+  persisted.exif_iso = img->exif_iso;
+  persisted.exif_focal_length = img->exif_focal_length;
+  persisted.exif_focus_distance = img->exif_focus_distance;
+  persisted.exif_crop = img->exif_crop;
+  memcpy(persisted.exif_maker, img->exif_maker, sizeof(persisted.exif_maker));
+  memcpy(persisted.exif_model, img->exif_model, sizeof(persisted.exif_model));
+  memcpy(persisted.exif_lens, img->exif_lens, sizeof(persisted.exif_lens));
+  persisted.exif_datetime_taken = img->exif_datetime_taken;
+  memcpy(persisted.filename, img->filename, sizeof(persisted.filename));
+  persisted.width = img->width;
+  persisted.height = img->height;
+  persisted.crop_x = img->crop_x;
+  persisted.crop_y = img->crop_y;
+  persisted.crop_width = img->crop_width;
+  persisted.crop_height = img->crop_height;
+  persisted.flags = img->flags;
+  persisted.film_id = img->film_id;
+  persisted.id = img->id;
+  persisted.group_id = img->group_id;
+  persisted.version = img->version;
+  persisted.history_hash = img->history_hash;
+  memcpy(persisted.d65_color_matrix, img->d65_color_matrix, sizeof(persisted.d65_color_matrix));
+  persisted.colorspace = img->colorspace;
+  persisted.legacy_flip = img->legacy_flip;
+  persisted.geoloc = img->geoloc;
+  persisted.raw_black_level = img->raw_black_level;
+  persisted.raw_white_point = img->raw_white_point;
+  persisted.color_labels = img->color_labels;
 
-  return dt_hash(5381, (const char *)&tmp, sizeof(dt_image_t));
+  return dt_hash(5381, (const char *)&persisted, sizeof(persisted));
 }
 
 static inline void _image_cache_lock_init(dt_image_t *img)
@@ -95,7 +152,7 @@ static inline void _image_cache_lock_init(dt_image_t *img)
 
 static void _image_cache_write_history_hash(const dt_image_t *img)
 {
-  if(!img || img->id <= 0) return;
+  if(IS_NULL_PTR(img) || img->id <= 0) return;
 
   _image_cache_stmt_mutex_ensure();
   dt_pthread_mutex_lock(&_image_cache_stmt_mutex);
@@ -123,7 +180,7 @@ static void _image_cache_write_history_hash(const dt_image_t *img)
 
 static sqlite3_stmt *_image_cache_get_stmt(void)
 {
-  if(!_image_cache_load_stmt)
+  if(IS_NULL_PTR(_image_cache_load_stmt))
   {
     // clang-format off
     DT_DEBUG_SQLITE3_PREPARE_V2(
@@ -222,7 +279,7 @@ void dt_image_from_stmt(dt_image_t *img, sqlite3_stmt *stmt)
   
   dt_datetime_gtimespan_to_local(img->datetime, sizeof(img->datetime), img->exif_datetime_taken, FALSE, FALSE);
 
-  // img->buf_dsc are written by imageio drivers : never (re)set them from DB,
+  // img->dsc are written by imageio drivers : never (re)set them from DB,
   // they are not saved anyway.
 
   img->has_localcopy = (img->flags & DT_IMAGE_LOCAL_COPY);
@@ -360,7 +417,7 @@ dt_image_t *dt_image_cache_testget(dt_image_cache_t *cache, const int32_t imgid,
 {
   if(imgid <= 0) return NULL;
   dt_cache_entry_t *entry = dt_cache_testget(&cache->cache, (uint32_t)imgid, mode);
-  if(!entry) return 0;
+  if(IS_NULL_PTR(entry)) return 0;
   ASAN_UNPOISON_MEMORY_REGION(entry->data, sizeof(dt_image_t));
   dt_image_t *img = (dt_image_t *)entry->data;
   img->cache_entry = entry;
@@ -406,12 +463,12 @@ dt_image_t *dt_image_cache_get_reload(dt_image_cache_t *cache, const int32_t img
 
 int dt_image_invalid(const dt_image_t *img)
 {
-  return (img == NULL || img->id <= 0);
+  return (IS_NULL_PTR(img) || img->id <= 0);
 }
 
 int dt_image_cache_seed(dt_image_cache_t *cache, const dt_image_t *img)
 {
-  if(!cache || dt_image_invalid(img)) return -1;
+  if(IS_NULL_PTR(cache) || dt_image_invalid(img)) return -1;
 
   dt_image_t seeded = *img;
 
@@ -450,7 +507,7 @@ void dt_image_cache_connect_info_changed_first(const struct dt_control_signal_t 
 // drops the read lock on an image struct
 void dt_image_cache_read_release(dt_image_cache_t *cache, const dt_image_t *img)
 {
-  if(!img || img->id <= 0) return;
+  if(IS_NULL_PTR(img) || img->id <= 0) return;
   const uint64_t self_hash = _image_cache_self_hash(img);
   if(self_hash != img->self_hash)
     g_error("[image_cache] read lock modified image %d, you need to use a write lock\n", img->id);
@@ -617,7 +674,7 @@ void dt_image_cache_set_export_timestamp(dt_image_cache_t *cache, const int32_t 
 {
   if(imgid <= 0) return;
   dt_image_t *img = dt_image_cache_get(cache, imgid, 'w');
-  if(!img) return;
+  if(IS_NULL_PTR(img)) return;
   img->export_timestamp = dt_datetime_now_to_gtimespan();
   dt_image_cache_write_release(cache, img, DT_IMAGE_CACHE_SAFE);
 }
@@ -626,7 +683,7 @@ void dt_image_cache_set_print_timestamp(dt_image_cache_t *cache, const int32_t i
 {
   if(imgid <= 0) return;
   dt_image_t *img = dt_image_cache_get(cache, imgid, 'w');
-  if(!img) return;
+  if(IS_NULL_PTR(img)) return;
   img->print_timestamp = dt_datetime_now_to_gtimespan();
   dt_image_cache_write_release(cache, img, DT_IMAGE_CACHE_SAFE);
 }

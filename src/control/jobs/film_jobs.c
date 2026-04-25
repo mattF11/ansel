@@ -79,9 +79,9 @@ static void dt_film_import1_cleanup(void *p)
 dt_job_t *dt_film_import1_create(dt_film_t *film)
 {
   dt_job_t *job = dt_control_job_create(&dt_film_import1_run, "cache load raw images for preview");
-  if(!job) return NULL;
+  if(IS_NULL_PTR(job)) return NULL;
   dt_film_import1_t *params = (dt_film_import1_t *)calloc(1, sizeof(dt_film_import1_t));
-  if(!params)
+  if(IS_NULL_PTR(params))
   {
     dt_control_job_dispose(job);
     return NULL;
@@ -115,9 +115,9 @@ static void _pathlist_import_cleanup(void *p)
 dt_job_t *dt_pathlist_import_create(int argc, char *argv[])
 {
   dt_job_t *job = dt_control_job_create(&_pathlist_import_run, "import commandline images");
-  if(!job) return NULL;
+  if(IS_NULL_PTR(job)) return NULL;
   dt_film_import1_t *params = (dt_film_import1_t *)calloc(1, sizeof(dt_film_import1_t));
-  if(!params)
+  if(IS_NULL_PTR(params))
   {
     dt_control_job_dispose(job);
     return NULL;
@@ -144,7 +144,7 @@ dt_job_t *dt_pathlist_import_create(int argc, char *argv[])
         while(TRUE)
         {
           const gchar *fname = g_dir_read_name(cdir);
-          if(!fname) break;  			// no more files in directory
+          if(IS_NULL_PTR(fname)) break;  			// no more files in directory
           if(fname[0] == '.') continue; 	// skip hidden files
           gchar *fullname = g_build_filename(path, fname, NULL);
           if(!g_file_test(fullname, G_FILE_TEST_IS_DIR) && dt_supported_image(fname))
@@ -167,7 +167,7 @@ static GList *_film_recursive_get_files(const gchar *path, gboolean recursive, G
 
   /* let's try open current dir */
   GDir *cdir = g_dir_open(path, 0, NULL);
-  if(!cdir) return *result;
+  if(IS_NULL_PTR(cdir)) return *result;
 
   /* lets read all files in current dir, recurse
      into directories if we should import recursive.
@@ -178,7 +178,7 @@ static GList *_film_recursive_get_files(const gchar *path, gboolean recursive, G
     const gchar *filename = g_dir_read_name(cdir);
 
     /* return if no more files are in current dir */
-    if(!filename) break;
+    if(IS_NULL_PTR(filename)) break;
     if(filename[0] == '.') continue;
 
     /* build full path for filename */
@@ -209,7 +209,7 @@ static GList *_film_recursive_get_files(const gchar *path, gboolean recursive, G
 */
 static void _apply_filmroll_gpx(dt_film_t *cfr)
 {
-  if(cfr && cfr->dir)
+  if(!IS_NULL_PTR(cfr) && cfr->dir)
   {
     g_dir_rewind(cfr->dir);
     const gchar *dfn = NULL;
@@ -245,59 +245,19 @@ static int _film_filename_cmp(gchar *a, gchar *b)
 static void _film_import1(dt_job_t *job, dt_film_t *film, GList *images)
 {
   // first, gather all images to import if not already given
-  if (!images)
+  if (IS_NULL_PTR(images))
   {
     const gboolean recursive = dt_conf_get_bool("ui_last/import_recursive");
 
     images = _film_recursive_get_files(film->dirname, recursive, &images);
-    if(images == NULL)
+    if(IS_NULL_PTR(images))
     {
       dt_control_log(_("no supported images were found to be imported"));
       return;
     }
   }
 
-#ifdef USE_LUA
-  /* pre-sort image list for easier handling in Lua code */
-  images = g_list_sort(images, (GCompareFunc)_film_filename_cmp);
-  int image_count = 1;
-
-  dt_lua_lock();
-  lua_State *L = darktable.lua_state.state;
-  {
-    lua_newtable(L);
-    for(GList *elt = images; elt; elt = g_list_next(elt))
-    {
-      lua_pushstring(L, elt->data);
-      lua_seti(L, -2, image_count);
-      image_count++;
-    }
-  }
-  lua_pushvalue(L, -1);
-  dt_lua_event_trigger(L, "pre-import", 1);
-  {
-    g_list_free_full(images, dt_free_gpointer);
-    // recreate list of images
-    images = NULL;
-    for(int i = 1; i < image_count; i++)
-    {
-      //get entry I from table at index -1.  Push the result on the stack
-      lua_geti(L, -1, i);
-      if(lua_isstring(L, -1)) //images to ignore are set to nil
-      {
-        void *filename = strdup(luaL_checkstring(L, -1));
-        images = g_list_prepend(images, filename);
-      }
-      lua_pop(L, 1);
-    }
-  }
-
-  lua_pop(L, 1); // remove the table again from the stack
-
-  dt_lua_unlock();
-#endif
-
-  if(images == NULL)
+  if(IS_NULL_PTR(images))
   {
     // no error message, lua probably emptied the list on purpose
     return;
@@ -326,7 +286,7 @@ static void _film_import1(dt_job_t *job, dt_film_t *film, GList *images)
     gchar *cdn = g_path_get_dirname((const gchar *)image->data);
 
     /* check if we need to initialize a new filmroll */
-    if(!cfr || g_strcmp0(cfr->dirname, cdn) != 0)
+    if(IS_NULL_PTR(cfr) || g_strcmp0(cfr->dirname, cdn) != 0)
     {
       _apply_filmroll_gpx(cfr);
 
@@ -387,7 +347,7 @@ static void _film_import1(dt_job_t *job, dt_film_t *film, GList *images)
   _apply_filmroll_gpx(cfr);
 
   /* cleanup previously imported filmroll*/
-  if(cfr && cfr != film)
+  if(!IS_NULL_PTR(cfr) && cfr != film)
   {
     dt_film_cleanup(cfr);
     dt_free(cfr);

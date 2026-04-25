@@ -50,7 +50,6 @@
 #include "gui/guides.h"
 #include "gui/presets.h"
 #include "iop/iop_api.h"
-#include "libs/modulegroups.h"
 
 #include <assert.h>
 #include <gdk/gdkkeysyms.h>
@@ -185,7 +184,7 @@ int operation_tags_filter()
   return IOP_TAG_DECORATION;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -206,8 +205,8 @@ static void _params_to_gui(dt_iop_crop_params_t *p, dt_iop_crop_gui_data_t *g)
 
 static void _commit_box(dt_iop_module_t *self, dt_iop_crop_gui_data_t *g, dt_iop_crop_params_t *p)
 {
-  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(self->dev, self->dev->virtual_pipe, self);
-  if(!piece) return;
+  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(darktable.develop->virtual_pipe, self);
+  if(IS_NULL_PTR(piece)) return;
   // we want value in iop space
   const float wd = (float)piece->buf_out.width; //self->dev->roi.preview_width;
   const float ht = (float)piece->buf_out.height; //self->dev->roi.preview_height;
@@ -219,10 +218,10 @@ static void _commit_box(dt_iop_module_t *self, dt_iop_crop_gui_data_t *g, dt_iop
 
   dt_boundingbox_t points = { bbox_left, bbox_top, bbox_right, bbox_bottom };
 
-  if(dt_dev_distort_backtransform_plus(self->dev, self->dev->virtual_pipe, self->iop_order,
+  if(dt_dev_distort_backtransform_plus(darktable.develop->virtual_pipe, self->iop_order,
                                        DT_DEV_TRANSFORM_DIR_FORW_EXCL, points, 2))
   {
-    //dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(self->dev, self->dev->virtual_pipe, self);
+    //dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(self->dev->virtual_pipe, self);
     //if(piece)
     //{
       //fprintf(stderr, "buf_out size: %dx%d\n", piece->buf_out.width, piece->buf_out.height);
@@ -260,22 +259,22 @@ static void _commit_box(dt_iop_module_t *self, dt_iop_crop_gui_data_t *g, dt_iop
  * @param self the current module data
  * @return gboolean TRUE on success, FALSE otherwise 
  */
-static gboolean _set_max_clip(struct dt_iop_module_t *self)
+static gboolean _set_max_clip(dt_dev_pixelpipe_t *pipe, struct dt_iop_module_t *self)
 {
   dt_iop_crop_gui_data_t *g = (dt_iop_crop_gui_data_t *)self->gui_data;
   dt_iop_crop_params_t *p = (dt_iop_crop_params_t *)self->params;
 
   // we want to know the size of the actual buffer
-  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(self->dev, self->dev->virtual_pipe, self);
-  if(!piece) return FALSE;
+  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(pipe, self);
+  if(IS_NULL_PTR(piece)) return FALSE;
 
   float wp = piece->buf_out.width;
   float hp = piece->buf_out.height;
   float points[8] = { 0.0f, 0.0f, wp, hp, p->cx * wp, p->cy * hp, p->cw * wp, p->ch * hp };
-  if(!dt_dev_distort_transform_plus(self->dev, self->dev->virtual_pipe, self->iop_order,
+  if(!dt_dev_distort_transform_plus(pipe, self->iop_order,
                                     DT_DEV_TRANSFORM_DIR_FORW_EXCL, points, 4))
     return FALSE;
-  dt_dev_coordinates_preview_abs_to_image_norm(self->dev, points, 4);
+  dt_dev_coordinates_preview_abs_to_image_norm(pipe->dev, points, 4);
 
   g->clip_max_x = fmaxf(points[0], 0.0f);
   g->clip_max_y = fmaxf(points[1], 0.0f);
@@ -291,8 +290,8 @@ static gboolean _set_max_clip(struct dt_iop_module_t *self)
   return TRUE;
 }
 
-int distort_transform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, float *const restrict points,
-                      size_t points_count)
+int distort_transform(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+                      float *const restrict points, size_t points_count)
 {
   dt_iop_crop_data_t *d = (dt_iop_crop_data_t *)piece->data;
 
@@ -301,11 +300,7 @@ int distort_transform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, floa
 
   // nothing to be done if parameters are set to neutral values (no top/left border)
   if(crop_top == 0 && crop_left == 0) return 1;
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) dt_omp_firstprivate(points, points_count, crop_left, crop_top)        \
-    schedule(static) if(points_count > 100) aligned(points : 64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(if(points_count > 100) aligned(points : 64))
   for(size_t i = 0; i < points_count * 2; i += 2)
   {
     points[i] -= crop_left;
@@ -315,8 +310,8 @@ int distort_transform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, floa
   return 1;
 }
 
-int distort_backtransform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, float *const restrict points,
-                          size_t points_count)
+int distort_backtransform(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+                          float *const restrict points, size_t points_count)
 {
   dt_iop_crop_data_t *d = (dt_iop_crop_data_t *)piece->data;
 
@@ -325,11 +320,7 @@ int distort_backtransform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, 
 
   // nothing to be done if parameters are set to neutral values (no top/left border)
   if(crop_top == 0 && crop_left == 0) return 1;
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) dt_omp_firstprivate(points, points_count, crop_left, crop_top)        \
-    schedule(static) if(points_count > 100) aligned(points : 64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(if(points_count > 100) aligned(points : 64))
   for(size_t i = 0; i < points_count * 2; i += 2)
   {
     points[i] += crop_left;
@@ -339,15 +330,20 @@ int distort_backtransform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, 
   return 1;
 }
 
-void distort_mask(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const float *const in,
-                  float *const out, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+void distort_mask(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe,
+                  struct dt_dev_pixelpipe_iop_t *piece, const float *const in, float *const out,
+                  const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
+  (void)self;
+  (void)pipe;
+  (void)piece;
   dt_iop_copy_image_roi(out, in, 1, roi_in, roi_out, TRUE);
 }
 
 // 1st pass: how large would the output be, given this input roi?
 // this is always called with the full buffer before processing.
-void modify_roi_out(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t *roi_out,
+void modify_roi_out(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe,
+                    struct dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t *roi_out,
                     const dt_iop_roi_t *roi_in)
 {
   *roi_out = *roi_in;
@@ -366,8 +362,8 @@ void modify_roi_out(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t 
 }
 
 // 2nd pass: which roi would this operation need as input to fill the given output region?
-void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t *roi_out,
-                   dt_iop_roi_t *roi_in)
+void modify_roi_in(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe,
+                   struct dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t *roi_out, dt_iop_roi_t *roi_in)
 {
   dt_iop_crop_data_t *d = (dt_iop_crop_data_t *)piece->data;
   *roi_in = *roi_out;
@@ -382,22 +378,24 @@ void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *
   roi_in->y = CLAMP(roi_in->y, 0, (int)floorf(ih));
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_copy_image_roi(ovoid, ivoid, 4, roi_in, roi_out, TRUE);
   return 0;
 }
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   cl_int err = -999;
 
   size_t origin[] = { 0, 0, 0 };
   size_t region[] = { roi_out->width, roi_out->height, 1 };
-  err = dt_opencl_enqueue_copy_image(piece->pipe->devid, dev_in, dev_out, origin, origin, region);
+  err = dt_opencl_enqueue_copy_image(pipe->devid, dev_in, dev_out, origin, origin, region);
   if(err != CL_SUCCESS) goto error;
 
   return TRUE;
@@ -415,7 +413,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   dt_iop_crop_data_t *d = (dt_iop_crop_data_t *)piece->data;
   dt_iop_crop_gui_data_t *g = (dt_iop_crop_gui_data_t *)self->gui_data;
 
-  if(g && g->editing)
+  if(!IS_NULL_PTR(g) && g->editing)
   {
     // In editing mode, we need to see the full uncropped image
     // to setup the frame.
@@ -431,6 +429,15 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
     d->cw = CLAMPF(p->cw, 0.1f, 1.0f);
     d->ch = CLAMPF(p->ch, 0.1f, 1.0f);
   }
+}
+
+gboolean runtime_data_hash(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe,
+                           const dt_dev_pixelpipe_iop_t *piece)
+{
+  (void)self;
+  (void)pipe;
+  (void)piece;
+  return TRUE;
 }
 
 void init_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
@@ -465,8 +472,8 @@ static float _aspect_ratio_get(dt_iop_module_t *self, GtkWidget *combo)
   }
 
   // we want to know the size of the actual buffer
-  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(self->dev, self->dev->virtual_pipe, self);
-  if(!piece) return 0.0f;
+  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(self->dev->virtual_pipe, self);
+  if(IS_NULL_PTR(piece)) return 0.0f;
 
   const int iwd = piece->buf_in.width, iht = piece->buf_in.height;
 
@@ -749,7 +756,7 @@ static void _event_aspect_presets_changed(GtkWidget *combo, dt_iop_module_t *sel
   const char *text = dt_bauhaus_combobox_get_text(combo);
   if(which < 0)
   {
-    if(text)
+    if(!IS_NULL_PTR(text))
     {
       const char *c = text;
       const char *end = text + strlen(text);
@@ -1374,7 +1381,7 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
   float pzy = pzxpy[1];
   cairo_set_line_width(cr, border_width);
 
-  if(_set_max_clip(self))
+  if(_set_max_clip(darktable.develop->virtual_pipe, self))
   {
     cairo_set_source_rgba(cr, .1, .1, .1, .8);
     cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD);
@@ -1486,7 +1493,7 @@ int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressur
 
   const _grab_region_t grab = _gui_get_grab(pzx, pzy, g, border, g->wd, g->ht);
 
-  _set_max_clip(self);
+  _set_max_clip(darktable.develop->virtual_pipe, self);
 
   if(g->dragging)
   {

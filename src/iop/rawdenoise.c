@@ -172,13 +172,22 @@ int default_group()
   return IOP_GROUP_REPAIR;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RAW;
 }
 
+void input_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                  dt_iop_buffer_dsc_t *dsc)
+{
+  default_input_format(self, pipe, piece, dsc);
+  dsc->channels = 1;
+  dt_iop_buffer_dsc_update_bpp(dsc);
+}
+
 #define BIT16 65536.0
 
+__DT_CLONE_TARGETS__
 static void compute_channel_noise(float *const noise, int color, const dt_iop_rawdenoise_data_t *const data)
 {
   // note that these constants are the same for X-Trans and Bayer, as they are proportional to image detail on
@@ -214,12 +223,13 @@ static void compute_channel_noise(float *const noise, int color, const dt_iop_ra
   }
 }
 
+__DT_CLONE_TARGETS__
 static int wavelet_denoise(const float *const restrict in, float *const restrict out, const dt_iop_roi_t *const roi,
                            const dt_iop_rawdenoise_data_t * const data, const uint32_t filters)
 {
   const size_t size = (size_t)(roi->width / 2 + 1) * (roi->height / 2 + 1);
   float *const restrict fimg = dt_pixelpipe_cache_alloc_align_float_cache(size, 0);
-  if (!fimg)
+  if (IS_NULL_PTR(fimg))
     return 1;
 
   const int nc = 4;
@@ -235,12 +245,7 @@ static int wavelet_denoise(const float *const restrict in, float *const restrict
 
     // collect one of the R/G1/G2/B channels into a monochrome image, applying sqrt() to the values as a
     // variance-stabilizing transform
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(in, fimg, roi, halfwidth) \
-    shared(c) \
-    schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(int row = c & 1; row < roi->height; row += 2)
     {
       float *const restrict fimgp = fimg + (size_t)row / 2 * halfwidth;
@@ -260,12 +265,7 @@ static int wavelet_denoise(const float *const restrict in, float *const restrict
 
     // distribute the denoised data back out to the original R/G1/G2/B channel, squaring the resulting values to
     // undo the original transform
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(fimg, halfwidth, out, roi, size) \
-    shared(c) \
-    schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(int row = c & 1; row < roi->height; row += 2)
     {
       const float *const restrict fimgp = fimg + (size_t)row / 2 * halfwidth;
@@ -333,6 +333,7 @@ static inline float vstransform(const float value)
   return sqrtf(MAX(0.0f, value));
 }
 
+__DT_CLONE_TARGETS__
 static int wavelet_denoise_xtrans(const float *const restrict in, float *const restrict out,
                                   const dt_iop_roi_t *const restrict roi,
                                   const dt_iop_rawdenoise_data_t *const data, const uint8_t (*const xtrans)[6])
@@ -343,7 +344,7 @@ static int wavelet_denoise_xtrans(const float *const restrict in, float *const r
   // allocate a buffer for the particular color channel to be denoise; we add two rows to simplify the
   // channel-extraction code (no special case for top/bottom row)
   float *const img = dt_pixelpipe_cache_alloc_align_float_cache((size_t)width * (height+2), 0);
-  if (!img)
+  if (IS_NULL_PTR(img))
   {
     // we ran out of memory, so just pass through the image without denoising
     memcpy(out, in, sizeof(float) * size);
@@ -366,12 +367,7 @@ static int wavelet_denoise_xtrans(const float *const restrict in, float *const r
     }
     const size_t nthreads = darktable.num_openmp_threads; // go direct, darktable.num_openmp_threads always returns numprocs
     const size_t chunksize = (height + nthreads - 1) / nthreads;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(fimg, height, in, roi, size, width, xtrans, nthreads, chunksize) \
-    shared(c) num_threads(nthreads) \
-    schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__(num_threads(nthreads) )
     for(size_t chunk = 0; chunk < nthreads; chunk++)
     {
       const size_t start = chunk * chunksize;
@@ -490,12 +486,7 @@ static int wavelet_denoise_xtrans(const float *const restrict in, float *const r
 
     // distribute the denoised data back out to the original R/G/B channel, squaring the resulting values to
     // undo the original transform
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(height, fimg, roi, width, xtrans, c) \
-    dt_omp_sharedconst(out) \
-    schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(int row = 0; row < height; row++)
     {
       const float *const restrict fimgp = fimg + (size_t)row * width;
@@ -513,19 +504,20 @@ static int wavelet_denoise_xtrans(const float *const restrict in, float *const r
   return 0;
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   const dt_iop_rawdenoise_data_t *const restrict d = (dt_iop_rawdenoise_data_t *)piece->data;
 
   if(!(d->threshold > 0.0f))
   {
-    dt_iop_image_copy_by_size(ovoid, ivoid, roi_in->width, roi_in->height, piece->colors);
+    dt_iop_image_copy_by_size(ovoid, ivoid, roi_in->width, roi_in->height, 1);
   }
   else
   {
-    const uint32_t filters = piece->pipe->dsc.filters;
-    const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->pipe->dsc.xtrans;
+    const uint32_t filters = piece->dsc_in.filters;
+    const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->dsc_in.xtrans;
     if (filters != 9u)
       return wavelet_denoise(ivoid, ovoid, roi_in, d, filters);
     else
@@ -580,7 +572,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *params, dt_dev
     dt_draw_curve_calc_values(d->curve[ch], 0.0, 1.0, DT_IOP_RAWDENOISE_BANDS, NULL, d->force[ch]);
   }
 
-  if (!(dt_image_is_raw(&pipe->image)))
+  if (!(dt_image_is_raw(&pipe->dev->image_storage)))
     piece->enabled = 0;
 }
 

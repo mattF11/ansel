@@ -27,14 +27,7 @@
 #include "common/eigf.h"
 #include "develop/openmp_maths.h"
 
-/* NOTE: this code complies with the optimizations in "common/extra_optimizations.h".
- * Consider including that at the beginning of a *.c file where you use this
- * header (provided the rest of the code complies).
- **/
-
-#ifdef _OPENMP
-#pragma omp declare simd
-#endif
+__OMP_DECLARE_SIMD__()
 static inline float uint8_to_float(const uint8_t i)
 {
   return (float)i / 255.0f;
@@ -50,7 +43,7 @@ int dt_focuspeaking(cairo_t *cr,
   float *const restrict luma_ds = dt_pixelpipe_cache_alloc_align_float_cache((size_t)buf_width * buf_height, 0);
   uint8_t *restrict focus_peaking = NULL;
   int err = 0;
-  if(luma_ds == NULL || luma == NULL)
+  if(IS_NULL_PTR(luma_ds) || IS_NULL_PTR(luma))
   {
     err = 1;
     goto error_early;
@@ -58,11 +51,7 @@ int dt_focuspeaking(cairo_t *cr,
 
   const size_t npixels = (size_t)buf_height * buf_width;
   // Create a luma buffer as the euclidian norm of RGB channels
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none)             \
-  dt_omp_firstprivate(image, luma, npixels)             \
-  schedule(static) aligned(image, luma:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(image, luma:64))
   for(size_t index = 0; index < npixels; index++)
     {
       const size_t index_RGB = index * 4;
@@ -86,12 +75,7 @@ int dt_focuspeaking(cairo_t *cr,
   float mass = 0.f;
   float x_integral = 0.f;
   float y_integral = 0.f;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-dt_omp_firstprivate(luma, luma_ds, buf_height, buf_width) \
-schedule(static) collapse(2) reduction(+:mass, x_integral, y_integral)
-#endif
+  __OMP_PARALLEL_FOR__(collapse(2) reduction(+:mass, x_integral, y_integral))
   for(size_t i = 0; i < buf_height; ++i)
     for(size_t j = 0; j < buf_width; ++j)
     {
@@ -175,18 +159,14 @@ schedule(static) collapse(2) reduction(+:mass, x_integral, y_integral)
   focus_peaking = dt_pixelpipe_cache_alloc_align_cache(
       sizeof(uint8_t) * buf_width * buf_height * 4,
       0);
-  if(focus_peaking == NULL)
+  if(IS_NULL_PTR(focus_peaking))
   {
     err = 1;
     goto error;
   }
 
   // Dilate the mask to improve connectivity
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-dt_omp_firstprivate(luma, luma_ds, buf_height, buf_width) \
-schedule(static) collapse(2)
-#endif
+  __OMP_PARALLEL_FOR__(collapse(2))
   for(size_t i = 0; i < buf_height; ++i)
     for(size_t j = 0; j < buf_width; ++j)
     {
@@ -223,24 +203,14 @@ schedule(static) collapse(2)
 
   // Compute the laplacian mean over the picture
   float TV_sum = 0.0f;
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(luma, buf_height, buf_width) \
-schedule(static) collapse(2) aligned(luma:64) reduction(+:TV_sum)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(collapse(2) aligned(luma:64) reduction(+:TV_sum))
   for(size_t i = 8; i < buf_height - 8; ++i)
     for(size_t j = 8; j < buf_width - 8; ++j)
       TV_sum += luma[i * buf_width + j] / ((float)(buf_height - 16) * (float)(buf_width - 16));
 
   // Compute the standard deviation
   float sigma = 0.0f;
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(focus_peaking, luma, buf_height, buf_width, TV_sum) \
-schedule(static) collapse(2) aligned(focus_peaking, luma:64) reduction(+:sigma)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(collapse(2) aligned(focus_peaking, luma:64) reduction(+:sigma))
   for(size_t i = 8; i < buf_height - 8; ++i)
     for(size_t j = 8; j < buf_width - 8; ++j)
        sigma += sqf(luma[i * buf_width + j] - TV_sum) / ((float)(buf_height - 16) * (float)(buf_width - 16));
@@ -253,11 +223,7 @@ schedule(static) collapse(2) aligned(focus_peaking, luma:64) reduction(+:sigma)
   const float two_sigma = TV_sum + 2.f * sigma;
 
   // Prepare the focus-peaking image overlay
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(focus_peaking, luma, buf_height, buf_width, six_sigma, four_sigma, two_sigma) \
-  schedule(static) collapse(2)
-#endif
+  __OMP_PARALLEL_FOR__(collapse(2))
   for(size_t i = 0; i < buf_height; ++i)
     for(size_t j = 0; j < buf_width; ++j)
     {

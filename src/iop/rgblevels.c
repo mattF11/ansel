@@ -125,7 +125,7 @@ int flags()
   return IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_DEPRECATED;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -142,7 +142,7 @@ const char **description(struct dt_iop_module_t *self)
 static void _turn_select_region_off(struct dt_iop_module_t *self)
 {
   dt_iop_rgblevels_gui_data_t *g = (dt_iop_rgblevels_gui_data_t *)self->gui_data;
-  if(g)
+  if(!IS_NULL_PTR(g))
   {
     g->button_down = g->draw_selected_region = 0;
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_select_region), g->draw_selected_region);
@@ -160,7 +160,7 @@ static void _develop_ui_pipe_finished_callback(gpointer instance, dt_iop_module_
   dt_iop_rgblevels_params_t *p = (dt_iop_rgblevels_params_t *)self->params;
   dt_iop_rgblevels_gui_data_t *g = (dt_iop_rgblevels_gui_data_t *)self->gui_data;
 
-  if(g == NULL) return;
+  if(IS_NULL_PTR(g)) return;
 
   // FIXME: this doesn't seems the right place to update params and GUI ...
   // update auto levels
@@ -191,7 +191,7 @@ static void _develop_ui_pipe_finished_callback(gpointer instance, dt_iop_module_
   }
 }
 
-static void _compute_lut(dt_dev_pixelpipe_iop_t *piece)
+static void _compute_lut(const dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_rgblevels_data_t *d = (dt_iop_rgblevels_data_t *)piece->data;
 
@@ -353,7 +353,7 @@ static gboolean _area_draw_callback(GtkWidget *widget, cairo_t *crf, dt_iop_modu
     if (!is_linear)
       hist_max = logf(1.0 + hist_max);
 
-    if(hist && hist_max > 0.0f)
+    if(!IS_NULL_PTR(hist) && hist_max > 0.0f)
     {
       cairo_push_group_with_content(cr, CAIRO_CONTENT_COLOR);
       cairo_scale(cr, width / 255.0, -(height - DT_PIXEL_APPLY_DPI(5)) / hist_max);
@@ -395,7 +395,7 @@ static void _rgblevels_move_handle(dt_iop_module_t *self, const int handle_move,
 
   if((handle_move < 0) || handle_move > 2) return;
 
-  if(levels == NULL) return;
+  if(IS_NULL_PTR(levels)) return;
 
   // Determining the minimum and maximum bounds for the drag handles
   switch(handle_move)
@@ -645,8 +645,10 @@ static void _color_picker_callback(GtkWidget *button, dt_iop_module_t *self)
   _turn_select_region_off(self);
 }
 
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
+  (void)pipe;
+  (void)piece;
   dt_iop_rgblevels_gui_data_t *c = (dt_iop_rgblevels_gui_data_t *)self->gui_data;
   dt_iop_rgblevels_params_t *p = (dt_iop_rgblevels_params_t *)self->params;
 
@@ -904,23 +906,25 @@ void gui_cleanup(dt_iop_module_t *self)
   IOP_GUI_FREE;
 }
 
-static void _get_selected_area(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+__DT_CLONE_TARGETS__
+static void _get_selected_area(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                               const dt_dev_pixelpipe_iop_t *piece,
                                dt_iop_rgblevels_gui_data_t *g, const dt_iop_roi_t *const roi_in, int *box_out)
 {
   box_out[0] = box_out[1] = box_out[2] = box_out[3] = 0;
 
-  if(g)
+  if(!IS_NULL_PTR(g))
   {
     const int width = roi_in->width;
     const int height = roi_in->height;
     dt_boundingbox_t box_cood = { g->box_cood[0], g->box_cood[1], g->box_cood[2], g->box_cood[3] };
 
-    box_cood[0] *= piece->pipe->iwidth;
-    box_cood[1] *= piece->pipe->iheight;
-    box_cood[2] *= piece->pipe->iwidth;
-    box_cood[3] *= piece->pipe->iheight;
+    box_cood[0] *= pipe->iwidth;
+    box_cood[1] *= pipe->iheight;
+    box_cood[2] *= pipe->iwidth;
+    box_cood[3] *= pipe->iheight;
 
-    dt_dev_distort_transform_plus(self->dev, piece->pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL,
+    dt_dev_distort_transform_plus(pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL,
                                   box_cood, 2);
 
     box_cood[0] *= roi_in->scale;
@@ -960,6 +964,7 @@ static void _get_selected_area(struct dt_iop_module_t *self, dt_dev_pixelpipe_io
   }
 }
 
+__DT_CLONE_TARGETS__
 static void _auto_levels(const float *const img, const int width, const int height, int *box_area,
                            dt_iop_rgblevels_params_t *p, const int _channel, const dt_iop_order_iccprofile_info_t *const work_profile)
 {
@@ -1030,20 +1035,20 @@ static void _auto_levels(const float *const img, const int width, const int heig
   p->levels[channel][1] = (p->levels[channel][2] + p->levels[channel][0]) / 2.f;
 }
 
-int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
-             const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+            const void *const ivoid, void *const ovoid)
 {
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
-                                         ivoid, ovoid, roi_in, roi_out))
-    return 0; // image has been copied through to output and module's trouble flag has been updated
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
 
   const dt_iop_rgblevels_data_t *const d = (dt_iop_rgblevels_data_t *)piece->data;
   dt_iop_rgblevels_params_t *p = (dt_iop_rgblevels_params_t *)&d->params;
   dt_iop_rgblevels_gui_data_t *g = (dt_iop_rgblevels_gui_data_t *)self->gui_data;
-  const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(piece->pipe);
+  const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(pipe);
 
   // process auto levels
-  if(g && dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, roi_out))
+  if(!IS_NULL_PTR(g) && dt_dev_pixelpipe_has_preview_output(self->dev, pipe, roi_out))
   {
     dt_iop_gui_enter_critical_section(self);
     if(g->call_auto_levels == 1 && !darktable.gui->reset)
@@ -1055,7 +1060,7 @@ int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *co
       memcpy(&g->params, p, sizeof(dt_iop_rgblevels_params_t));
 
       int box[4] = { 0 };
-      _get_selected_area(self, piece, g, roi_in, box);
+      _get_selected_area(self, pipe, piece, g, roi_in, box);
       _auto_levels((const float *const)ivoid, roi_in->width, roi_in->height, box, &(g->params), g->channel, work_profile);
 
       dt_iop_gui_enter_critical_section(self);
@@ -1077,11 +1082,7 @@ int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *co
   float *const restrict out = (float*)ovoid;
   if (d->params.autoscale == DT_IOP_RGBLEVELS_INDEPENDENT_CHANNELS || d->params.preserve_colors == DT_RGB_NORM_NONE)
   {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(npixels, in, out, work_profile, d, mult) \
-  schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(int k = 0; k < 4U*npixels; k += 4)
     {
       for(int c = 0; c < 3; c++)
@@ -1113,11 +1114,7 @@ int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *co
     const int ch_levels = 0;
     const float mult_ch = mult[ch_levels];
     const float *const restrict levels = d->params.levels[ch_levels];
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(npixels, in, out, work_profile, d, levels, mult_ch, ch_levels) \
-  schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(int k = 0; k < 4U*npixels; k += 4)
     {
       const float lum = dt_rgb_norm(in+k, d->params.preserve_colors, work_profile);

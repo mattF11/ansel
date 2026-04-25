@@ -60,6 +60,7 @@
 
 #pragma once
 
+
 // just to be sure. the build system should set this for us already:
 #if defined __DragonFly__ || defined __FreeBSD__ || defined __NetBSD__ || defined __OpenBSD__
 #define _WITH_DPRINTF
@@ -82,6 +83,7 @@
 #include "config.h"
 #endif
 #include "common/database.h"
+#include "common/fp_mode.h"
 #include "common/dtpthread.h"
 #include "common/utility.h"
 #ifdef _WIN32
@@ -95,7 +97,6 @@
 #include <glib/gi18n.h>
 #include <inttypes.h>
 #include <json-glib/json-glib.h>
-#include <lua/lua.h>
 #include <math.h>
 #include <sqlite3.h>
 #include <stdio.h>
@@ -215,33 +216,12 @@ typedef unsigned int u_int;
 #include <arm_neon.h>
 #endif
 
-#if defined(__SSE__)
+#if defined(__x86_64__) || defined(__i386__)
 #include <xmmintrin.h> // needed for _mm_stream_ps
 #endif
 
 #ifdef _OPENMP
 # include <omp.h>
-
-/* See https://redmine.darktable.org/issues/12568#note-14 */
-# ifdef HAVE_OMP_FIRSTPRIVATE_WITH_CONST
-   /* If the compiler correctly supports firstprivate, use it. */
-#  define dt_omp_firstprivate(...) firstprivate(__VA_ARGS__)
-# else /* HAVE_OMP_FIRSTPRIVATE_WITH_CONST */
-   /* This is needed for clang < 7.0 */
-#  define dt_omp_firstprivate(...)
-# endif/* HAVE_OMP_FIRSTPRIVATE_WITH_CONST */
-
-#ifndef dt_omp_sharedconst
-#ifdef _OPENMP
-#if defined(__clang__) || __GNUC__ > 8
-# define dt_omp_sharedconst(...) shared(__VA_ARGS__)
-#else
-  // GCC 8.4 throws string of errors "'x' is predetermined 'shared' for 'shared'" if we explicitly declare
-  //  'const' variables as shared
-# define dt_omp_sharedconst(var, ...)
-#endif
-#endif /* _OPENMP */
-#endif /* dt_omp_sharedconst */
 
 #ifndef dt_omp_nontemporal
 // Clang 10+ supports the nontemporal() OpenMP directive
@@ -255,16 +235,58 @@ typedef unsigned int u_int;
 #endif
 #endif /* dt_omp_nontemporal */
 
+#define OMP_PRAGMA(x) _Pragma(#x)
+#define __OMP_PARALLEL__(...) OMP_PRAGMA(omp parallel default(firstprivate) __VA_ARGS__)
+#define __OMP_PARALLEL_FOR__(...) OMP_PRAGMA(omp parallel for default(firstprivate) schedule(static) __VA_ARGS__)
+#define __OMP_PARALLEL_FOR_SIMD__(...) OMP_PRAGMA(omp parallel for simd default(firstprivate) schedule(simd:static) __VA_ARGS__)
+#define __OMP_FOR_SIMD__(...) OMP_PRAGMA(omp for simd schedule(simd:static) __VA_ARGS__)
+#define __OMP_FOR__(...) OMP_PRAGMA(omp for schedule(static) __VA_ARGS__)
+#define __OMP_SIMD__(...) OMP_PRAGMA(omp simd __VA_ARGS__)
+#define __OMP_DECLARE_SIMD__(...) OMP_PRAGMA(omp declare simd __VA_ARGS__)
+
+// CLang 20 supports OpenMP 5.1 default(firstprivate) but only for C files.
+// C++ files still need to use default(none) until further notice.
+// Change that when baseline CLang is upgraded.
+#define __OMP_PARALLEL_FOR_CPP__(...) OMP_PRAGMA(omp parallel for default(none) schedule(static) __VA_ARGS__) 
+
 #else /* _OPENMP */
 
 # define omp_get_max_threads() 1
 # define omp_get_thread_num() 0
+
+#define __OMP_PARALLEL__(...) 
+#define __OMP_PARALLEL_FOR__(...)
+#define __OMP_PARALLEL_FOR_SIMD__(...)
+#define __OMP_FOR_SIMD__(...)
+#define __OMP_FOR__(...)
+#define __OMP_SIMD__(...)
+#define __OMP_DECLARE_SIMD__(...)
+
+#define __OMP_PARALLEL_FOR_CPP__(...)
 
 #endif /* _OPENMP */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * @brief C is way too permissive with `!=`, `==` and `if(var)` checks, which can mean 
+ * too many things depending on what we compare. We force here a semantic NULL check
+ * for pointers types that will fail for anything else than pointers,
+ * and make the code more explicit about what is checked.
+ * This will fail at compile time on function pointers and anything that is not a pointer.
+ * 
+ */
+#define IS_NULL_PTR(p)                                            \
+  ({                                                              \
+    __typeof__(p) _tmp = (p);                                     \
+    (void)sizeof(char[                                            \
+      (__builtin_classify_type(_tmp) == 5) ? 1 : -1               \
+    ]);                                                           \
+    _tmp == NULL;                                                 \
+  })
+
 
 static inline int dt_get_thread_num()
 {
@@ -278,15 +300,69 @@ static inline int dt_get_thread_num()
 /* Create cloned functions for various CPU SSE generations */
 /* See for instructions https://hannes.hauswedell.net/post/2017/12/09/fmv/ */
 /* TL;DR : use only on SIMD functions containing low-level paralellized/vectorized loops */
-#if __has_attribute(target_clones) && !defined(_WIN32) && !defined(__APPLE__) && !defined(NATIVE_ARCH)
-  # if defined(__amd64__) || defined(__amd64) || defined(__x86_64__) || defined(__x86_64)
-    #define __DT_CLONE_TARGETS__ __attribute__((target_clones("default", "sse2", "avx", "avx2")))
-  # elif defined(__PPC64__)
+#if __has_attribute(target_clones) && !defined(_WIN32) && !defined(NATIVE_ARCH) && !defined(_DEBUG)
+
+  /*
+   * Apple note:
+   * - arm64 vs x86_64 is handled by the universal binary, not target_clones.
+   * - target_clones on Apple is only useful within one slice.
+   * - the x86-64-v2/v3/v4 strings are not accepted by all Apple Clang versions.
+   *
+   * Therefore:
+   * - on Apple arm64: disable clones here,
+   * - on Apple x86_64: require explicit opt-in once the toolchain is validated.
+   */
+
+  #if defined(__APPLE__)
+
+    #if defined(__aarch64__) || defined(__arm64__)
+      #define __DT_CLONE_TARGETS__
+
+    #elif defined(__amd64__) || defined(__amd64) || defined(__x86_64__) || defined(__x86_64)
+
+      /*
+       * Enable this from your build system only after verifying that the local
+       * Apple Clang accepts:
+       *   target_clones("default","arch=x86-64","arch=x86-64-v2","arch=x86-64-v3","arch=x86-64-v4")
+       *
+       * Example:
+       *   -DDT_APPLE_X86_TARGET_CLONES=1
+       */
+      #if defined(DT_APPLE_X86_TARGET_CLONES)
+        #define __DT_CLONE_TARGETS__ \
+          __attribute__((target_clones( \
+            "default", \
+            "arch=x86-64", \
+            "arch=x86-64-v2", \
+            "arch=x86-64-v3", \
+            "arch=x86-64-v4" \
+          )))
+      #else
+        #define __DT_CLONE_TARGETS__
+      #endif
+
+    #else
+      #define __DT_CLONE_TARGETS__
+    #endif
+
+  #elif defined(__amd64__) || defined(__amd64) || defined(__x86_64__) || defined(__x86_64)
+    #define __DT_CLONE_TARGETS__ \
+      __attribute__((target_clones( \
+        "default", \
+        "arch=x86-64", \
+        "arch=x86-64-v2", \
+        "arch=x86-64-v3", \
+        "arch=x86-64-v4" \
+      )))
+
+  #elif defined(__PPC64__)
     /* __PPC64__ is the only macro tested for in is_supported_platform.h, other macros would fail there anyway. */
     #define __DT_CLONE_TARGETS__ __attribute__((target_clones("default","cpu=power9")))
-  # else
+
+  #else
     #define __DT_CLONE_TARGETS__
-  # endif
+  #endif
+
 #else
   #define __DT_CLONE_TARGETS__
 #endif
@@ -377,12 +453,12 @@ void dt_pixelpipe_cache_free_align_cache(struct dt_dev_pixelpipe_cache_t *cache,
 #define dt_pixelpipe_cache_free_align(mem) \
   dt_pixelpipe_cache_free_align_cache(darktable.pixelpipe_cache, (void **)&(mem), __FILE__ ":" DT_STRINGIFY(__LINE__));
 
-#define dt_free(ptr)    \
-  do                    \
-  {                     \
-    g_free((void *)(ptr)); \
+#define dt_free(ptr)           \
+  if(!IS_NULL_PTR(ptr))        \
+  {                            \
+    g_free((void *)(ptr));     \
     *(void **)(&(ptr)) = NULL; \
-  } while(0)
+  }
 
 static inline void dt_free_gpointer(gpointer ptr)
 {
@@ -402,12 +478,12 @@ static inline void dt_free_gpointer(gpointer ptr)
   }
 #endif
 
-#define dt_free_align(ptr)  \
-  do                        \
-  {                         \
+#define dt_free_align(ptr)            \
+  if(!IS_NULL_PTR(ptr))               \
+  {                                   \
     dt_free_align_ptr((void *)(ptr)); \
-    *(void **)(&(ptr)) = NULL; \
-  } while(0)
+    *(void **)(&(ptr)) = NULL;        \
+  }
 
 static inline void* dt_calloc_align(size_t size)
 {
@@ -466,7 +542,7 @@ dt_simd_max_zero(const dt_aligned_pixel_simd_t value)
 {
   dt_aligned_pixel_simd_t out = value;
   for(int c = 0; c < 4; c++)
-    out[c] = MAX(value[c], 0.0f);
+    out[c] = (isfinite(value[c])) ? MAX(value[c], 0.0f) : 0.f;
   return out;
 }
 
@@ -521,7 +597,7 @@ dt_store_simd_nontemporal(float *const pixel, const dt_aligned_pixel_simd_t valu
 {
   float *const out = (float *const)__builtin_assume_aligned(pixel, 16);
 
-#if defined(__SSE__)
+#if defined(__x86_64__) || defined(__i386__)
   const union
   {
     dt_aligned_pixel_simd_t simd;
@@ -546,7 +622,11 @@ static inline __attribute__((always_inline)) dt_aligned_pixel_simd_t
 dt_mat3x4_mul_vec4(const dt_aligned_pixel_simd_t in, const dt_aligned_pixel_simd_t row0,
                    const dt_aligned_pixel_simd_t row1, const dt_aligned_pixel_simd_t row2)
 {
-  return row0 * in[0] + row1 * in[1] + row2 * in[2];
+  // Keep the multiply first in each accumulation step so GCC contracts this
+  // into chained FMA instructions in the multiversioned FMA clones too.
+  dt_aligned_pixel_simd_t out = row0 * in[0];
+  out = row1 * in[1] + out;
+  return row2 * in[2] + out;
 }
 
 // To be able to vectorize per-pixel loops, we need to operate on all four channels, but if the compiler does
@@ -610,7 +690,6 @@ static inline void copy_pixel(float *const __restrict__ out, const float *const 
   for_each_channel(k,aligned(in,out:16)) out[k] = in[k];
 }
 
-
 /********************************* */
 
 struct dt_gui_gtk_t;
@@ -637,7 +716,7 @@ typedef enum dt_debug_thread_t
   DT_DEBUG_CONTROL        = 1 <<  1,
   DT_DEBUG_DEV            = 1 <<  2,
   DT_DEBUG_PERF           = 1 <<  4,
-  DT_DEBUG_CAMCTL         = 1 <<  5,
+  DT_DEBUG_PIPECACHE         = 1 <<  5,
   DT_DEBUG_PWSTORAGE      = 1 <<  6,
   DT_DEBUG_OPENCL         = 1 <<  7,
   DT_DEBUG_SQL            = 1 <<  8,
@@ -661,15 +740,9 @@ typedef enum dt_debug_thread_t
   DT_DEBUG_PIPE           = 1 << 26,
   DT_DEBUG_IMPORT         = 1 << 27,
   DT_DEBUG_VERBOSE        = 1 << 28,
-  DT_DEBUG_COLORPROFILE   = 1 << 29
+  DT_DEBUG_COLORPROFILE   = 1 << 29,
+  DT_DEBUG_NOCACHE_REUSE  = 1 << 30,
 } dt_debug_thread_t;
-
-typedef struct dt_codepath_t
-{
-  unsigned int SSE2 : 1;
-  unsigned int _no_intrinsics : 1;
-  unsigned int OPENMP_SIMD : 1; // always stays the last one
-} dt_codepath_t;
 
 typedef struct dt_sys_resources_t
 {
@@ -681,7 +754,6 @@ typedef struct dt_sys_resources_t
 
 typedef struct darktable_t
 {
-  dt_codepath_t codepath;
   int32_t num_openmp_threads;
 
   int32_t unmuted;
@@ -751,7 +823,6 @@ typedef struct darktable_t
   char *configdir;
   char *cachedir;
   char *kerneldir;
-  dt_lua_state_t lua_state;
   GList *guides;
   double start_wtime;
   GList *themes;
@@ -773,7 +844,7 @@ typedef struct
 
 extern darktable_t darktable;
 
-int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load_data, lua_State *L);
+int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load_data);
 void dt_cleanup();
 void dt_print(dt_debug_thread_t thread, const char *msg, ...) __attribute__((format(printf, 2, 3)));
 /* same as above but without time stamp : nts = no time stamp */
@@ -796,9 +867,6 @@ int dt_worker_threads();
 // Get the remaining memory available for pipeline allocations,
 // once we subtracted caches memory and headroom from system memory
 size_t dt_get_available_mem();
-
-// Get the maximum size of allocation of a single image buffer
-size_t dt_get_singlebuffer_mem();
 
 // Get the maximum size for the whole mipmap cache
 size_t dt_get_mipmap_mem();
@@ -929,7 +997,7 @@ static inline void *dt_pixelpipe_cache_alloc_perthread_impl(const size_t n, cons
   *padded_size = DT_CACHELINE_BYTES * cache_lines / objsize;
   const size_t total_bytes = DT_CACHELINE_BYTES * cache_lines * darktable.num_openmp_threads;
   void *buf = dt_pixelpipe_cache_alloc_align_cache_impl(darktable.pixelpipe_cache, total_bytes, 0, message);
-  if(!buf) return NULL;
+  if(IS_NULL_PTR(buf)) return NULL;
   return __builtin_assume_aligned(buf, DT_CACHELINE_BYTES);
 }
 
@@ -941,7 +1009,7 @@ static inline void *dt_pixelpipe_cache_alloc_perthread_impl(const size_t n, cons
 static inline void *dt_pixelpipe_cache_calloc_perthread_impl(const size_t n, const size_t objsize, size_t* padded_size, const char *message)
 {
   void *const buf = (float*)dt_pixelpipe_cache_alloc_perthread_impl(n, objsize, padded_size, message);
-  if(!buf) return NULL;
+  if(IS_NULL_PTR(buf)) return NULL;
   memset(buf, 0, *padded_size * darktable.num_openmp_threads * objsize);
   return buf;
 }
@@ -1003,7 +1071,7 @@ static inline uint64_t dt_hash(uint64_t hash, const char *str, size_t size)
 
 static inline gchar *dt_string_replace(const char *string, const char *to_replace)
 {
-  if(!string || !to_replace) return NULL;
+  if(IS_NULL_PTR(string) || IS_NULL_PTR(to_replace)) return NULL;
   gchar **split = g_strsplit(string, to_replace, -1);
   gchar *text = g_strjoinv("", split);
   g_strfreev(split);
@@ -1025,7 +1093,7 @@ static inline gchar *delete_underscore(const char *s)
  */
 static inline gchar *strip_markup(const char *s)
 {
-  if(!s) return g_strdup("");
+  if(IS_NULL_PTR(s)) return g_strdup("");
 
   PangoAttrList *attrs = NULL;
   gchar *plain = NULL;
@@ -1038,6 +1106,16 @@ static inline gchar *strip_markup(const char *s)
   pango_attr_list_unref(attrs);
   return plain;
 }
+
+/**
+ * @brief Append a constant filename to a variable, stack-based, fixed-sized, directory, 
+ * and add a `/` in-between
+ * 
+ * @param destination 
+ * @param variable 
+ * @param string 
+ */
+void dt_concat_path_file(char destination[PATH_MAX], const char path[PATH_MAX], const char *const file);
 
 #ifdef __cplusplus
 }

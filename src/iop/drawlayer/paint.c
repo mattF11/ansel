@@ -61,7 +61,7 @@ static inline float _paint_voronoi_strip_angle_measure(const float rho, const fl
 /** @brief Resolve dab-to-dab center spacing from radius and distance percentage. */
 static inline float _paint_dab_sample_spacing(const dt_drawlayer_brush_dab_t *dab, const float distance_percent)
 {
-  if(!dab) return 1.0f;
+  if(IS_NULL_PTR(dab)) return 1.0f;
   const float radius = fmaxf(0.5f, dab->radius);
   const float diameter = 2.0f * radius;
   return _lerpf(1.0f, diameter, _clamp01(distance_percent));
@@ -150,7 +150,7 @@ static inline float _paint_stroke_sample_opacity_scale(const dt_drawlayer_brush_
   /* Estimate the fraction of a dab support area covered by one spacing strip.
    * This is used by brush flow logic to normalize per-sample opacity at
    * different sampling distances. */
-  if(!dab || !isfinite(sample_step)) return 1.0f;
+  if(IS_NULL_PTR(dab) || !isfinite(sample_step)) return 1.0f;
   const float support_radius = fmaxf(dab->radius, 0.5f);
   const float overlap_span = 2.0f * support_radius;
   if(sample_step <= 1e-6f || overlap_span <= 1e-6f || sample_step >= overlap_span - 1e-6f) return 1.0f;
@@ -192,19 +192,19 @@ static inline float _paint_stroke_sample_opacity_scale(const dt_drawlayer_brush_
 static gboolean _ensure_raw_inputs(dt_drawlayer_paint_stroke_t *state)
 {
   /* Lazily allocate queue storage so idle modules keep a tiny footprint. */
-  if(!state) return FALSE;
+  if(IS_NULL_PTR(state)) return FALSE;
   if(state->raw_inputs) return TRUE;
   state->raw_inputs = g_array_new(FALSE, FALSE, sizeof(dt_drawlayer_paint_raw_input_t));
-  return state->raw_inputs != NULL;
+  return !IS_NULL_PTR(state->raw_inputs);
 }
 
 /** @brief Lazily allocate pending-dab batch storage for one stroke state. */
 static gboolean _ensure_pending_dabs(dt_drawlayer_paint_stroke_t *state)
 {
-  if(!state) return FALSE;
+  if(IS_NULL_PTR(state)) return FALSE;
   if(state->pending_dabs) return TRUE;
   state->pending_dabs = g_array_new(FALSE, FALSE, sizeof(dt_drawlayer_brush_dab_t));
-  return state->pending_dabs != NULL;
+  return !IS_NULL_PTR(state->pending_dabs);
 }
 
 /** @brief Sample the current raw segment at parametric position `t`. */
@@ -215,7 +215,7 @@ static dt_drawlayer_brush_dab_t _sample_raw_segment_cubic_param(const dt_drawlay
 {
   dt_drawlayer_brush_dab_t window[3] = { 0 };
   int count = 2;
-  if(state && state->have_prev_raw_dab)
+  if(!IS_NULL_PTR(state) && state->have_prev_raw_dab)
   {
     window[0] = state->prev_raw_dab;
     window[1] = *segment_start;
@@ -241,7 +241,7 @@ static void _build_raw_segment_cubic_arclen_lut(const dt_drawlayer_paint_stroke_
 {
   /* Build a short arc-length LUT for cubic interpolation, then sample by
    * distance instead of parameter t to keep spacing uniform at high speed. */
-  if(!cumulative || segments <= 0 || !total_len) return;
+  if(IS_NULL_PTR(cumulative) || segments <= 0 || IS_NULL_PTR(total_len)) return;
   cumulative[0] = 0.0f;
   *total_len = 0.0f;
   dt_drawlayer_brush_dab_t prev = _sample_raw_segment_cubic_param(state, segment_start, segment_end, 0.0f);
@@ -265,7 +265,7 @@ static dt_drawlayer_brush_dab_t _sample_raw_segment_cubic_arclen(const dt_drawla
                                                                  const float total_len)
 {
   /* Invert normalized arc length against the LUT (piecewise linear in t). */
-  if(!cumulative || segments <= 0 || total_len <= 1e-6f)
+  if(IS_NULL_PTR(cumulative) || segments <= 0 || total_len <= 1e-6f)
     return _sample_raw_segment_cubic_param(state, segment_start, segment_end, target_norm);
 
   const float target_len = _clamp01(target_norm) * total_len;
@@ -292,7 +292,7 @@ static void _apply_quadratic_dab_smoothing(dt_drawlayer_paint_stroke_t *state,
                                            const dt_drawlayer_paint_layer_to_widget_cb layer_to_widget,
                                            void *user_data)
 {
-  if(!state || !dab || smoothing_percent <= 0.0f) return;
+  if(IS_NULL_PTR(state) || IS_NULL_PTR(dab) || smoothing_percent <= 0.0f) return;
   if(!state->history || state->history->len < 3) return;
   const float real_x = dab->x;
   const float real_y = dab->y;
@@ -379,7 +379,7 @@ static void _apply_quadratic_dab_smoothing(dt_drawlayer_paint_stroke_t *state,
 static void _emit_dab(dt_drawlayer_paint_stroke_t *state, dt_drawlayer_brush_dab_t *dab)
 {
   /* Emit one dab and keep a full emitted history for smoothing/prediction. */
-  if(!state || !dab || !state->history || !state->pending_dabs) return;
+  if(IS_NULL_PTR(state) || IS_NULL_PTR(dab) || !state->history || IS_NULL_PTR(state->pending_dabs)) return;
   if(state->history && state->history->len > 0)
   {
     const dt_drawlayer_brush_dab_t *prev
@@ -400,7 +400,7 @@ static void _emit_dab(dt_drawlayer_paint_stroke_t *state, dt_drawlayer_brush_dab
 /** @brief Freeze raster-time normalization into one emitted dab record. */
 static inline void _freeze_emitted_dab_raster_state(dt_drawlayer_brush_dab_t *dab, const float sample_spacing)
 {
-  if(!dab) return;
+  if(IS_NULL_PTR(dab)) return;
   dab->sample_spacing = fmaxf(sample_spacing, 1e-6f);
   dab->sample_opacity_scale = _paint_stroke_sample_opacity_scale(dab, dab->sample_spacing);
 }
@@ -412,7 +412,7 @@ static void _enforce_dab_center_spacing(dt_drawlayer_paint_stroke_t *state,
                                         const dt_drawlayer_paint_layer_to_widget_cb layer_to_widget,
                                         void *user_data)
 {
-  if(!state || !dab || !state->history || state->history->len == 0) return;
+  if(IS_NULL_PTR(state) || IS_NULL_PTR(dab) || !state->history || state->history->len == 0) return;
   const dt_drawlayer_brush_dab_t *prev
       = &g_array_index(state->history, dt_drawlayer_brush_dab_t, state->history->len - 1);
 
@@ -458,7 +458,7 @@ static void _paint_reset_path_runtime_state(dt_drawlayer_paint_stroke_t *state)
 {
   /* Reset only per-stroke path generation state.
    * Queue storage and reusable allocations are kept by the owner. */
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
   if(state->history) g_array_set_size(state->history, 0);
   if(state->pending_dabs) g_array_set_size(state->pending_dabs, 0);
   if(state->dab_window) g_array_set_size(state->dab_window, 0);
@@ -476,7 +476,7 @@ static void _paint_reset_path_runtime_state(dt_drawlayer_paint_stroke_t *state)
 void dt_drawlayer_paint_path_state_reset(dt_drawlayer_paint_stroke_t *state)
 {
   /* Full stroke reset: pending raw events + generated path state. */
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
   if(state->raw_inputs) g_array_set_size(state->raw_inputs, 0);
   state->raw_input_cursor = 0;
   _paint_reset_path_runtime_state(state);
@@ -486,7 +486,7 @@ void dt_drawlayer_paint_path_state_reset(dt_drawlayer_paint_stroke_t *state)
 static gboolean _paint_input_starts_new_stroke(const dt_drawlayer_paint_stroke_t *state,
                                                 const dt_drawlayer_paint_raw_input_t *input)
 {
-  if(!state || !input) return FALSE;
+  if(IS_NULL_PTR(state) || IS_NULL_PTR(input)) return FALSE;
   return input->stroke_pos == DT_DRAWLAYER_PAINT_STROKE_FIRST
          || (state->have_last_input_dab && input->stroke_batch != 0u
              && state->last_input_dab.stroke_batch != 0u
@@ -496,7 +496,7 @@ static gboolean _paint_input_starts_new_stroke(const dt_drawlayer_paint_stroke_t
 /** @brief Build deterministic stroke seed from batch/time/coordinates. */
 static uint64_t _paint_make_stroke_seed(const dt_drawlayer_paint_raw_input_t *input)
 {
-  if(!input) return 0u;
+  if(IS_NULL_PTR(input)) return 0u;
   const uint64_t qx = (uint64_t)(int64_t)llrintf((double)input->wx * 256.0);
   const uint64_t qy = (uint64_t)(int64_t)llrintf((double)input->wy * 256.0);
   return ((uint64_t)input->stroke_batch << 32)
@@ -506,12 +506,10 @@ static uint64_t _paint_make_stroke_seed(const dt_drawlayer_paint_raw_input_t *in
 }
 
 /** @brief Optionally emit first sample immediately when stroke starts. */
-static void _emit_first_sample_if_needed(dt_drawlayer_paint_stroke_t *state, const dt_drawlayer_brush_dab_t *dab,
-                                         const dt_drawlayer_paint_callbacks_t *callbacks, void *user_data)
+static void _emit_first_sample_if_needed(dt_drawlayer_paint_stroke_t *state,
+                                         const dt_drawlayer_brush_dab_t *dab)
 {
-  (void)callbacks;
-  (void)user_data;
-  if(!state || !dab || !state->history || !_ensure_pending_dabs(state)) return;
+  if(IS_NULL_PTR(state) || IS_NULL_PTR(dab) || !state->history || !_ensure_pending_dabs(state)) return;
   state->last_input_dab = *dab;
   state->have_last_input_dab = TRUE;
 
@@ -526,13 +524,9 @@ static void _emit_first_sample_if_needed(dt_drawlayer_paint_stroke_t *state, con
  * @brief Finalize stroke by force-emitting the pending first sample if needed.
  * @note Used for very short strokes that collected no middle sample.
  */
-void dt_drawlayer_paint_finalize_path(dt_drawlayer_paint_stroke_t *state,
-                                      const dt_drawlayer_paint_callbacks_t *callbacks,
-                                      void *user_data)
+void dt_drawlayer_paint_finalize_path(dt_drawlayer_paint_stroke_t *state)
 {
-  (void)callbacks;
-  (void)user_data;
-  if(!state || !state->have_last_input_dab || !state->history || !_ensure_pending_dabs(state)) return;
+  if(IS_NULL_PTR(state) || !state->have_last_input_dab || !state->history || !_ensure_pending_dabs(state)) return;
   if(!state->history || state->history->len > 0) return;
 
   dt_drawlayer_brush_dab_t dab = state->last_input_dab;
@@ -544,10 +538,9 @@ void dt_drawlayer_paint_finalize_path(dt_drawlayer_paint_stroke_t *state,
 
 /** @brief Flush deferred initial dab before regular segment emission starts. */
 static void _flush_pending_initial_if_needed(dt_drawlayer_paint_stroke_t *state,
-                                             const dt_drawlayer_brush_dab_t *dab,
-                                             const dt_drawlayer_paint_callbacks_t *callbacks, void *user_data)
+                                             const dt_drawlayer_brush_dab_t *dab)
 {
-  if(!state || !dab || !state->history || state->history->len != 0) return;
+  if(IS_NULL_PTR(state) || IS_NULL_PTR(dab) || !state->history || state->history->len != 0) return;
 
   const float dx = dab->x - state->last_input_dab.x;
   const float dy = dab->y - state->last_input_dab.y;
@@ -558,7 +551,7 @@ static void _flush_pending_initial_if_needed(dt_drawlayer_paint_stroke_t *state,
     state->last_input_dab.dir_y = dy / dir_len;
   }
 
-  dt_drawlayer_paint_finalize_path(state, callbacks, user_data);
+  dt_drawlayer_paint_finalize_path(state);
 }
 
 /**
@@ -575,7 +568,7 @@ static void _paint_process_one_raw_input(dt_drawlayer_paint_stroke_t *state,
    * - update cumulative arc length,
    * - emit uniformly spaced samples using arc-length interpolation,
    * - apply optional smoothing and spacing enforcement. */
-  if(!state || !input || !callbacks || !callbacks->build_dab || !_ensure_pending_dabs(state)) return;
+  if(IS_NULL_PTR(state) || IS_NULL_PTR(input) || IS_NULL_PTR(callbacks) || IS_NULL_PTR(callbacks->build_dab) || !_ensure_pending_dabs(state)) return;
 
   const float distance_percent = _clamp01(input->distance_percent);
   state->distance_percent = distance_percent;
@@ -593,7 +586,7 @@ static void _paint_process_one_raw_input(dt_drawlayer_paint_stroke_t *state,
 
   if(!state->have_last_input_dab)
   {
-    _emit_first_sample_if_needed(state, &dab, callbacks, user_data);
+    _emit_first_sample_if_needed(state, &dab);
     return;
   }
 
@@ -607,7 +600,7 @@ static void _paint_process_one_raw_input(dt_drawlayer_paint_stroke_t *state,
                                       arc_lut, arc_lut_segments, &arc_total);
   const float seg_arc = (arc_total > 1e-6f) ? arc_total : seg_len;
   state->stroke_arc_length += seg_arc;
-  _flush_pending_initial_if_needed(state, &dab, callbacks, user_data);
+  _flush_pending_initial_if_needed(state, &dab);
 
   if(seg_arc > 1e-6f)
   {
@@ -649,7 +642,7 @@ static void _paint_process_one_raw_input(dt_drawlayer_paint_stroke_t *state,
 gboolean dt_drawlayer_paint_queue_raw_input(dt_drawlayer_paint_stroke_t *state,
                                             const dt_drawlayer_paint_raw_input_t *input)
 {
-  if(!state || !input || !_ensure_raw_inputs(state)) return FALSE;
+  if(IS_NULL_PTR(state) || IS_NULL_PTR(input) || !_ensure_raw_inputs(state)) return FALSE;
   g_array_append_val(state->raw_inputs, *input);
   return TRUE;
 }
@@ -657,7 +650,7 @@ gboolean dt_drawlayer_paint_queue_raw_input(dt_drawlayer_paint_stroke_t *state,
 static void _paint_compact_raw_input_queue(dt_drawlayer_paint_stroke_t *state)
 {
   /* FIFO compaction after processing to avoid unbounded queue growth. */
-  if(!state || !state->raw_inputs) return;
+  if(IS_NULL_PTR(state) || IS_NULL_PTR(state->raw_inputs)) return;
   if(state->raw_input_cursor == 0) return;
 
   const guint processed = state->raw_input_cursor;
@@ -675,7 +668,7 @@ void dt_drawlayer_paint_interpolate_path(dt_drawlayer_paint_stroke_t *state,
                                          void *user_data)
 {
   /* Drain all queued raw inputs in FIFO order. No coalescing here. */
-  if(!state || !state->raw_inputs || !callbacks) return;
+  if(IS_NULL_PTR(state) || IS_NULL_PTR(state->raw_inputs) || IS_NULL_PTR(callbacks)) return;
 
   while(state->raw_input_cursor < state->raw_inputs->len)
   {
@@ -688,32 +681,12 @@ void dt_drawlayer_paint_interpolate_path(dt_drawlayer_paint_stroke_t *state,
   _paint_compact_raw_input_queue(state);
 }
 
-gboolean dt_drawlayer_paint_raster_path(const GArray *dabs,
-                                        const float distance_percent,
-                                        dt_drawlayer_cache_patch_t *patch,
-                                        const float scale,
-                                        dt_drawlayer_cache_patch_t *stroke_mask,
-                                        dt_drawlayer_damaged_rect_t *runtime_state,
-                                        dt_drawlayer_paint_stroke_t *runtime_private)
-{
-  if(!dabs || dabs->len == 0 || !runtime_private) return FALSE;
-
-  gboolean wrote = FALSE;
-  for(guint i = 0; i < dabs->len; i++)
-  {
-    const dt_drawlayer_brush_dab_t *dab = &g_array_index(dabs, dt_drawlayer_brush_dab_t, i);
-    wrote |= dt_drawlayer_paint_rasterize_segment_to_buffer(dab, distance_percent, patch, scale, stroke_mask,
-                                                            runtime_state, runtime_private);
-  }
-  return wrote;
-}
-
 static inline void _advance_smudge_pickup_state(dt_drawlayer_paint_stroke_t *state,
                                                 const dt_drawlayer_brush_dab_t *current,
                                                 const dt_drawlayer_brush_dab_t *previous)
 {
   /* Smudge pickup follows stroke motion with a damped response. */
-  if(!state || !current) return;
+  if(IS_NULL_PTR(state) || IS_NULL_PTR(current)) return;
 
   gboolean have_pickup = dt_drawlayer_paint_runtime_have_smudge_pickup(state);
   float pickup_x = 0.0f;
@@ -740,6 +713,7 @@ static inline void _advance_smudge_pickup_state(dt_drawlayer_paint_stroke_t *sta
 
 gboolean dt_drawlayer_paint_rasterize_segment_to_buffer(const dt_drawlayer_brush_dab_t *dab,
                                                         const float distance_percent,
+                                                        const dt_drawlayer_cache_patch_t *sample_patch,
                                                         dt_drawlayer_cache_patch_t *patch,
                                                         const float scale,
                                                         dt_drawlayer_cache_patch_t *stroke_mask,
@@ -748,7 +722,7 @@ gboolean dt_drawlayer_paint_rasterize_segment_to_buffer(const dt_drawlayer_brush
 {
   /* Backend helper for raster path replay:
    * keep a tiny dab window, compute spacing normalization, rasterize one sample. */
-  if(!dab || !runtime_private || !runtime_private->dab_window) return FALSE;
+  if(IS_NULL_PTR(dab) || !runtime_private || !runtime_private->dab_window) return FALSE;
 
   GArray *const history = runtime_private->dab_window;
   if(dab->stroke_pos == DT_DRAWLAYER_PAINT_STROKE_FIRST) g_array_set_size(history, 0);
@@ -772,11 +746,11 @@ gboolean dt_drawlayer_paint_rasterize_segment_to_buffer(const dt_drawlayer_brush
   if(count == 1 && runtime_private)
     dt_drawlayer_paint_runtime_set_smudge_pickup(runtime_private, 0.0f, 0.0f, FALSE);
 
-  if(runtime_private)
+  if(!IS_NULL_PTR(runtime_private))
   {
     if(dab->mode == DT_DRAWLAYER_BRUSH_MODE_SMUDGE)
     {
-      if(previous_sample) _advance_smudge_pickup_state(runtime_private, sample, previous_sample);
+      if(!IS_NULL_PTR(previous_sample)) _advance_smudge_pickup_state(runtime_private, sample, previous_sample);
     }
     else
       dt_drawlayer_paint_runtime_set_smudge_pickup(runtime_private, 0.0f, 0.0f, FALSE);
@@ -784,14 +758,15 @@ gboolean dt_drawlayer_paint_rasterize_segment_to_buffer(const dt_drawlayer_brush
 
   const double t0 = dt_get_wtime();
   const gboolean rasterized
-      = dt_drawlayer_brush_rasterize(patch, scale, sample, sample_opacity_scale, stroke_mask, runtime_private);
+      = dt_drawlayer_brush_rasterize(sample_patch, patch, scale, sample, sample_opacity_scale, stroke_mask,
+                                     runtime_private);
   const double t1 = dt_get_wtime();
-  if(rasterized && runtime_state && runtime_private && runtime_private->bounds.valid)
+  if(rasterized && !IS_NULL_PTR(runtime_state) && !IS_NULL_PTR(runtime_private) && runtime_private->bounds.valid)
     dt_drawlayer_paint_runtime_note_dab_damage(runtime_state, &runtime_private->bounds);
 
   if(darktable.unmuted & DT_DEBUG_VERBOSE)
   {
-    if(runtime_private && runtime_private->bounds.valid)
+    if(!IS_NULL_PTR(runtime_private) && runtime_private->bounds.valid)
     {
       const int bounds_w = runtime_private->bounds.se[0] - runtime_private->bounds.nw[0];
       const int bounds_h = runtime_private->bounds.se[1] - runtime_private->bounds.nw[1];
@@ -813,20 +788,20 @@ gboolean dt_drawlayer_paint_rasterize_segment_to_buffer(const dt_drawlayer_brush
 dt_drawlayer_damaged_rect_t *dt_drawlayer_paint_runtime_state_create(void)
 {
   dt_drawlayer_damaged_rect_t *state = g_malloc0(sizeof(*state));
-  if(!state) return NULL;
+  if(IS_NULL_PTR(state)) return NULL;
   dt_drawlayer_paint_runtime_state_reset(state);
   return state;
 }
 
 void dt_drawlayer_paint_runtime_state_destroy(dt_drawlayer_damaged_rect_t **state)
 {
-  if(!state || !*state) return;
+  if(IS_NULL_PTR(state) || !*state) return;
   dt_free(*state);
 }
 
 void dt_drawlayer_paint_runtime_state_reset(dt_drawlayer_damaged_rect_t *state)
 {
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
   state->valid = FALSE;
   state->nw[0] = 0;
   state->nw[1] = 0;
@@ -837,14 +812,14 @@ void dt_drawlayer_paint_runtime_state_reset(dt_drawlayer_damaged_rect_t *state)
 dt_drawlayer_paint_stroke_t *dt_drawlayer_paint_runtime_private_create(void)
 {
   dt_drawlayer_paint_stroke_t *state = g_malloc0(sizeof(*state));
-  if(!state) return NULL;
+  if(IS_NULL_PTR(state)) return NULL;
   dt_drawlayer_paint_runtime_private_reset(state);
   return state;
 }
 
 void dt_drawlayer_paint_runtime_private_destroy(dt_drawlayer_paint_stroke_t **state)
 {
-  if(!state || !*state) return;
+  if(IS_NULL_PTR(state) || !*state) return;
   if((*state)->raw_inputs) g_array_free((*state)->raw_inputs, TRUE);
   dt_free((*state)->smudge_pixels);
   dt_free(*state);
@@ -853,7 +828,7 @@ void dt_drawlayer_paint_runtime_private_destroy(dt_drawlayer_paint_stroke_t **st
 void dt_drawlayer_paint_runtime_private_reset(dt_drawlayer_paint_stroke_t *state)
 {
   /* Reset per-stroke transient payload while preserving reusable allocations. */
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
   state->smudge_pickup_x = 0.0f;
   state->smudge_pickup_y = 0.0f;
   state->have_smudge_pickup = FALSE;
@@ -863,7 +838,7 @@ void dt_drawlayer_paint_runtime_private_reset(dt_drawlayer_paint_stroke_t *state
 
 void dt_drawlayer_paint_runtime_set_stroke_seed(dt_drawlayer_paint_stroke_t *state, const uint64_t seed)
 {
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
   state->stroke_seed = seed;
 }
 
@@ -875,11 +850,11 @@ uint64_t dt_drawlayer_paint_runtime_get_stroke_seed(const dt_drawlayer_paint_str
 gboolean dt_drawlayer_paint_runtime_ensure_smudge_pixels(dt_drawlayer_paint_stroke_t *state, const int width,
                                                          const int height)
 {
-  if(!state || width <= 0 || height <= 0) return FALSE;
+  if(IS_NULL_PTR(state) || width <= 0 || height <= 0) return FALSE;
   if(state->smudge_width == width && state->smudge_height == height && state->smudge_pixels) return TRUE;
 
   float *pixels = g_realloc(state->smudge_pixels, (size_t)width * height * 4 * sizeof(float));
-  if(!pixels) return FALSE;
+  if(IS_NULL_PTR(pixels)) return FALSE;
   state->smudge_pixels = pixels;
   state->smudge_width = width;
   state->smudge_height = height;
@@ -910,14 +885,14 @@ gboolean dt_drawlayer_paint_runtime_have_smudge_pickup(const dt_drawlayer_paint_
 void dt_drawlayer_paint_runtime_get_smudge_pickup(const dt_drawlayer_paint_stroke_t *state,
                                                   float *x, float *y)
 {
-  if(x) *x = state ? state->smudge_pickup_x : 0.0f;
-  if(y) *y = state ? state->smudge_pickup_y : 0.0f;
+  if(!IS_NULL_PTR(x)) *x = state ? state->smudge_pickup_x : 0.0f;
+  if(!IS_NULL_PTR(y)) *y = state ? state->smudge_pickup_y : 0.0f;
 }
 
 void dt_drawlayer_paint_runtime_set_smudge_pickup(dt_drawlayer_paint_stroke_t *state,
                                                   const float x, const float y, const gboolean have_pickup)
 {
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
   state->smudge_pickup_x = x;
   state->smudge_pickup_y = y;
   state->have_smudge_pickup = have_pickup;
@@ -930,7 +905,7 @@ gboolean dt_drawlayer_paint_runtime_prepare_dab_context(dt_drawlayer_paint_strok
                                                          const float scale)
 {
   /* Compute current dab footprint in target buffer coordinates. */
-  if(!state || !dab || dab->radius <= 0.0f || dab->opacity <= 0.0f || scale <= 0.0f) return FALSE;
+  if(IS_NULL_PTR(state) || IS_NULL_PTR(dab) || dab->radius <= 0.0f || dab->opacity <= 0.0f || scale <= 0.0f) return FALSE;
   const float support_radius = dab->radius;
 
   state->bounds.valid = TRUE;
@@ -947,8 +922,8 @@ gboolean dt_drawlayer_paint_runtime_prepare_dab_context(dt_drawlayer_paint_strok
 void dt_drawlayer_paint_runtime_note_dab_damage(dt_drawlayer_damaged_rect_t *state,
                                                 const dt_drawlayer_damaged_rect_t *dab_rect)
 {
-  if(!state) return;
-  if(!dab_rect || !dab_rect->valid) return;
+  if(IS_NULL_PTR(state)) return;
+  if(IS_NULL_PTR(dab_rect) || !dab_rect->valid) return;
   if(dab_rect->se[0] <= dab_rect->nw[0] || dab_rect->se[1] <= dab_rect->nw[1]) return;
   if(!state->valid)
   {
@@ -965,16 +940,16 @@ void dt_drawlayer_paint_runtime_note_dab_damage(dt_drawlayer_damaged_rect_t *sta
 gboolean dt_drawlayer_paint_runtime_get_stroke_damage(const dt_drawlayer_damaged_rect_t *state,
                                                       dt_drawlayer_damaged_rect_t *out_rect)
 {
-  if(!state || !state->valid) return FALSE;
-  if(out_rect) *out_rect = *state;
+  if(IS_NULL_PTR(state) || !state->valid) return FALSE;
+  if(!IS_NULL_PTR(out_rect)) *out_rect = *state;
   return TRUE;
 }
 
 static inline void _paint_union_damage_rect(dt_drawlayer_damaged_rect_t *rect,
                                             const dt_drawlayer_damaged_rect_t *add_rect)
 {
-  if(!rect) return;
-  if(!add_rect || !add_rect->valid) return;
+  if(IS_NULL_PTR(rect)) return;
+  if(IS_NULL_PTR(add_rect) || !add_rect->valid) return;
   if(add_rect->se[0] <= add_rect->nw[0] || add_rect->se[1] <= add_rect->nw[1]) return;
 
   if(!rect->valid)
@@ -992,7 +967,7 @@ static inline void _paint_union_damage_rect(dt_drawlayer_damaged_rect_t *rect,
 gboolean dt_drawlayer_paint_merge_runtime_stroke_damage(dt_drawlayer_damaged_rect_t *path_state,
                                                         dt_drawlayer_damaged_rect_t *target_rect)
 {
-  if(!path_state || !target_rect) return FALSE;
+  if(IS_NULL_PTR(path_state) || IS_NULL_PTR(target_rect)) return FALSE;
 
   dt_drawlayer_damaged_rect_t add = { 0 };
   const gboolean have_damage = dt_drawlayer_paint_runtime_get_stroke_damage(path_state, &add);

@@ -172,7 +172,7 @@ void stroke_boxes(cairo_t *cr, float line_width)
 
 void set_offset_and_scale(image_t *image, float width, float height)
 {
-  if(!image->image) return;
+  if(IS_NULL_PTR(image->image)) return;
 
   cairo_matrix_t matrix;
   const float s_w = (float)image->width / width;
@@ -190,13 +190,7 @@ static cairo_user_data_key_t source_data_buffer_key;
 cairo_surface_t *cairo_surface_create_from_xyz_data(const float *const image, const int width, const int height)
 {
   unsigned char *rgbbuf = (unsigned char *)malloc(sizeof(unsigned char) * height * width * 4);
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(height, image, width) \
-  shared(rgbbuf) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int y = 0; y < height; y++)
   {
     const float *iter = image + y * width * 3;

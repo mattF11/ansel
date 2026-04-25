@@ -64,7 +64,7 @@ rawprepare_1f(read_only image2d_t in, write_only image2d_t out,
   const int id = BL(ry+cy+y, rx+cx+x);
   const float pixel_scaled = (pixel - sub[id]) / div[id];
 
-  write_imagef(out, (int2)(x, y), (float4)(pixel_scaled, 0.0f, 0.0f, 0.0f));
+  write_imagef(out, (int2)(x, y), pixel_scaled);
 }
 
 kernel void
@@ -106,7 +106,7 @@ rawprepare_1f_gainmap(read_only image2d_t in, write_only image2d_t out,
       break;
   }
 
-  write_imagef(out, (int2)(x, y), (float4)(pixel_scaled, 0.0f, 0.0f, 0.0f));
+  write_imagef(out, (int2)(x, y), pixel_scaled);
 }
 
 kernel void
@@ -126,7 +126,7 @@ rawprepare_1f_unnormalized(read_only image2d_t in, write_only image2d_t out,
   const int id = BL(ry+cy+y, rx+cx+x);
   const float pixel_scaled = (pixel - sub[id]) / div[id];
 
-  write_imagef(out, (int2)(x, y), (float4)(pixel_scaled, 0.0f, 0.0f, 0.0f));
+  write_imagef(out, (int2)(x, y), pixel_scaled);
 }
 
 kernel void
@@ -168,7 +168,7 @@ rawprepare_1f_unnormalized_gainmap(read_only image2d_t in, write_only image2d_t 
       break;
   }
 
-  write_imagef(out, (int2)(x, y), (float4)(pixel_scaled, 0.0f, 0.0f, 0.0f));
+  write_imagef(out, (int2)(x, y), pixel_scaled);
 }
 
 kernel void
@@ -182,8 +182,10 @@ rawprepare_4f(read_only image2d_t in, write_only image2d_t out,
 
   if(x >= width || y >= height) return;
 
+  const float4 black4 = (const float4)(black[0], black[1], black[2], black[3]);
+  const float4 inv4 = (const float4)(1.0f / div[0], 1.0f / div[1], 1.0f / div[2], 1.0f / div[3]);
   float4 pixel = read_imagef(in, sampleri, (int2)(x + cx, y + cy));
-  pixel.xyz = (pixel.xyz - black[0]) / div[0];
+  pixel.xyz = (pixel.xyz - black4.xyz) * inv4.xyz;
 
   write_imagef(out, (int2)(x, y), pixel);
 }
@@ -1040,9 +1042,12 @@ enum wavelets_scale_t
   LAST_SCALE  = 1 << 2, // last wavelets scale  : reconstruct += residual
 };
 
+constant float anisotropic_kernel_isophote[9]
+  = { 0.25f, 0.5f, 0.25f, 0.5f, -3.f, 0.5f, 0.25f, 0.5f, 0.25f };
+
 
 kernel void
-guide_laplacians(read_only image2d_t HF, read_only image2d_t LF,
+guide_laplacians(read_only image2d_t detail, read_only image2d_t LF,
                  read_only image2d_t mask,
                  read_only image2d_t output_r, write_only image2d_t output_w,
                  const int width, const int height, const int mult,
@@ -1056,123 +1061,130 @@ guide_laplacians(read_only image2d_t HF, read_only image2d_t LF,
 
   const float alpha = read_imagef(mask, samplerA, (int2)(x, y)).w;
   const float alpha_comp = 1.f - alpha;
-
-  float4 high_frequency = read_imagef(HF, samplerA, (int2)(x, y));
+  const float4 low_frequency = read_imagef(LF, samplerA, (int2)(x, y));
+  float4 high_frequency = read_imagef(detail, samplerA, (int2)(x, y)) - low_frequency;
 
   float4 out;
 
   if(alpha > 0.f) // reconstruct
   {
-    // non-local neighbours coordinates
-    const int j_neighbours[3] = {
-      max(x - mult, 0),
-      x,
-      min(x + mult, width - 1) };
-    const int i_neighbours[3] = {
-      max(y - mult, 0),
-      y,
-      min(y + mult, height - 1) };
+    // Recover the raw moments of the 3x3 support directly instead of materializing
+    // the full neighbourhood and revisiting it for variance/covariance. This keeps
+    // the same guide selection logic as the CPU path while exposing simpler scalar
+    // dataflow to the OpenCL backend.
+    const int x0 = max(x - mult, 0);
+    const int x1 = x;
+    const int x2 = min(x + mult, width - 1);
+    const int y0 = max(y - mult, 0);
+    const int y1 = y;
+    const int y2 = min(y + mult, height - 1);
+    const int x_neighbours[3] = { x0, x1, x2 };
+    const int y_neighbours[3] = { y0, y1, y2 };
+    const float inv_patch = 1.f / 9.f;
+    const float eps = 1e-12f;
 
-    // fetch non-local pixels and store them locally and contiguously
-    float4 neighbour_pixel_HF[9];
-    neighbour_pixel_HF[3 * 0 + 0] = read_imagef(HF, samplerA, (int2)(j_neighbours[0], i_neighbours[0]));
-    neighbour_pixel_HF[3 * 0 + 1] = read_imagef(HF, samplerA, (int2)(j_neighbours[1], i_neighbours[0]));
-    neighbour_pixel_HF[3 * 0 + 2] = read_imagef(HF, samplerA, (int2)(j_neighbours[2], i_neighbours[0]));
+    float sum_r = 0.f;
+    float sum_g = 0.f;
+    float sum_b = 0.f;
+    float sum_a = 0.f;
+    float sum_rr = 0.f;
+    float sum_gg = 0.f;
+    float sum_bb = 0.f;
+    float sum_rg = 0.f;
+    float sum_rb = 0.f;
+    float sum_gb = 0.f;
+    float sum_ar = 0.f;
+    float sum_ag = 0.f;
+    float sum_ab = 0.f;
 
-    neighbour_pixel_HF[3 * 1 + 0] = read_imagef(HF, samplerA, (int2)(j_neighbours[0], i_neighbours[1]));
-    neighbour_pixel_HF[3 * 1 + 1] = read_imagef(HF, samplerA, (int2)(j_neighbours[1], i_neighbours[1]));
-    neighbour_pixel_HF[3 * 1 + 2] = read_imagef(HF, samplerA, (int2)(j_neighbours[2], i_neighbours[1]));
-
-    neighbour_pixel_HF[3 * 2 + 0] = read_imagef(HF, samplerA, (int2)(j_neighbours[0], i_neighbours[2]));
-    neighbour_pixel_HF[3 * 2 + 1] = read_imagef(HF, samplerA, (int2)(j_neighbours[1], i_neighbours[2]));
-    neighbour_pixel_HF[3 * 2 + 2] = read_imagef(HF, samplerA, (int2)(j_neighbours[2], i_neighbours[2]));
-
-    // Compute the linear fit of the laplacian of chromaticity against the laplacian of the norm
-    // that is the chromaticity filter guided by the norm
-
-    // Get the local average per channel
-    float4 means_HF = 0.f;
-    for(int k = 0; k < 9; k++)
+    for(int jj = 0; jj < 3; ++jj)
     {
-      means_HF += neighbour_pixel_HF[k] / 9.f;
-    }
-
-    // Get the local variance per channel
-    float4 variance_HF = 0.f;
-    for(int k = 0; k < 9; k++)
-    {
-      variance_HF += sqf(neighbour_pixel_HF[k] - means_HF) / 9.f;
-    }
-
-    // Find the channel most likely to contain details = max( variance(HF) )
-    // But since OpenCL is not designed to iterate over float4,
-    // we need to check each channel in sequence
-    int guiding_channel_HF = ALPHA;
-    float guiding_value_HF = 0.f;
-
-    if(variance_HF.x > guiding_value_HF)
-    {
-      guiding_value_HF = variance_HF.x;
-      guiding_channel_HF = RED;
-    }
-    if(variance_HF.y > guiding_value_HF)
+      const int yy = y_neighbours[jj];
+      for(int ii = 0; ii < 3; ++ii)
       {
-      guiding_value_HF = variance_HF.y;
-      guiding_channel_HF = GREEN;
+        const float4 sample = read_imagef(detail, samplerA, (int2)(x_neighbours[ii], yy))
+                            - read_imagef(LF, samplerA, (int2)(x_neighbours[ii], yy));
+        const float sample_r = sample.x;
+        const float sample_g = sample.y;
+        const float sample_b = sample.z;
+        const float sample_a = sample.w;
+
+        sum_r += sample_r;
+        sum_g += sample_g;
+        sum_b += sample_b;
+        sum_a += sample_a;
+        sum_rr += sample_r * sample_r;
+        sum_gg += sample_g * sample_g;
+        sum_bb += sample_b * sample_b;
+        sum_rg += sample_r * sample_g;
+        sum_rb += sample_r * sample_b;
+        sum_gb += sample_g * sample_b;
+        sum_ar += sample_a * sample_r;
+        sum_ag += sample_a * sample_g;
+        sum_ab += sample_a * sample_b;
       }
-    if(variance_HF.z > guiding_value_HF)
-    {
-      guiding_value_HF = variance_HF.z;
-      guiding_channel_HF = BLUE;
     }
 
-    // Extract the guiding values for HF and LF now
-    // so we can proceed after with vectorized code
-    float means_HF_guide = 0.f;
-    float variance_HF_guide = 0.f;
-    float channel_guide_HF[9];
-    float high_frequency_guide = 0.f;
+    const float mean_r = sum_r * inv_patch;
+    const float mean_g = sum_g * inv_patch;
+    const float mean_b = sum_b * inv_patch;
+    const float mean_a = sum_a * inv_patch;
+    const float var_r = fmax(sum_rr * inv_patch - mean_r * mean_r, 0.f);
+    const float var_g = fmax(sum_gg * inv_patch - mean_g * mean_g, 0.f);
+    const float var_b = fmax(sum_bb * inv_patch - mean_b * mean_b, 0.f);
 
-    if(guiding_channel_HF == RED)
+    float guide_mean = mean_r;
+    float guide_variance = var_r;
+    float guide_value = high_frequency.x;
+    float cov_r = var_r;
+    float cov_g = sum_rg * inv_patch - mean_r * mean_g;
+    float cov_b = sum_rb * inv_patch - mean_r * mean_b;
+    float cov_a = sum_ar * inv_patch - mean_a * mean_r;
+
+    if(var_g > guide_variance)
     {
-      means_HF_guide = means_HF.x;
-      variance_HF_guide = variance_HF.x;
-      high_frequency_guide = high_frequency.x;
-      for(int k = 0; k < 9; k++) channel_guide_HF[k] = neighbour_pixel_HF[k].x;
+      guide_mean = mean_g;
+      guide_variance = var_g;
+      guide_value = high_frequency.y;
+      cov_r = sum_rg * inv_patch - mean_r * mean_g;
+      cov_g = var_g;
+      cov_b = sum_gb * inv_patch - mean_g * mean_b;
+      cov_a = sum_ag * inv_patch - mean_a * mean_g;
     }
-    else if(guiding_channel_HF == GREEN)
+    if(var_b > guide_variance)
     {
-      means_HF_guide = means_HF.y;
-      variance_HF_guide = variance_HF.y;
-      high_frequency_guide = high_frequency.y;
-      for(int k = 0; k < 9; k++) channel_guide_HF[k] = neighbour_pixel_HF[k].y;
+      guide_mean = mean_b;
+      guide_variance = var_b;
+      guide_value = high_frequency.z;
+      cov_r = sum_rb * inv_patch - mean_r * mean_b;
+      cov_g = sum_gb * inv_patch - mean_g * mean_b;
+      cov_b = var_b;
+      cov_a = sum_ab * inv_patch - mean_a * mean_b;
     }
-    else // BLUE
+
+    if(guide_variance > eps)
     {
-      means_HF_guide = means_HF.z;
-      variance_HF_guide = variance_HF.z;
-      high_frequency_guide = high_frequency.z;
-      for(int k = 0; k < 9; k++) channel_guide_HF[k] = neighbour_pixel_HF[k].z;
+      const float scale_multiplier = 1.f / radius_sq;
+      const float4 alpha_ch = read_imagef(mask, samplerA, (int2)(x, y));
+      const float inv_guide_variance = 1.f / guide_variance;
+      const float a_r = fmax(cov_r * inv_guide_variance, 0.f);
+      const float a_g = fmax(cov_g * inv_guide_variance, 0.f);
+      const float a_b = fmax(cov_b * inv_guide_variance, 0.f);
+      const float a_a = fmax(cov_a * inv_guide_variance, 0.f);
+      const float b_r = mean_r - a_r * guide_mean;
+      const float b_g = mean_g - a_g * guide_mean;
+      const float b_b = mean_b - a_b * guide_mean;
+      const float b_a = mean_a - a_a * guide_mean;
+
+      const float blend_r = alpha_ch.x * scale_multiplier;
+      const float blend_g = alpha_ch.y * scale_multiplier;
+      const float blend_b = alpha_ch.z * scale_multiplier;
+      const float blend_a = alpha_ch.w * scale_multiplier;
+      high_frequency.x = blend_r * (a_r * guide_value + b_r) + (1.f - blend_r) * high_frequency.x;
+      high_frequency.y = blend_g * (a_g * guide_value + b_g) + (1.f - blend_g) * high_frequency.y;
+      high_frequency.z = blend_b * (a_b * guide_value + b_b) + (1.f - blend_b) * high_frequency.z;
+      high_frequency.w = blend_a * (a_a * guide_value + b_a) + (1.f - blend_a) * high_frequency.w;
     }
-
-    // Compute the linear regression channel = f(guide)
-    float4 covariance_HF = 0.f;
-    for(int k = 0; k < 9; k++)
-    {
-      covariance_HF += (neighbour_pixel_HF[k] - means_HF)
-                       * (channel_guide_HF[k] - means_HF_guide) / 9.f;
-    }
-
-    const float scale_multiplier = 1.f / radius_sq;
-    const float4 alpha_ch = read_imagef(mask, samplerA, (int2)(x, y));
-
-    const float4 a_HF = fmax(covariance_HF / variance_HF_guide, 0.f);
-    const float4 b_HF = means_HF - a_HF * means_HF_guide;
-
-    // Guide all channels by the norms
-    high_frequency = alpha_ch * scale_multiplier * (a_HF * high_frequency_guide + b_HF)
-                   + (1.f - alpha_ch * scale_multiplier) * high_frequency;
-
   }
 
   if((scale & FIRST_SCALE))
@@ -1189,7 +1201,7 @@ guide_laplacians(read_only image2d_t HF, read_only image2d_t LF,
   if((scale & LAST_SCALE))
   {
     // add the residual and clamp
-    out = fmax(out + read_imagef(LF, samplerA, (int2)(x, y)), (float4)0.f);
+    out = fmax(out + low_frequency, (float4)0.f);
   }
 
   // Last step of RGB reconstruct : add noise
@@ -1224,7 +1236,7 @@ guide_laplacians(read_only image2d_t HF, read_only image2d_t LF,
 }
 
 kernel void
-diffuse_color(read_only image2d_t HF, read_only image2d_t LF,
+diffuse_color(read_only image2d_t detail, read_only image2d_t LF,
               read_only image2d_t mask,
               read_only image2d_t output_r, write_only image2d_t output_w,
               const int width, const int height,
@@ -1236,8 +1248,8 @@ diffuse_color(read_only image2d_t HF, read_only image2d_t LF,
   if(x >= width || y >= height) return;
 
   const float4 alpha = read_imagef(mask, samplerA, (int2)(x, y));
-
-  float4 high_frequency = read_imagef(HF, samplerA, (int2)(x, y));
+  const float4 low_frequency = read_imagef(LF, samplerA, (int2)(x, y));
+  float4 high_frequency = read_imagef(detail, samplerA, (int2)(x, y)) - low_frequency;
 
   // We use 4 floats SIMD instructions but we don't want to diffuse the norm, make sure to store and restore it later.
   // This is not much of an issue when processing image at full-res, but more harmful since
@@ -1248,46 +1260,41 @@ diffuse_color(read_only image2d_t HF, read_only image2d_t LF,
 
   if(alpha.w > 0.f) // reconstruct
   {
-    // non-local neighbours coordinates
-    const int j_neighbours[3] = {
-      max(x - mult, 0),
-      x,
-      min(x + mult, width - 1) };
-    const int i_neighbours[3] = {
-      max(y - mult, 0),
-      y,
-      min(y + mult, height - 1) };
+    // Diffusion only updates the RGB ratios. Keep the norm channel outside the
+    // 3x3 stencil so the GPU does not carry a useless fourth lane through the
+    // anisotropic convolution.
+    const int x0 = max(x - mult, 0);
+    const int x1 = x;
+    const int x2 = min(x + mult, width - 1);
+    const int y0 = max(y - mult, 0);
+    const int y1 = y;
+    const int y2 = min(y + mult, height - 1);
+    const int x_neighbours[3] = { x0, x1, x2 };
+    const int y_neighbours[3] = { y0, y1, y2 };
 
-    // fetch non-local pixels and store them locally and contiguously
-    float4 neighbour_pixel_HF[9];
-    neighbour_pixel_HF[3 * 0 + 0] = read_imagef(HF, samplerA, (int2)(j_neighbours[0], i_neighbours[0]));
-    neighbour_pixel_HF[3 * 0 + 1] = read_imagef(HF, samplerA, (int2)(j_neighbours[1], i_neighbours[0]));
-    neighbour_pixel_HF[3 * 0 + 2] = read_imagef(HF, samplerA, (int2)(j_neighbours[2], i_neighbours[0]));
+    float laplacian_r = 0.f;
+    float laplacian_g = 0.f;
+    float laplacian_b = 0.f;
+    int kernel_index = 0;
 
-    neighbour_pixel_HF[3 * 1 + 0] = read_imagef(HF, samplerA, (int2)(j_neighbours[0], i_neighbours[1]));
-    neighbour_pixel_HF[3 * 1 + 1] = read_imagef(HF, samplerA, (int2)(j_neighbours[1], i_neighbours[1]));
-    neighbour_pixel_HF[3 * 1 + 2] = read_imagef(HF, samplerA, (int2)(j_neighbours[2], i_neighbours[1]));
-
-    neighbour_pixel_HF[3 * 2 + 0] = read_imagef(HF, samplerA, (int2)(j_neighbours[0], i_neighbours[2]));
-    neighbour_pixel_HF[3 * 2 + 1] = read_imagef(HF, samplerA, (int2)(j_neighbours[1], i_neighbours[2]));
-    neighbour_pixel_HF[3 * 2 + 2] = read_imagef(HF, samplerA, (int2)(j_neighbours[2], i_neighbours[2]));
-
-    float4 update = 0.f;
-
-    // Compute the laplacian in the direction parallel to the steepest gradient on the norm
-    float anisotropic_kernel_isophote[9] = { 0.25f, 0.5f, 0.25f, 0.5f, -3.f, 0.5f, 0.25f, 0.5f, 0.25f };
-
-    // Convolve the filter to get the laplacian
-    float4 laplacian_HF = 0.f;
-    for(int k = 0; k < 9; k++)
+    for(int jj = 0; jj < 3; ++jj)
     {
-      laplacian_HF += neighbour_pixel_HF[k] * anisotropic_kernel_isophote[k];
+      const int yy = y_neighbours[jj];
+      for(int ii = 0; ii < 3; ++ii, ++kernel_index)
+      {
+        const float4 sample = read_imagef(detail, samplerA, (int2)(x_neighbours[ii], yy))
+                            - read_imagef(LF, samplerA, (int2)(x_neighbours[ii], yy));
+        const float weight = anisotropic_kernel_isophote[kernel_index];
+        laplacian_r += sample.x * weight;
+        laplacian_g += sample.y * weight;
+        laplacian_b += sample.z * weight;
+      }
     }
 
-    // Diffuse
-    const float4 multipliers_HF = { 1.f / B_SPLINE_TO_LAPLACIAN, 1.f / B_SPLINE_TO_LAPLACIAN, 1.f / B_SPLINE_TO_LAPLACIAN, 0.f };
-    high_frequency += alpha * multipliers_HF * (laplacian_HF - first_order_factor * high_frequency);
-
+    const float multiplier = 1.f / B_SPLINE_TO_LAPLACIAN;
+    high_frequency.x += alpha.x * multiplier * (laplacian_r - first_order_factor * high_frequency.x);
+    high_frequency.y += alpha.y * multiplier * (laplacian_g - first_order_factor * high_frequency.y);
+    high_frequency.z += alpha.z * multiplier * (laplacian_b - first_order_factor * high_frequency.z);
     high_frequency.w = norm_backup;
   }
 
@@ -1305,7 +1312,7 @@ diffuse_color(read_only image2d_t HF, read_only image2d_t LF,
   if((scale & LAST_SCALE))
   {
     // add the residual and clamp
-    out = fmax(out + read_imagef(LF, samplerA, (int2)(x, y)), (float4)0.f);
+    out = fmax(out + low_frequency, (float4)0.f);
 
     // renormalize ratios
     if(alpha.w > 0.f)
@@ -3041,159 +3048,4 @@ interpolation_resample (read_only image2d_t in, write_only image2d_t out, const 
     // Negative RGB are invalid values no matter the RGB space (light is positive)
     write_imagef (out, (int2)(x, y), fmax(buffer[ylid], 0.f));
   }
-}
-
-#define DT_IOP_GAMMA_KERNEL_COPY 0
-#define DT_IOP_GAMMA_KERNEL_MASK 1
-#define DT_IOP_GAMMA_KERNEL_CHANNEL_MONO 2
-#define DT_IOP_GAMMA_KERNEL_CHANNEL_FALSE_COLOR 3
-
-#define DT_IOP_GAMMA_FALSE_COLOR_MONO 0
-#define DT_IOP_GAMMA_FALSE_COLOR_A 1
-#define DT_IOP_GAMMA_FALSE_COLOR_B 2
-#define DT_IOP_GAMMA_FALSE_COLOR_R 3
-#define DT_IOP_GAMMA_FALSE_COLOR_G 4
-#define DT_IOP_GAMMA_FALSE_COLOR_B_CH 5
-#define DT_IOP_GAMMA_FALSE_COLOR_C 6
-#define DT_IOP_GAMMA_FALSE_COLOR_LCH_H 7
-#define DT_IOP_GAMMA_FALSE_COLOR_HSL_H 8
-#define DT_IOP_GAMMA_FALSE_COLOR_JZ_HZ 9
-
-static inline float _gamma_oetf(const float v)
-{
-  return (v <= 0.0031308f) ? (12.92f * v) : ((1.0f + 0.055f) * native_powr(v, 1.0f / 2.4f) - 0.055f);
-}
-
-static inline float3 _gamma_normalize_color(const float3 pixel, const float norm)
-{
-  const float max_c = fmax(pixel.x, fmax(pixel.y, pixel.z));
-  const float factor = norm / fmax(max_c, 1e-8f);
-  return pixel * factor;
-}
-
-static inline float3 _XYZ_to_Rec709_D50_cl(const float4 XYZ)
-{
-  return (float3)(3.1338561f * XYZ.x - 0.9787684f * XYZ.y + 0.0719453f * XYZ.z,
-                  -1.6168667f * XYZ.x + 1.9161415f * XYZ.y - 0.2289914f * XYZ.z,
-                  -0.4906146f * XYZ.x + 0.0334540f * XYZ.y + 1.4052427f * XYZ.z);
-}
-
-static inline float3 _XYZ_to_Rec709_D65_cl(const float4 XYZ)
-{
-  return (float3)(3.2404542f * XYZ.x - 0.9692660f * XYZ.y + 0.0556434f * XYZ.z,
-                  -1.5371385f * XYZ.x + 1.8760108f * XYZ.y - 0.2040259f * XYZ.z,
-                  -0.4985314f * XYZ.x + 0.0415560f * XYZ.y + 1.0572252f * XYZ.z);
-}
-
-static inline float4 _JzCzhz_to_JzAzBz_cl(const float4 JzCzhz)
-{
-  const float angle = 2.0f * M_PI_F * JzCzhz.z;
-  return (float4)(JzCzhz.x, JzCzhz.y * native_cos(angle), JzCzhz.y * native_sin(angle), JzCzhz.w);
-}
-
-static inline uchar _to_u8(const float value)
-{
-  return (uchar)clamp((int)round(value), 0, 255);
-}
-
-static inline uint4 _quantized_BGRX(const float3 rgb)
-{
-  const uchar r = _to_u8(255.0f * rgb.x);
-  const uchar g = _to_u8(255.0f * rgb.y);
-  const uchar b = _to_u8(255.0f * rgb.z);
-  return (uint4)((uint)b, (uint)g, (uint)r, 0u);
-}
-
-static inline uint4 _write_pixel_BGRX(const float3 linear_rgb, const float alpha)
-{
-  const float3 srgb = (float3)(_gamma_oetf(linear_rgb.x), _gamma_oetf(linear_rgb.y), _gamma_oetf(linear_rgb.z));
-  const float3 blended = (float3)(srgb.x * (1.0f - alpha) + alpha,
-                                  srgb.y * (1.0f - alpha) + alpha,
-                                  srgb.z * (1.0f - alpha));
-  return _quantized_BGRX(blended);
-}
-
-static inline float3 _false_color_pixel(const float value, const int channel)
-{
-  switch(channel)
-  {
-    case DT_IOP_GAMMA_FALSE_COLOR_A:
-    {
-      const float a = clamp(value * 256.0f - 128.0f, -56.0f, 56.0f);
-      const float4 lab = (float4)(79.0f - a * (11.0f / 56.0f), a, 0.0f, 0.0f);
-      const float4 xyz = Lab_to_XYZ(lab);
-      return _gamma_normalize_color(_XYZ_to_Rec709_D50_cl(xyz), 0.75f);
-    }
-    case DT_IOP_GAMMA_FALSE_COLOR_B:
-    {
-      const float b = clamp(value * 256.0f - 128.0f, -65.0f, 65.0f);
-      const float4 lab = (float4)(60.0f + b * (2.0f / 65.0f), 0.0f, b, 0.0f);
-      const float4 xyz = Lab_to_XYZ(lab);
-      return _gamma_normalize_color(_XYZ_to_Rec709_D50_cl(xyz), 0.75f);
-    }
-    case DT_IOP_GAMMA_FALSE_COLOR_R:
-      return (float3)(value, 0.0f, 0.0f);
-    case DT_IOP_GAMMA_FALSE_COLOR_G:
-      return (float3)(0.0f, value, 0.0f);
-    case DT_IOP_GAMMA_FALSE_COLOR_B_CH:
-      return (float3)(0.0f, 0.0f, value);
-    case DT_IOP_GAMMA_FALSE_COLOR_C:
-      return (float3)(0.5f, 0.5f * (1.0f - value), 0.5f);
-    case DT_IOP_GAMMA_FALSE_COLOR_LCH_H:
-    {
-      const float4 lch = (float4)(65.0f, 37.0f, value, 0.0f);
-      const float4 lab = LCH_2_Lab(lch);
-      const float4 xyz = Lab_to_XYZ(lab);
-      return _gamma_normalize_color(_XYZ_to_Rec709_D50_cl(xyz), 0.75f);
-    }
-    case DT_IOP_GAMMA_FALSE_COLOR_HSL_H:
-    {
-      const float4 hsl = (float4)(value, 0.5f, 0.5f, 0.0f);
-      return _gamma_normalize_color(HSL_2_RGB(hsl).xyz, 0.75f);
-    }
-    case DT_IOP_GAMMA_FALSE_COLOR_JZ_HZ:
-    {
-      const float4 JzCzhz = (float4)(0.011f, 0.01f, value, 0.0f);
-      const float4 JzAzBz = _JzCzhz_to_JzAzBz_cl(JzCzhz);
-      const float4 xyz_d65 = JzAzBz_2_XYZ(JzAzBz);
-      return _gamma_normalize_color(_XYZ_to_Rec709_D65_cl(xyz_d65), 0.75f);
-    }
-    case DT_IOP_GAMMA_FALSE_COLOR_MONO:
-    default:
-      return (float3)(value, value, value);
-  }
-}
-
-kernel void
-gamma_pack(read_only image2d_t in, write_only image2d_t out, const int width, const int height, const int mode,
-           const int channel, const float alpha)
-{
-  const int x = get_global_id(0);
-  const int y = get_global_id(1);
-  if(x >= width || y >= height) return;
-
-  const float4 p = read_imagef(in, sampleri, (int2)(x, y));
-  uint4 out_pixel;
-
-  if(mode == DT_IOP_GAMMA_KERNEL_COPY)
-  {
-    out_pixel = _quantized_BGRX(p.xyz);
-  }
-  else if(mode == DT_IOP_GAMMA_KERNEL_MASK)
-  {
-    const float gray = 0.3f * p.x + 0.59f * p.y + 0.11f * p.z;
-    const float hide = 1.0f - clamp(p.w, 0.0f, 1.0f);
-    out_pixel = _write_pixel_BGRX((float3)(gray, gray, gray), hide);
-  }
-  else if(mode == DT_IOP_GAMMA_KERNEL_CHANNEL_MONO)
-  {
-    const float g = p.y;
-    out_pixel = _write_pixel_BGRX((float3)(g, g, g), p.w * alpha);
-  }
-  else // DT_IOP_GAMMA_KERNEL_CHANNEL_FALSE_COLOR
-  {
-    out_pixel = _write_pixel_BGRX(_false_color_pixel(p.y, channel), p.w * alpha);
-  }
-
-  write_imageui(out, (int2)(x, y), out_pixel);
 }

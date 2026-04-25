@@ -19,6 +19,7 @@
 #include "develop/pixelpipe_cache.h"
 #include "control/control.h"
 #include "iop/drawlayer/runtime.h"
+#include "develop/develop.h"
 
 #include <string.h>
 
@@ -46,9 +47,6 @@ struct dt_drawlayer_runtime_private_t
   dt_drawlayer_runtime_buffer_state_t buffers[DT_DRAWLAYER_RUNTIME_BUFFER_COUNT];
   dt_drawlayer_runtime_thread_state_t threads[DT_DRAWLAYER_RUNTIME_ACTOR_COUNT];
   gboolean layer_cache_valid;
-  gboolean process_patch_dirty;
-  gboolean process_snapshot_valid;
-  gboolean process_cl_valid;
   gboolean sidecar_io_active;
   gboolean gui_focused;
   dt_drawlayer_runtime_event_t last_event;
@@ -65,52 +63,11 @@ static inline const dt_drawlayer_runtime_private_t *_runtime_private_const(const
   return state ? state->priv : NULL;
 }
 
-static gboolean _ensure_external_patch_buffer(dt_drawlayer_cache_patch_t *patch, const int width, const int height,
-                                              const char *name)
-{
-  if(!patch || width <= 0 || height <= 0) return FALSE;
-  if(patch->pixels && patch->width == width && patch->height == height) return TRUE;
-
-  dt_drawlayer_cache_patch_clear(patch, name);
-  patch->x = 0;
-  patch->y = 0;
-  patch->width = width;
-  patch->height = height;
-  patch->pixels = dt_drawlayer_cache_alloc_temp_buffer((size_t)width * height * 4 * sizeof(float), name);
-  patch->external_alloc = TRUE;
-  if(!patch->pixels) return FALSE;
-  patch->cache_entry = dt_dev_pixelpipe_cache_ref_entry_for_host_ptr(darktable.pixelpipe_cache, patch->pixels);
-  patch->cache_hash = patch->cache_entry ? patch->cache_entry->hash : DT_PIXELPIPE_CACHE_HASH_INVALID;
-  return patch->cache_entry != NULL;
-}
-
-static void _copy_patch_rect(const dt_drawlayer_cache_patch_t *src, dt_drawlayer_cache_patch_t *dst,
-                             const dt_drawlayer_damaged_rect_t *rect)
-{
-  if(!src || !dst || !rect || !rect->valid || !src->pixels || !dst->pixels) return;
-
-  const int x0 = CLAMP(rect->nw[0], 0, MIN(src->width, dst->width));
-  const int y0 = CLAMP(rect->nw[1], 0, MIN(src->height, dst->height));
-  const int x1 = CLAMP(rect->se[0], 0, MIN(src->width, dst->width));
-  const int y1 = CLAMP(rect->se[1], 0, MIN(src->height, dst->height));
-  if(x1 <= x0 || y1 <= y0) return;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(src, dst, x0, x1, y0, y1)
-#endif
-  for(int y = y0; y < y1; y++)
-  {
-    const float *src_row = src->pixels + 4 * ((size_t)y * src->width + x0);
-    float *dst_row = dst->pixels + 4 * ((size_t)y * dst->width + x0);
-    memcpy(dst_row, src_row, (size_t)(x1 - x0) * 4 * sizeof(float));
-  }
-}
-
 static void _sync_buffer_state(dt_drawlayer_runtime_manager_t *state, const dt_drawlayer_runtime_buffer_t buffer,
                                const gboolean resident, const gboolean valid, const gboolean dirty)
 {
   dt_drawlayer_runtime_private_t *priv = _runtime_private(state);
-  if(!priv || buffer >= DT_DRAWLAYER_RUNTIME_BUFFER_COUNT) return;
+  if(IS_NULL_PTR(priv) || buffer >= DT_DRAWLAYER_RUNTIME_BUFFER_COUNT) return;
   priv->buffers[buffer].resident = resident;
   priv->buffers[buffer].valid = valid;
   priv->buffers[buffer].dirty = dirty;
@@ -118,7 +75,7 @@ static void _sync_buffer_state(dt_drawlayer_runtime_manager_t *state, const dt_d
 
 void dt_drawlayer_runtime_manager_init(dt_drawlayer_runtime_manager_t *state)
 {
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
   memset(state, 0, sizeof(*state));
   state->priv = g_malloc0(sizeof(*state->priv));
   if(state->priv) dt_pthread_mutex_init(&state->priv->mutex, NULL);
@@ -126,7 +83,7 @@ void dt_drawlayer_runtime_manager_init(dt_drawlayer_runtime_manager_t *state)
 
 void dt_drawlayer_runtime_manager_cleanup(dt_drawlayer_runtime_manager_t *state)
 {
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
   if(state->priv)
   {
     dt_pthread_mutex_destroy(&state->priv->mutex);
@@ -142,7 +99,7 @@ void dt_drawlayer_runtime_manager_note_buffer_lock(dt_drawlayer_runtime_manager_
                                                    const gboolean acquire)
 {
   dt_drawlayer_runtime_private_t *priv = _runtime_private(state);
-  if(!priv || buffer >= DT_DRAWLAYER_RUNTIME_BUFFER_COUNT) return;
+  if(IS_NULL_PTR(priv) || buffer >= DT_DRAWLAYER_RUNTIME_BUFFER_COUNT) return;
   dt_pthread_mutex_lock(&priv->mutex);
   dt_drawlayer_runtime_buffer_state_t *entry = &priv->buffers[buffer];
 
@@ -167,7 +124,7 @@ void dt_drawlayer_runtime_manager_note_buffer_lock(dt_drawlayer_runtime_manager_
 void dt_drawlayer_runtime_manager_note_sidecar_io(dt_drawlayer_runtime_manager_t *state, const gboolean active)
 {
   dt_drawlayer_runtime_private_t *priv = _runtime_private(state);
-  if(!priv) return;
+  if(IS_NULL_PTR(priv)) return;
   dt_pthread_mutex_lock(&priv->mutex);
   priv->sidecar_io_active = active;
   priv->threads[DT_DRAWLAYER_RUNTIME_ACTOR_TIFF_IO].active = active;
@@ -182,7 +139,7 @@ void dt_drawlayer_runtime_manager_note_thread(dt_drawlayer_runtime_manager_t *st
                                               const guint queued)
 {
   dt_drawlayer_runtime_private_t *priv = _runtime_private(state);
-  if(!priv || actor <= DT_DRAWLAYER_RUNTIME_ACTOR_NONE || actor >= DT_DRAWLAYER_RUNTIME_ACTOR_COUNT) return;
+  if(IS_NULL_PTR(priv) || actor <= DT_DRAWLAYER_RUNTIME_ACTOR_NONE || actor >= DT_DRAWLAYER_RUNTIME_ACTOR_COUNT) return;
   dt_pthread_mutex_lock(&priv->mutex);
   priv->threads[actor].active = active;
   priv->threads[actor].waiting = waiting;
@@ -195,7 +152,7 @@ static void _fill_runtime_inputs(const dt_drawlayer_runtime_context_t *runtime,
                                  dt_drawlayer_runtime_inputs_t *inputs)
 {
   if(inputs) *inputs = (dt_drawlayer_runtime_inputs_t){ 0 };
-  if(!runtime || !inputs) return;
+  if(IS_NULL_PTR(runtime) || IS_NULL_PTR(inputs)) return;
 
   const dt_drawlayer_runtime_request_t *const request = &runtime->runtime;
   dt_iop_module_t *const self = request->self;
@@ -217,6 +174,8 @@ static void _fill_runtime_inputs(const dt_drawlayer_runtime_context_t *runtime,
     .module_focused = self && self->dev && self->dev->gui_module == self,
     .display_pipe = request->display_pipe,
     .have_layer_selection = runtime_params && runtime_params->layer_name[0] != '\0',
+    .selected_layer_name = runtime_params ? runtime_params->layer_name : NULL,
+    .selected_layer_order = runtime_params ? runtime_params->layer_order : -1,
     .have_valid_output_roi = request->roi_out && request->roi_out->width > 0 && request->roi_out->height > 0,
     .use_opencl = request->use_opencl,
     .view_changed = g && self && self->dev
@@ -234,12 +193,12 @@ static void _collect_runtime_inputs(const dt_drawlayer_runtime_update_request_t 
 {
   if(inputs) *inputs = (dt_drawlayer_runtime_inputs_t){ 0 };
   if(worker_snapshot) *worker_snapshot = (dt_drawlayer_worker_snapshot_t){ 0 };
-  if(request && request->inputs)
+  if(!IS_NULL_PTR(request) && request->inputs)
   {
-    if(inputs) *inputs = *request->inputs;
+    if(!IS_NULL_PTR(inputs)) *inputs = *request->inputs;
     return;
   }
-  if(context && context->runtime.gui && context->runtime.gui->stroke.worker && worker_snapshot)
+  if(!IS_NULL_PTR(context) && context->runtime.gui && context->runtime.gui->stroke.worker && !IS_NULL_PTR(worker_snapshot))
     dt_drawlayer_worker_get_snapshot(context->runtime.gui->stroke.worker, worker_snapshot);
   _fill_runtime_inputs(context, worker_snapshot, inputs);
 }
@@ -253,65 +212,37 @@ static void _sync_runtime_state_from_inputs(dt_drawlayer_runtime_manager_t *stat
   const dt_drawlayer_worker_snapshot_t *worker = inputs ? inputs->worker : NULL;
   const dt_drawlayer_cache_patch_t *base_patch = inputs ? inputs->base_patch : NULL;
 
-  if(!priv) return;
+  if(IS_NULL_PTR(priv)) return;
   state->painting_active = inputs && inputs->painting_active;
   state->background_job_running = session && session->background_job_running;
 
-  if(process)
+  if(!IS_NULL_PTR(process))
   {
     priv->layer_cache_valid = process->cache_valid;
-    priv->process_patch_dirty = process->process_patch_dirty;
-    priv->process_snapshot_valid = process->process_patch_valid && process->process_snapshot_valid
-                                   && process->process_read_patch.pixels
-                                   && process->process_read_patch.width > 0
-                                   && process->process_read_patch.height > 0;
-    priv->process_cl_valid
-#ifdef HAVE_OPENCL
-        = process->process_read_clmem != NULL;
-#else
-        = FALSE;
-#endif
-    _sync_buffer_state(state, DT_DRAWLAYER_RUNTIME_BUFFER_BASE_PATCH, process->base_patch.pixels != NULL,
+    _sync_buffer_state(state, DT_DRAWLAYER_RUNTIME_BUFFER_BASE_PATCH, !IS_NULL_PTR(process->base_patch.pixels),
                        process->cache_valid, process->cache_dirty);
-    _sync_buffer_state(state, DT_DRAWLAYER_RUNTIME_BUFFER_PROCESS_PATCH, process->process_patch.pixels != NULL,
-                       process->process_patch_valid, process->process_patch_dirty);
-    _sync_buffer_state(state, DT_DRAWLAYER_RUNTIME_BUFFER_PROCESS_SNAPSHOT,
-                       process->process_read_patch.pixels != NULL, priv->process_snapshot_valid,
-                       process->process_patch_dirty);
-    _sync_buffer_state(state, DT_DRAWLAYER_RUNTIME_BUFFER_PROCESS_CL, priv->process_cl_valid,
-                       priv->process_cl_valid, FALSE);
-    _sync_buffer_state(state, DT_DRAWLAYER_RUNTIME_BUFFER_STROKE_MASK, process->stroke_mask.pixels != NULL,
-                       process->stroke_mask.pixels != NULL, FALSE);
-    _sync_buffer_state(state, DT_DRAWLAYER_RUNTIME_BUFFER_PROCESS_STROKE_MASK,
-                       process->process_stroke_mask.pixels != NULL, process->process_stroke_mask.pixels != NULL,
-                       FALSE);
+    _sync_buffer_state(state, DT_DRAWLAYER_RUNTIME_BUFFER_STROKE_MASK, !IS_NULL_PTR(process->stroke_mask.pixels),
+                       !IS_NULL_PTR(process->stroke_mask.pixels), FALSE);
   }
-  else if(base_patch)
+  else if(!IS_NULL_PTR(base_patch))
   {
     priv->layer_cache_valid = inputs->base_patch_valid;
-    _sync_buffer_state(state, DT_DRAWLAYER_RUNTIME_BUFFER_BASE_PATCH, base_patch->pixels != NULL,
+    _sync_buffer_state(state, DT_DRAWLAYER_RUNTIME_BUFFER_BASE_PATCH, !IS_NULL_PTR(base_patch->pixels),
                        inputs->base_patch_valid, inputs->base_patch_dirty);
   }
 
-  if(worker)
+  if(!IS_NULL_PTR(worker))
   {
     const gboolean backend_started = worker->backend_state != DT_DRAWLAYER_WORKER_STATE_STOPPED;
     const gboolean backend_busy = worker->backend_state == DT_DRAWLAYER_WORKER_STATE_BUSY;
     const gboolean backend_waiting = (worker->backend_state == DT_DRAWLAYER_WORKER_STATE_PAUSING
                                       || worker->backend_state == DT_DRAWLAYER_WORKER_STATE_PAUSED);
-    const gboolean fullres_started = worker->fullres_state != DT_DRAWLAYER_WORKER_STATE_STOPPED;
-    const gboolean fullres_busy = worker->fullres_state == DT_DRAWLAYER_WORKER_STATE_BUSY;
     const gboolean backend_active = backend_started
                                     && (backend_busy || worker->backend_queue_count > 0
                                         || worker->commit_pending || state->painting_active);
-    const gboolean fullres_active = fullres_started
-                                    && (fullres_busy || worker->fullres_queue_count > 0);
     priv->threads[DT_DRAWLAYER_RUNTIME_ACTOR_RASTER_BACKEND].active = backend_active;
     priv->threads[DT_DRAWLAYER_RUNTIME_ACTOR_RASTER_BACKEND].waiting = backend_waiting;
     priv->threads[DT_DRAWLAYER_RUNTIME_ACTOR_RASTER_BACKEND].queued = worker->backend_queue_count;
-    priv->threads[DT_DRAWLAYER_RUNTIME_ACTOR_RASTER_FULLRES].active = fullres_active;
-    priv->threads[DT_DRAWLAYER_RUNTIME_ACTOR_RASTER_FULLRES].waiting = FALSE;
-    priv->threads[DT_DRAWLAYER_RUNTIME_ACTOR_RASTER_FULLRES].queued = worker->fullres_queue_count;
   }
 }
 
@@ -320,8 +251,8 @@ static void _apply_runtime_event(dt_drawlayer_runtime_manager_t *state,
                                  const dt_drawlayer_runtime_inputs_t *inputs)
 {
   dt_drawlayer_runtime_private_t *priv = _runtime_private(state);
-  if(!state || !request) return;
-  if(!priv) return;
+  if(IS_NULL_PTR(state) || IS_NULL_PTR(request)) return;
+  if(IS_NULL_PTR(priv)) return;
 
   priv->last_event = request->event;
   priv->last_raw_input_kind = request->raw_input_kind;
@@ -431,13 +362,13 @@ static void _update_realtime_state(dt_drawlayer_runtime_manager_t *state,
                                    const dt_drawlayer_runtime_inputs_t *inputs)
 {
   const dt_drawlayer_runtime_private_t *priv = _runtime_private_const(state);
-  if(!state) return;
-  if(!priv) return;
+  if(IS_NULL_PTR(state)) return;
+  if(IS_NULL_PTR(priv)) return;
 
   gboolean realtime_active = priv->gui_focused && inputs && inputs->gui_attached
                              && state->painting_active;
 
-  if(request)
+  if(!IS_NULL_PTR(request))
   {
     switch(request->event)
     {
@@ -486,14 +417,9 @@ typedef struct dt_drawlayer_runtime_schedule_t
   gboolean ensure_worker_running;
   gboolean stop_worker;
   gboolean sync_widget_cache;
-  gboolean prime_live_process_patch;
   gboolean queue_raw_input;
   gboolean request_commit;
   gboolean ensure_layer_cache;
-  gboolean build_process_patch;
-  gboolean flush_process_patch;
-  gboolean wait_fullres_worker;
-  gboolean release_process_clmem;
   gboolean flush_sidecar;
   gboolean set_pointer_state;
   gboolean pointer_valid;
@@ -518,7 +444,7 @@ static gboolean _perform_runtime_commit_sequence(dt_drawlayer_runtime_manager_t 
   if(commit_mode == DT_DRAWLAYER_RUNTIME_COMMIT_NONE) return TRUE;
   const dt_drawlayer_runtime_context_t *const context
       = host ? (const dt_drawlayer_runtime_context_t *)host->user_data : NULL;
-  if(!context || !context->runtime.self || !context->runtime.gui) return FALSE;
+  if(IS_NULL_PTR(context) || !context->runtime.self || !context->runtime.gui) return FALSE;
 
   const dt_drawlayer_runtime_update_request_t begin = {
     .event = DT_DRAWLAYER_RUNTIME_EVENT_COMMIT_BEGIN,
@@ -545,7 +471,7 @@ static gboolean _perform_runtime_widget_cache_sync(const dt_drawlayer_runtime_ho
   const dt_drawlayer_runtime_context_t *const context
       = host ? (const dt_drawlayer_runtime_context_t *)host->user_data : NULL;
   (void)result;
-  if(!context || !context->runtime.self) return FALSE;
+  if(IS_NULL_PTR(context) || !context->runtime.self) return FALSE;
   if(!dt_drawlayer_ensure_layer_cache(context->runtime.self)) return FALSE;
   return dt_drawlayer_sync_widget_cache(context->runtime.self);
 }
@@ -567,21 +493,24 @@ static void _build_runtime_schedule(dt_drawlayer_runtime_manager_t *state,
     };
   const dt_drawlayer_process_state_t *process = inputs ? inputs->process : NULL;
   const dt_drawlayer_stroke_state_t *stroke = inputs ? inputs->stroke : NULL;
-  if(!schedule || !inputs || !request || !priv) return;
+  if(IS_NULL_PTR(schedule) || IS_NULL_PTR(inputs) || IS_NULL_PTR(request) || IS_NULL_PTR(priv)) return;
 
-  schedule->rasterization_busy
-      = priv->threads[DT_DRAWLAYER_RUNTIME_ACTOR_RASTER_BACKEND].active
-        || priv->threads[DT_DRAWLAYER_RUNTIME_ACTOR_RASTER_FULLRES].active;
+  const gboolean layer_selection_changed
+      = inputs->have_layer_selection && process
+        && (!process->cache_valid || g_strcmp0(process->cache_layer_name,
+                                               inputs->selected_layer_name ? inputs->selected_layer_name : "")
+            || (process->cache_layer_order >= 0 && inputs->selected_layer_order >= 0
+                && process->cache_layer_order != inputs->selected_layer_order));
+
+  schedule->rasterization_busy = priv->threads[DT_DRAWLAYER_RUNTIME_ACTOR_RASTER_BACKEND].active;
 
   const gboolean backend_busy = priv->threads[DT_DRAWLAYER_RUNTIME_ACTOR_RASTER_BACKEND].active;
-  const gboolean fullres_busy = priv->threads[DT_DRAWLAYER_RUNTIME_ACTOR_RASTER_FULLRES].active;
   const gboolean have_pending_stroke_work
       = (state->painting_active || (stroke && (stroke->finish_commit_pending || stroke->stroke_sample_count > 0)))
-        || backend_busy || fullres_busy;
+        || backend_busy;
   const gboolean have_pending_gui_stroke_work
       = state->painting_active || (stroke && stroke->stroke_sample_count > 0);
-  const gboolean have_pending_cache_writes
-      = process && (process->cache_dirty || process->process_patch_dirty);
+  const gboolean have_pending_cache_writes = process && process->cache_dirty;
 
   switch(request->event)
   {
@@ -599,8 +528,6 @@ static void _build_runtime_schedule(dt_drawlayer_runtime_manager_t *state,
       schedule->commit_mode = have_pending_stroke_work
                                   ? DT_DRAWLAYER_RUNTIME_COMMIT_QUIET
                                   : DT_DRAWLAYER_RUNTIME_COMMIT_NONE;
-      schedule->wait_fullres_worker = schedule->rasterization_busy;
-      schedule->flush_process_patch = process && process->process_patch_dirty;
       schedule->flush_sidecar = have_pending_cache_writes && process && process->cache_valid;
       schedule->stop_worker = TRUE;
       break;
@@ -630,7 +557,9 @@ static void _build_runtime_schedule(dt_drawlayer_runtime_manager_t *state,
       schedule->commit_mode = (request->flush_pending && have_pending_gui_stroke_work)
                                   ? DT_DRAWLAYER_RUNTIME_COMMIT_QUIET
                                   : DT_DRAWLAYER_RUNTIME_COMMIT_NONE;
+      schedule->invalidate_layer_cache = layer_selection_changed;
       schedule->sync_widget_cache = inputs->gui_attached && inputs->have_layer_selection;
+      schedule->ensure_worker_running = inputs->module_focused && inputs->have_layer_selection;
       break;
 
     case DT_DRAWLAYER_RUNTIME_EVENT_GUI_CHANGE_IMAGE:
@@ -638,10 +567,8 @@ static void _build_runtime_schedule(dt_drawlayer_runtime_manager_t *state,
       schedule->commit_mode = have_pending_stroke_work
                                   ? DT_DRAWLAYER_RUNTIME_COMMIT_QUIET
                                   : DT_DRAWLAYER_RUNTIME_COMMIT_NONE;
-      schedule->flush_process_patch = process && process->process_patch_dirty;
       schedule->flush_sidecar = process && process->cache_valid;
       schedule->stop_worker = TRUE;
-      schedule->release_process_clmem = priv->process_cl_valid;
       schedule->invalidate_layer_cache = TRUE;
       schedule->refresh_gui = TRUE;
       schedule->sync_widget_cache = TRUE;
@@ -649,7 +576,9 @@ static void _build_runtime_schedule(dt_drawlayer_runtime_manager_t *state,
       break;
 
     case DT_DRAWLAYER_RUNTIME_EVENT_GUI_RESYNC:
+      schedule->invalidate_layer_cache = layer_selection_changed;
       schedule->sync_widget_cache = inputs->gui_attached && inputs->have_layer_selection;
+      schedule->ensure_worker_running = inputs->module_focused && inputs->have_layer_selection;
       break;
 
     case DT_DRAWLAYER_RUNTIME_EVENT_GUI_PIPE_FINISHED:
@@ -667,13 +596,16 @@ static void _build_runtime_schedule(dt_drawlayer_runtime_manager_t *state,
       {
         case DT_DRAWLAYER_RUNTIME_RAW_INPUT_STROKE_BEGIN:
           schedule->sync_realtime_mode = TRUE;
-          schedule->commit_mode = (!state->painting_active
+          /* A new GUI stroke must first finish any previous stroke that was
+           * still draining/committing. Use the pre-event GUI state from
+           * `inputs`, not the post-event manager state, because `_apply_runtime_event()`
+           * already flipped `state->painting_active` to TRUE for the new stroke. */
+          schedule->commit_mode = (!inputs->painting_active
                                    && ((stroke && (stroke->finish_commit_pending || stroke->stroke_sample_count > 0))
                                        || backend_busy))
                                       ? DT_DRAWLAYER_RUNTIME_COMMIT_HISTORY
                                       : DT_DRAWLAYER_RUNTIME_COMMIT_NONE;
           schedule->sync_widget_cache = TRUE;
-          schedule->prime_live_process_patch = TRUE;
           schedule->ensure_worker_running = TRUE;
           schedule->queue_raw_input = TRUE;
           break;
@@ -701,16 +633,11 @@ static void _build_runtime_schedule(dt_drawlayer_runtime_manager_t *state,
     case DT_DRAWLAYER_RUNTIME_EVENT_PROCESS_CPU_BEFORE:
       schedule->ensure_layer_cache = inputs->display_pipe && inputs->have_layer_selection
                                      && !priv->layer_cache_valid;
-      schedule->build_process_patch = inputs->display_pipe && inputs->have_layer_selection
-                                      && inputs->have_valid_output_roi;
-      schedule->release_process_clmem = priv->process_cl_valid;
       break;
 
     case DT_DRAWLAYER_RUNTIME_EVENT_PROCESS_CL_BEFORE:
       schedule->ensure_layer_cache = inputs->display_pipe && inputs->have_layer_selection
                                      && !priv->layer_cache_valid;
-      schedule->build_process_patch = inputs->display_pipe && inputs->have_layer_selection
-                                      && inputs->have_valid_output_roi;
       break;
 
     case DT_DRAWLAYER_RUNTIME_EVENT_SIDECAR_LOAD_BEGIN:
@@ -733,7 +660,7 @@ static void _update_manager_information(dt_drawlayer_runtime_manager_t *state,
                                         dt_drawlayer_runtime_schedule_t *schedule)
 {
   if(schedule) *schedule = (dt_drawlayer_runtime_schedule_t){ 0 };
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
 
   dt_drawlayer_runtime_inputs_t inputs = { 0 };
   dt_drawlayer_worker_snapshot_t worker_snapshot = { 0 };
@@ -741,7 +668,7 @@ static void _update_manager_information(dt_drawlayer_runtime_manager_t *state,
                           &inputs, &worker_snapshot);
 
   dt_drawlayer_runtime_private_t *priv = _runtime_private(state);
-  if(!priv) return;
+  if(IS_NULL_PTR(priv)) return;
   dt_pthread_mutex_lock(&priv->mutex);
   _sync_runtime_state_from_inputs(state, &inputs);
   if(request) _apply_runtime_event(state, request, &inputs);
@@ -758,14 +685,13 @@ dt_drawlayer_runtime_result_t dt_drawlayer_runtime_manager_update(dt_drawlayer_r
     .ok = TRUE,
     .raw_input_ok = TRUE,
   };
-  if(!state || !request || !host) return result;
+  if(IS_NULL_PTR(state) || IS_NULL_PTR(request) || IS_NULL_PTR(host)) return result;
   const dt_drawlayer_runtime_context_t *const context
       = (const dt_drawlayer_runtime_context_t *)host->user_data;
-  if(!context) return result;
+  if(IS_NULL_PTR(context)) return result;
 
   dt_iop_module_t *const self = context->runtime.self;
   dt_iop_drawlayer_gui_data_t *const g = context->runtime.gui;
-  dt_drawlayer_process_state_t *const process = context->runtime.process_state;
 
   dt_drawlayer_runtime_schedule_t schedule = { 0 };
   _update_manager_information(state, request, host, &schedule);
@@ -803,9 +729,27 @@ dt_drawlayer_runtime_result_t dt_drawlayer_runtime_manager_update(dt_drawlayer_r
       if(result.ok
          && !_perform_runtime_commit_sequence(state, request, host, schedule.commit_mode, &result))
         result.ok = FALSE;
+      if(schedule.invalidate_layer_cache && g)
+      {
+        dt_drawlayer_release_all_base_patch_extra_refs(g);
+        dt_drawlayer_cache_patch_clear(&g->process.base_patch, "drawlayer patch");
+        g->process.cache_valid = FALSE;
+        g->process.cache_dirty = FALSE;
+        dt_drawlayer_paint_runtime_state_reset(&g->process.cache_dirty_rect);
+        g->process.cache_imgid = -1;
+        g->process.cache_layer_name[0] = '\0';
+        g->process.cache_layer_order = -1;
+        dt_drawlayer_process_state_invalidate(&g->process);
+      }
       if(result.ok && schedule.sync_widget_cache
          && !_perform_runtime_widget_cache_sync(host, &result))
         result.ok = FALSE;
+      if(result.ok && schedule.ensure_worker_running && self && g
+         && !dt_drawlayer_worker_ensure_running(self, g->stroke.worker))
+      {
+        dt_control_log(_("failed to start drawing worker"));
+        result.ok = FALSE;
+      }
       if(schedule.queue_redraw_center) dt_control_queue_redraw_center();
       break;
 
@@ -825,10 +769,6 @@ dt_drawlayer_runtime_result_t dt_drawlayer_runtime_manager_update(dt_drawlayer_r
         result.ok = FALSE;
       if(result.ok && schedule.feedback != DT_DRAWLAYER_RUNTIME_FEEDBACK_NONE && g)
         dt_drawlayer_show_runtime_feedback(g, schedule.feedback);
-      if(schedule.wait_fullres_worker && g)
-        dt_drawlayer_worker_flush_finished_strokes(g->stroke.worker);
-      if(schedule.flush_process_patch && self && g)
-        dt_drawlayer_flush_process_patch_to_base(self, g);
       if(schedule.flush_sidecar)
       {
         const dt_drawlayer_runtime_update_request_t begin = {
@@ -850,20 +790,13 @@ dt_drawlayer_runtime_result_t dt_drawlayer_runtime_manager_update(dt_drawlayer_r
         _update_manager_information(state, &end, host, NULL);
       }
       if(schedule.stop_worker && self && g) dt_drawlayer_worker_stop(self, g->stroke.worker);
-#ifdef HAVE_OPENCL
-      if(schedule.release_process_clmem && process)
-      {
-        dt_drawlayer_cache_patch_wrlock(&process->process_read_patch);
-        dt_drawlayer_process_state_clear_clmem(process);
-        dt_drawlayer_cache_patch_wrunlock(&process->process_read_patch);
-      }
-#endif
       if(schedule.invalidate_layer_cache && g)
       {
         dt_drawlayer_release_all_base_patch_extra_refs(g);
         dt_drawlayer_cache_patch_clear(&g->process.base_patch, "drawlayer patch");
         g->process.cache_valid = FALSE;
         g->process.cache_dirty = FALSE;
+        dt_drawlayer_paint_runtime_state_reset(&g->process.cache_dirty_rect);
         dt_drawlayer_process_state_invalidate(&g->process);
       }
       if(schedule.refresh_gui && self) gui_update(self);
@@ -887,8 +820,6 @@ dt_drawlayer_runtime_result_t dt_drawlayer_runtime_manager_update(dt_drawlayer_r
         if(result.ok && schedule.sync_widget_cache
            && !_perform_runtime_widget_cache_sync(host, &result))
           result.ok = FALSE;
-        if(result.ok && schedule.prime_live_process_patch && self)
-          dt_drawlayer_prime_live_process_patch_before_stroke(self);
         if(result.ok && schedule.ensure_worker_running && self && g)
         {
           if(!dt_drawlayer_worker_ensure_running(self, g->stroke.worker))
@@ -918,7 +849,7 @@ dt_drawlayer_runtime_result_t dt_drawlayer_runtime_manager_update(dt_drawlayer_r
       if(schedule.queue_raw_input && g)
       {
         gboolean ok = TRUE;
-        if(!context->raw_input)
+        if(IS_NULL_PTR(context->raw_input))
           ok = FALSE;
         else if(request->raw_input_kind == DT_DRAWLAYER_RUNTIME_RAW_INPUT_STROKE_END)
           ok = dt_drawlayer_worker_enqueue_stroke_end(g->stroke.worker, context->raw_input);
@@ -931,14 +862,6 @@ dt_drawlayer_runtime_result_t dt_drawlayer_runtime_manager_update(dt_drawlayer_r
 
     case DT_DRAWLAYER_RUNTIME_EVENT_PROCESS_CPU_BEFORE:
     case DT_DRAWLAYER_RUNTIME_EVENT_PROCESS_CL_BEFORE:
-#ifdef HAVE_OPENCL
-      if(schedule.release_process_clmem && process)
-      {
-        dt_drawlayer_cache_patch_wrlock(&process->process_read_patch);
-        dt_drawlayer_process_state_clear_clmem(process);
-        dt_drawlayer_cache_patch_wrunlock(&process->process_read_patch);
-      }
-#endif
       if(schedule.ensure_layer_cache)
       {
         const dt_drawlayer_runtime_update_request_t begin = {
@@ -955,10 +878,6 @@ dt_drawlayer_runtime_result_t dt_drawlayer_runtime_manager_update(dt_drawlayer_r
         };
         _update_manager_information(state, &end, host, NULL);
       }
-      if(schedule.build_process_patch && self && g && process && process->cache_valid && context->runtime.piece
-         && context->runtime.roi_out)
-        dt_drawlayer_build_process_patch_from_base(self, g, context->runtime.piece, context->runtime.roi_in,
-                                                   context->runtime.roi_out);
       break;
 
     case DT_DRAWLAYER_RUNTIME_EVENT_PROCESS_CPU_AFTER:
@@ -993,136 +912,47 @@ void dt_drawlayer_runtime_manager_bind_piece(dt_drawlayer_runtime_manager_t *hea
                                              dt_drawlayer_process_state_t **runtime_process,
                                              gboolean *runtime_display_pipe)
 {
-  if(runtime_manager) *runtime_manager = display_pipe ? gui_manager : headless_manager;
-  if(runtime_process) *runtime_process = display_pipe ? gui_process : headless_process;
-  if(runtime_display_pipe) *runtime_display_pipe = display_pipe;
+  if(!IS_NULL_PTR(runtime_manager)) *runtime_manager = display_pipe ? gui_manager : headless_manager;
+  if(!IS_NULL_PTR(runtime_process)) *runtime_process = display_pipe ? gui_process : headless_process;
+  if(!IS_NULL_PTR(runtime_display_pipe)) *runtime_display_pipe = display_pipe;
 }
 
 void dt_drawlayer_process_state_init(dt_drawlayer_process_state_t *state)
 {
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
   memset(state, 0, sizeof(*state));
   state->cache_imgid = -1;
   state->cache_layer_order = -1;
-#ifdef HAVE_OPENCL
-  state->process_read_clmem_devid = -1;
-  state->process_read_clmem_dirty = TRUE;
-  dt_drawlayer_paint_runtime_state_reset(&state->process_read_clmem_dirty_rect);
-#endif
 }
 
 void dt_drawlayer_process_state_cleanup(dt_drawlayer_process_state_t *state)
 {
-  if(!state) return;
-#ifdef HAVE_OPENCL
-  dt_drawlayer_process_state_clear_clmem(state);
-#endif
+  if(IS_NULL_PTR(state)) return;
   dt_drawlayer_cache_patch_clear(&state->base_patch, "drawlayer patch");
-  dt_drawlayer_cache_patch_clear(&state->process_patch, "drawlayer patch");
-  dt_drawlayer_cache_patch_clear(&state->process_read_patch, "drawlayer patch");
   dt_drawlayer_cache_patch_clear(&state->stroke_mask, "drawlayer patch");
-  dt_drawlayer_cache_patch_clear(&state->process_stroke_mask, "drawlayer patch");
   memset(state, 0, sizeof(*state));
   state->cache_imgid = -1;
   state->cache_layer_order = -1;
-#ifdef HAVE_OPENCL
-  state->process_read_clmem_devid = -1;
-  state->process_read_clmem_dirty = TRUE;
-  dt_drawlayer_paint_runtime_state_reset(&state->process_read_clmem_dirty_rect);
-#endif
 }
 
 void dt_drawlayer_process_state_reset_stroke(dt_drawlayer_process_state_t *state)
 {
-  if(!state) return;
-  dt_drawlayer_cache_patch_wrlock(&state->process_patch);
-  dt_drawlayer_paint_runtime_state_reset(&state->process_dirty_rect);
+  if(IS_NULL_PTR(state)) return;
   if(state->stroke_mask.pixels)
     memset(state->stroke_mask.pixels, 0, (size_t)state->stroke_mask.width * state->stroke_mask.height * sizeof(float));
-  if(state->process_stroke_mask.pixels)
-    memset(state->process_stroke_mask.pixels, 0,
-           (size_t)state->process_stroke_mask.width * state->process_stroke_mask.height * sizeof(float));
-  dt_drawlayer_cache_patch_wrunlock(&state->process_patch);
 }
 
 void dt_drawlayer_process_state_invalidate(dt_drawlayer_process_state_t *state)
 {
-  if(!state) return;
-  dt_drawlayer_cache_patch_wrlock(&state->process_patch);
-  dt_drawlayer_cache_invalidate_process_patch_state(&state->process_patch_valid, &state->process_patch_dirty,
-                                                    &state->process_dirty_rect, &state->process_patch_padding,
-                                                    &state->process_combined_roi);
-  state->process_snapshot_valid = FALSE;
-#ifdef HAVE_OPENCL
-  state->process_read_clmem_dirty = TRUE;
-  dt_drawlayer_paint_runtime_state_reset(&state->process_read_clmem_dirty_rect);
-#endif
-  dt_drawlayer_cache_patch_wrunlock(&state->process_patch);
-}
-
-/* Publish a stable, host-side snapshot of the mutable `process_patch` into
- * `process_read_patch` for readers (GUI, pipeline, GPU). This copies either
- * the full tile or the provided damage rect into the external buffer while
- * holding `process_patch` read-locked and `process_read_patch` write-locked,
- * then flushes any host-pinned memory for safe GPU access. */
-gboolean dt_drawlayer_process_state_publish_locked(dt_drawlayer_process_state_t *state,
-                                                   const dt_drawlayer_damaged_rect_t *damage,
-                                                   const gboolean full_copy)
-{
-  if(!state) return FALSE;
-  if(!full_copy && (!damage || !damage->valid)) return FALSE;
-  if(state->process_patch.width <= 0 || state->process_patch.height <= 0) return FALSE;
-  const gboolean need_realloc = (!state->process_read_patch.pixels
-                                 || state->process_read_patch.width != state->process_patch.width
-                                 || state->process_read_patch.height != state->process_patch.height);
-  if(!_ensure_external_patch_buffer(&state->process_read_patch, state->process_patch.width,
-                                    state->process_patch.height, "drawlayer process read tile"))
-    return FALSE;
-
-  dt_drawlayer_cache_patch_rdlock(&state->process_patch);
-  if(!state->process_patch.pixels || state->process_patch.width <= 0 || state->process_patch.height <= 0)
-  {
-    dt_drawlayer_cache_patch_rdunlock(&state->process_patch);
-    return FALSE;
-  }
-
-  const gboolean publish_full_copy = (full_copy || need_realloc || !state->process_snapshot_valid);
-  const int width = state->process_patch.width;
-  const int height = state->process_patch.height;
-  dt_drawlayer_cache_patch_wrlock(&state->process_read_patch);
-  const dt_drawlayer_damaged_rect_t full_rect = {
-    .valid = TRUE,
-    .nw = { 0, 0 },
-    .se = { width, height },
-  };
-  const dt_drawlayer_damaged_rect_t *publish_rect = publish_full_copy ? &full_rect : damage;
-  _copy_patch_rect(&state->process_patch, &state->process_read_patch, publish_rect);
-  state->process_snapshot_valid = TRUE;
-#ifdef HAVE_OPENCL
-  state->process_read_clmem_dirty = TRUE;
-  if(publish_full_copy)
-  {
-    state->process_read_clmem_dirty_rect = full_rect;
-  }
-  else
-  {
-    dt_drawlayer_paint_runtime_note_dab_damage(&state->process_read_clmem_dirty_rect, publish_rect);
-  }
-#endif
-  dt_drawlayer_cache_patch_wrunlock(&state->process_read_patch);
-  dt_drawlayer_cache_patch_rdunlock(&state->process_patch);
-#ifdef HAVE_OPENCL
-  dt_dev_pixelpipe_cache_flush_host_pinned_image(darktable.pixelpipe_cache, state->process_read_patch.pixels, NULL,
-                                                 -1);
-#endif
-  return TRUE;
+  if(IS_NULL_PTR(state)) return;
+  dt_drawlayer_cache_patch_clear(&state->stroke_mask, "drawlayer stroke mask");
 }
 
 static void _release_runtime_source(dt_drawlayer_runtime_manager_t *state,
                                     dt_drawlayer_process_state_t *process,
                                     dt_drawlayer_runtime_source_t *source)
 {
-  if(!source) return;
+  if(IS_NULL_PTR(source)) return;
 
   if(state && source->tracked_read_lock)
     dt_drawlayer_runtime_manager_note_buffer_lock(state, source->tracked_buffer, source->tracked_actor, FALSE,
@@ -1130,11 +960,8 @@ static void _release_runtime_source(dt_drawlayer_runtime_manager_t *state,
 
   switch(source->kind)
   {
-    case DT_DRAWLAYER_SOURCE_GUI_PROCESS:
-      break;
-
-    case DT_DRAWLAYER_SOURCE_HEADLESS_BASE:
-      if(process) dt_drawlayer_cache_patch_rdunlock(&process->base_patch);
+    case DT_DRAWLAYER_SOURCE_BASE_PATCH:
+      if(!IS_NULL_PTR(process)) dt_drawlayer_cache_patch_rdunlock(&process->base_patch);
       break;
 
     case DT_DRAWLAYER_SOURCE_NONE:
@@ -1147,7 +974,7 @@ static void _release_runtime_source(dt_drawlayer_runtime_manager_t *state,
 
 void dt_drawlayer_ui_cursor_clear(dt_drawlayer_ui_state_t *state)
 {
-  if(!state) return;
+  if(IS_NULL_PTR(state)) return;
   if(state->cursor_surface)
   {
     cairo_surface_destroy(state->cursor_surface);
@@ -1161,77 +988,3 @@ void dt_drawlayer_ui_cursor_clear(dt_drawlayer_ui_state_t *state)
   state->cursor_shape = -1;
   state->cursor_color[0] = state->cursor_color[1] = state->cursor_color[2] = -1.0f;
 }
-
-#ifdef HAVE_OPENCL
-void dt_drawlayer_process_state_clear_clmem(dt_drawlayer_process_state_t *state)
-{
-  if(!state) return;
-  if(state->process_read_clmem) dt_opencl_release_mem_object(state->process_read_clmem);
-  state->process_read_clmem = NULL;
-  state->process_read_clmem_width = 0;
-  state->process_read_clmem_height = 0;
-  state->process_read_clmem_devid = -1;
-  state->process_read_clmem_dirty = TRUE;
-  dt_drawlayer_paint_runtime_state_reset(&state->process_read_clmem_dirty_rect);
-}
-
-cl_mem dt_drawlayer_process_state_ensure_read_clmem_locked(dt_drawlayer_process_state_t *state, const int devid)
-{
-  if(!state || devid < 0 || !state->process_read_patch.pixels || state->process_read_patch.width <= 0
-     || state->process_read_patch.height <= 0)
-    return NULL;
-
-  const gboolean need_realloc = (!state->process_read_clmem || state->process_read_clmem_devid != devid
-                                 || state->process_read_clmem_width != state->process_read_patch.width
-                                 || state->process_read_clmem_height != state->process_read_patch.height);
-  if(need_realloc)
-  {
-    dt_drawlayer_process_state_clear_clmem(state);
-    state->process_read_clmem
-        = dt_opencl_alloc_device(devid, state->process_read_patch.width, state->process_read_patch.height,
-                                 4 * sizeof(float));
-    if(!state->process_read_clmem) return NULL;
-    state->process_read_clmem_width = state->process_read_patch.width;
-    state->process_read_clmem_height = state->process_read_patch.height;
-    state->process_read_clmem_devid = devid;
-    state->process_read_clmem_dirty = TRUE;
-    state->process_read_clmem_dirty_rect = (dt_drawlayer_damaged_rect_t){
-      .valid = TRUE,
-      .nw = { 0, 0 },
-      .se = { state->process_read_patch.width, state->process_read_patch.height },
-    };
-  }
-
-  if(state->process_read_clmem_dirty)
-  {
-    dt_drawlayer_damaged_rect_t upload_rect = state->process_read_clmem_dirty_rect;
-    if(!upload_rect.valid)
-    {
-      upload_rect = (dt_drawlayer_damaged_rect_t){
-        .valid = TRUE,
-        .nw = { 0, 0 },
-        .se = { state->process_read_patch.width, state->process_read_patch.height },
-      };
-    }
-
-    const size_t origin[] = { (size_t)CLAMP(upload_rect.nw[0], 0, state->process_read_patch.width),
-                              (size_t)CLAMP(upload_rect.nw[1], 0, state->process_read_patch.height), 0 };
-    const size_t region[] = { (size_t)CLAMP(upload_rect.se[0], 0, state->process_read_patch.width) - origin[0],
-                              (size_t)CLAMP(upload_rect.se[1], 0, state->process_read_patch.height) - origin[1], 1 };
-    float *host_ptr = state->process_read_patch.pixels
-                      + 4 * ((size_t)origin[1] * state->process_read_patch.width + origin[0]);
-    if(region[0] == 0 || region[1] == 0
-       || dt_opencl_write_host_to_device_raw(devid, host_ptr, state->process_read_clmem, origin, region,
-                                             state->process_read_patch.width * 4 * (int)sizeof(float), CL_TRUE)
-       != CL_SUCCESS)
-    {
-      dt_drawlayer_process_state_clear_clmem(state);
-      return NULL;
-    }
-    state->process_read_clmem_dirty = FALSE;
-    dt_drawlayer_paint_runtime_state_reset(&state->process_read_clmem_dirty_rect);
-  }
-
-  return state->process_read_clmem;
-}
-#endif

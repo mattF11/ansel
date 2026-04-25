@@ -57,7 +57,6 @@ HB_PACKAGES=(
   libsoup@2
   little-cms2
   llvm
-  lua
   ninja
   openexr
   openjpeg
@@ -66,10 +65,35 @@ HB_PACKAGES=(
   po4a
   pugixml
   sdl2
+  shared-mime-info
   webp
 )
 
-brew install "${HB_PACKAGES[@]}"
+brew_install_status=0
+if brew install "${HB_PACKAGES[@]}"; then
+  :
+else
+  brew_install_status=$?
+fi
+
+# Homebrew may return a non-zero status when a formula post-install hook fails even if
+# the formula itself was installed. We only continue when every requested dependency is
+# present, because the build only needs the packages to exist in the Cellar.
+missing_packages=()
+for package in "${HB_PACKAGES[@]}"; do
+  if ! brew list --formula "${package}" >/dev/null 2>&1; then
+    missing_packages+=("${package}")
+  fi
+done
+
+if (( ${#missing_packages[@]} > 0 )); then
+  printf 'Missing Homebrew packages after install: %s\n' "${missing_packages[*]}" >&2
+  exit "${brew_install_status:-1}"
+fi
+
+if (( brew_install_status != 0 )); then
+  echo "brew install reported a post-install failure, but all requested packages are present." >&2
+fi
 
 # Handle keg-only libs.
 brew link --force libomp libsoup@2

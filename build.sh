@@ -50,7 +50,7 @@ DT_SRC_DIR=$(cd "$DT_SRC_DIR" && pwd -P)
 
 INSTALL_PREFIX_DEFAULT="/opt/ansel"
 INSTALL_PREFIX="$INSTALL_PREFIX_DEFAULT"
-BUILD_TYPE_DEFAULT="Release"
+BUILD_TYPE_DEFAULT="RelWithDebInfo"
 BUILD_TYPE="$BUILD_TYPE_DEFAULT"
 BUILD_DIR_DEFAULT="$DT_SRC_DIR/build"
 BUILD_DIR="$BUILD_DIR_DEFAULT"
@@ -74,7 +74,7 @@ SUDO=""
 
 PRINT_HELP=0
 
-FEATURES="CMARK COLORD GRAPHICSMAGICK IMAGEMAGICK KWALLET LIBSECRET LUA MAP MAC_INTEGRATION NLS OPENCL OPENEXR OPENMP WEBP"
+FEATURES="CMARK COLORD GRAPHICSMAGICK IMAGEMAGICK KWALLET LIBSECRET MAP MAC_INTEGRATION NLS OPENCL OPENEXR OPENMP WEBP"
 
 # prepare a lowercase version with a space before and after
 # it's very important for parse_feature, has no impact in for loop expansions
@@ -378,6 +378,7 @@ MAKE=$(make_name)
 
 features_set_to_autodetect
 FEAT_CMARK=1
+FEAT_OPENMP=1
 parse_args "$@"
 
 if [ $PRINT_HELP -ne 0 ] ; then
@@ -412,7 +413,7 @@ CPU_ARCHITECTURE=""
 if [[ `uname -a` =~ ^Darwin.* ]] && [[ `uname -a` =~ .*arm64$ ]]
 then
     CPU_ARCHITECTURE="ARM64"
-    CMAKE_MORE_OPTIONS="${CMAKE_MORE_OPTIONS} -DBUILD_SSE2_CODEPATHS=OFF"
+    CMAKE_MORE_OPTIONS="${CMAKE_MORE_OPTIONS}"
 else
 	CPU_ARCHITECTURE="Intel"
 fi
@@ -553,6 +554,13 @@ if [ $DO_INSTALL ] ; then
 		[ -f "/usr/local/bin/ansel" ] && $SUDO rm /usr/local/bin/ansel
 
 		$SUDO ln -s "$INSTALL_PREFIX"/bin/ansel /usr/local/bin/ansel
+	fi
+
+	if [ -f "$INSTALL_PREFIX/bin/ansel-cli" ]; then
+		[ ! -d "/usr/local/bin/" ] && $SUDO mkdir -p /usr/local/bin/
+		[ -f "/usr/local/bin/ansel-cli" ] && $SUDO rm /usr/local/bin/ansel-cli
+
+		$SUDO ln -s "$INSTALL_PREFIX"/bin/ansel-cli /usr/local/bin/ansel-cli
 	fi
 
 	if [ -f "$INSTALL_PREFIX/share/applications/photos.ansel.ansel.desktop" ]; then

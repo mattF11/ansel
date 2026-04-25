@@ -38,11 +38,23 @@ Ansel is in alpha version. The GUI is susceptible to change and the application 
 
 ## OS support
 
-Ansel is developped on Ubuntu and Windows.
+Ansel is developped on Ubuntu, Fedora and Windows.
 
 Mac OS and, to a lesser extent, Windows have known GUI issues that come from using Gtk as
 a graphical toolkit. Not much can be done here, as Gtk suffers from a lack of Windows/Mac devs too.
 Go and support these projects so they can have more man-hours put on fixing those.
+
+## Supported compilers & environments
+
+- OpenMP >= 5.1
+- GCC :
+  - >= 12 if building without OpenMP support
+  - >= 14 for full OpenMP support,
+- CLang :
+  - >= 16 if building without OpenMP support
+  - >= 20 for full OpenMP support,
+- XCode >= 15.2
+
 
 ## Useful links
 
@@ -55,9 +67,38 @@ Go and support these projects so they can have more man-hours put on fixing thos
     - [Coding style](https://ansel.photos/en/contribute/coding-style/)
 - [Developer documentation](https://dev.ansel.photos)
 - [Project news](https://ansel.photos/en/news/)
-- Community forum - the community forum was hacked, we are looking into setting up a new one
+- [Discussions](https://github.com/aurelienpierreeng/ansel/discussions) - directly on github until we set up a new community forum
 - [Matrix chatrooms](https://app.element.io/#/room/#ansel:matrix.org)
 - [Support](https://ansel.photos/en/support/)
+
+## What changed ?
+
+- The import window has been [fully rewritten](https://ansel.photos/en/news/rewriting-import/)
+- The lighttable/filmstrip have been [almost fully rewritten](https://ansel.photos/en/news/redesigning-lighttable-and-mipmap-cache/)
+- The keyboard shortcuts backend has been [rewritten from scratch](https://ansel.photos/en/news/rewriting-key-shortcuts/)
+- The development history backend and copy-pasting/styling has been [almost fully rewritten](https://ansel.photos/en/news/history-merge-topology/)
+- The pipeline cache backend has been [fully rewritten](https://ansel.photos/en/news/complete-pipeline-overhaul/)
+- The scene-referred workflow feature split is [now complete](https://ansel.photos/en/news/color-controls-finally-correct/), with 5 new color modules and alternative GUI for color calibration
+- The GUI has been entirely redesigned and simplified : global menu, features reordering and reorganizing workflow-wise
+- Many user preferences have been removed or factorized.
+
+## Why is Ansel better than Darktable ?
+
+- Opening the lighttable is [3.53 times faster](https://ansel.photos/en/news/redesigning-lighttable-and-mipmap-cache/#benchmarks) on Ansel,
+- Switching from lighttable to darkroom is [6 times faster](https://ansel.photos/en/news/redesigning-lighttable-and-mipmap-cache/#benchmarks) on Ansel,
+- Scrolling in lighttable responds [7 times faster](https://ansel.photos/en/news/redesigning-lighttable-and-mipmap-cache/#benchmarks) in Ansel,
+- Ansel consumes [1.5 times less CPU](https://ansel.photos/en/news/redesigning-lighttable-and-mipmap-cache/#benchmarks) / [121 times less energy](https://ansel.photos/en/news/redesigning-lighttable-and-mipmap-cache/#benchmarks) in lighttable, and [2.9 less energy](https://ansel.photos/en/news/redesigning-lighttable-and-mipmap-cache/#benchmarks) in darkroom,
+- GPU modules are in average [1.6 times faster](https://ansel.photos/en/news/complete-pipeline-overhaul/#conclusion) on Ansel,
+- CPU modules are in average [1.4 times faster](https://ansel.photos/en/news/complete-pipeline-overhaul/#conclusion) on Ansel,
+- When changing a module parameters, mid-pipeline, Ansel recomputes only downstream modules in the pipeline, which is [5.4 to 40 times faster](https://ansel.photos/en/news/complete-pipeline-overhaul/#conclusion) than Darktable,
+- Exporting the same image several times at different resolutions doesn't recompute a full pipeline, but caches the common part, which is [1.27 to 100 times faster](https://ansel.photos/en/news/complete-pipeline-overhaul/#conclusion) on Ansel,
+- Ansel keeps global features in a global menu and doesn't hide them in undocumented shortcuts,
+- There is a lot less of GUI bloat,
+- Ansel does metadata writing on images only after they got selected explicitely (mouse click or keyboard shortcut), no destructive operations on hover events,
+- Scrolling works as you would expect it in any application,
+- Copy-pasting editing histories gives you the opportunity to review the resulting pipeline ordering.
+
+But to achieve all that, it was necessary to stop working on any new feature to focus on redesigning the core architecture for 4 years. APIs have been tightened, libraries have been isolated, GUI code has been removed from pipeline backend, SQL code has been removed from GUI features, the whole thing has been greatly sanitized and simplified.
 
 ## Code analysis
 
@@ -240,8 +281,8 @@ Github doesn't show anymore the contributions for repositories having more than 
 ```bash
 $ git shortlog -sn --no-merges
   4295  Pascal Obry
+  3679  Aurélien PIERRE
   3597  johannes hanika
-  2565  Aurélien PIERRE
   2127  Tobias Ellinghaus
   2083  Roman Lebedev
   1757  Henrik Andersson
@@ -252,13 +293,14 @@ $ git shortlog -sn --no-merges
    692  Ralf Brown
    604  Jérémy Rosen
    601  Dan Torop
-   566  Diederik ter Rahe
+   560  Diederik Ter Rahe
    546  Philippe Weyland
    516  Hanno Schwalm
    430  Hubert Kowalski
    355  parafin
+   341  Chris Elston
    331  Ger Siemerink
-   286  Chris.Elston
+   285  Guillaume Stutin
    283  Jeronimo Pellegrini
    276  rawfiner
    243  Nicolas Auffray
@@ -271,7 +313,7 @@ $ git shortlog -sn --no-merges
    180  Heiko Bauke
    172  Edouard Gomez
    162  Stefan Schöfegger
-   155  edgardoh
+   155  Edgardo Hoszowski
    140  Miloš Komarčević
    126  Peter Budai
    122  Victor Forsiuk
@@ -289,16 +331,15 @@ $ git shortlog -sn --no-merges
     55  Matthieu Moy
     55  bartokk
     50  Rostyslav Pidgornyi
-    49  Chris Elston
     48  Moritz Lipp
     48  tatica
     44  Dennis Gnad
     43  Marco Carrarini
     42  Christian Tellefsen
+    42  Maurizio Paglia
     41  Josep V. Moragues
     39  Matt Maguire
     38  Matthieu Volat
-    38  Maurizio Paglia
     36  Daniel Vogelbacher
     36  Jakub Filipowicz
     35  Thomas Pryds
@@ -306,7 +347,6 @@ $ git shortlog -sn --no-merges
     32  GrahamByrnes
     32  Harold le Clément de Saint-Marcq
     31  Marco
-    30  Guillaume Stutin
     30  marcel
     28  wpferguson
     27  HansBull
@@ -316,6 +356,7 @@ $ git shortlog -sn --no-merges
     25  shlomi braitbart
     24  Michal Babej
     23  lhietal
+    22  luzpaz
     22  quovadit
     21  Antony Dovgal
     21  Jacques Le Clerc
@@ -323,7 +364,6 @@ $ git shortlog -sn --no-merges
     20  Sam Smith
     19  Richard Wonka
     19  Ryo Shinozaki
-    18  Jiyone
     18  Rikard Öxler
     18  darkelectron
     17  Guillaume Marty
@@ -339,7 +379,6 @@ $ git shortlog -sn --no-merges
     14  Brian Teague
     14  Frédéric Grollier
     14  lologor
-    14  luzpaz
     13  Kevin Vermassen
     13  Marcus Gama
     13  Novy Sawai
@@ -361,6 +400,7 @@ $ git shortlog -sn --no-merges
     10  Victor Engmark
     10  Wyatt Olson
     10  junkyardsparkle
+    10  starapo7348
     10  thisnamewasnottaken
      9  Arnaud TANGUY
      9  Fabio Heer
@@ -373,12 +413,12 @@ $ git shortlog -sn --no-merges
      8  Jan Kundrát
      8  Jochen Schroeder
      8  Matteo Mardegan
+     8  Miguel Moquillon
      8  Petr Styblo
      8  Robert William Hutton
      8  Roman Khatko
      8  Stuart Henderson
      8  itinerarium
-     8  luz paz
      8  vertama
      8  vrnhgd
      7  Ammon Riley
@@ -391,12 +431,12 @@ $ git shortlog -sn --no-merges
      7  Marcus Rückert
      7  Richard Hughes
      7  calca
-     7  elstoc
      7  篠崎亮　Ryo Shinozaki
      6  Artur de Sousa Rocha
      6  Cherrot Luo
      6  Christian Himpel
      6  Denis Dyakov
+     6  Diederik ter Rahe
      6  Dominik Markiewicz
      6  Guillaume Benny
      6  Harald
@@ -428,36 +468,45 @@ $ git shortlog -sn --no-merges
 
 ```bash
 $ git shortlog -sn --no-merges --since "JUN 1 2022"
-  1576  Aurélien PIERRE
+  2690  Aurélien PIERRE
+   285  Guillaume Stutin
    100  Alynx Zhou
-    30  Guillaume Stutin
     24  Hanno Schwalm
-    18  Jiyone
     17  Guillaume Marty
     14  lologor
+    13  Maurizio Paglia
     11  Miloš Komarčević
     10  Sakari Kapanen
-     9  Maurizio Paglia
+    10  starapo7348
      9  Victor Forsiuk
+     8  Miguel Moquillon
      6  Pascal Obry
      5  Luca Zulberti
      4  Alban Gruin
      4  Ricky Moon
      3  Sidney Markowitz
-     2  Diederik ter Rahe
+     2  Diederik Ter Rahe
      2  Marrony Neris
-     2  Miguel Moquillon
      2  Roman Neuhauser
+     2  Sergio Schvezov
+     2  lu-k
      2  parafin
      1  Aldric Renaudin
      1  André Doherty
      1  Chris Elston
      1  Germano Massullo
+     1  Hubert Figuière
      1  Jehan Singh
      1  Marc Cousin
+     1  Patryk Kocielnik
+     1  Peter Kovář
      1  Philippe Weyland
      1  Ralf Brown
      1  Roman Lebedev
+     1  Stephan Kleine
+     1  jakehl
+     1  lukadh
+     1  mattF11
      1  naveen
      1  realSpok
      1  tatu

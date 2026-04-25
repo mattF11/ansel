@@ -49,6 +49,7 @@
 #include "common/image_cache.h"
 #include "control/conf.h"
 #include "control/control.h"
+#include "develop/dev_pixelpipe.h"
 #include "develop/develop.h"
 
 #include "gui/gtk.h"
@@ -64,6 +65,7 @@ typedef struct dt_lib_navigation_t
   int dragging;
   int zoom_w, zoom_h; // size of the zoom button
   cairo_surface_t *image_surface;
+  uint64_t pending_hash;
 } dt_lib_navigation_t;
 
 typedef enum dt_lib_zoom_t
@@ -129,7 +131,39 @@ int position()
 
 static void _lib_navigation_control_redraw_callback(gpointer instance, gpointer user_data)
 {
+  (void)instance;
   dt_lib_module_t *self = (dt_lib_module_t *)user_data;
+  dt_control_queue_redraw_widget(self->widget);
+}
+
+static void _lib_navigation_history_resync_callback(gpointer instance, gpointer user_data)
+{
+  (void)instance;
+
+  dt_lib_module_t *self = (dt_lib_module_t *)user_data;
+  dt_lib_navigation_t *d = (dt_lib_navigation_t *)self->data;
+  dt_develop_t *dev = darktable.develop;
+  if(IS_NULL_PTR(d) || IS_NULL_PTR(dev) || IS_NULL_PTR(dev->preview_pipe)) return;
+
+  d->pending_hash = dt_dev_pixelpipe_get_hash(dev->preview_pipe);
+  if(d->pending_hash == DT_PIXELPIPE_CACHE_HASH_INVALID) return;
+
+  if(dt_dev_pixelpipe_cache_peek_gui(dev->preview_pipe, NULL, NULL, NULL, NULL, NULL, NULL))
+  {
+    d->pending_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
+    dt_control_queue_redraw_widget(self->widget);
+  }
+}
+
+static void _lib_navigation_cacheline_ready_callback(gpointer instance, const guint64 hash, gpointer user_data)
+{
+  (void)instance;
+
+  dt_lib_module_t *self = (dt_lib_module_t *)user_data;
+  dt_lib_navigation_t *d = (dt_lib_navigation_t *)self->data;
+  if(IS_NULL_PTR(d) || d->pending_hash != hash) return;
+
+  d->pending_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
   dt_control_queue_redraw_widget(self->widget);
 }
 
@@ -140,6 +174,7 @@ void gui_init(dt_lib_module_t *self)
   dt_lib_navigation_t *d = (dt_lib_navigation_t *)g_malloc0(sizeof(dt_lib_navigation_t));
   self->data = (void *)d;
   d->image_surface = NULL;
+  d->pending_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
 
   /* create drawingarea */
   self->widget = gtk_drawing_area_new();
@@ -163,9 +198,11 @@ void gui_init(dt_lib_module_t *self)
   gtk_widget_set_size_request(self->widget, -1, 175);
   gtk_widget_set_name(GTK_WIDGET(self->widget), "navigation-module");
 
-  /* connect a redraw callback to control draw all and preview pipe finish signals */
-  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED,
-                            G_CALLBACK(_lib_navigation_control_redraw_callback), self);
+  /* connect redraw callbacks to targeted preview cache publication and explicit redraw requests */
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_HISTORY_RESYNC,
+                            G_CALLBACK(_lib_navigation_history_resync_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_CACHELINE_READY,
+                            G_CALLBACK(_lib_navigation_cacheline_ready_callback), self);
   DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_CONTROL_NAVIGATION_REDRAW,
                             G_CALLBACK(_lib_navigation_control_redraw_callback), self);
 
@@ -176,10 +213,13 @@ void gui_cleanup(dt_lib_module_t *self)
 {
   /* disconnect from signal */
   DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_lib_navigation_control_redraw_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_lib_navigation_history_resync_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_lib_navigation_cacheline_ready_callback), self);
 
   dt_lib_navigation_t *d = (dt_lib_navigation_t *)self->data;
   if(d->image_surface) cairo_surface_destroy(d->image_surface);
   d->image_surface = NULL;
+  d->pending_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
 
   dt_free(self->data);
 }
@@ -200,7 +240,7 @@ static gboolean _lib_navigation_draw_callback(GtkWidget *widget, cairo_t *crf, g
   dt_lib_module_t *self = (dt_lib_module_t *)user_data;
   dt_lib_navigation_t *d = (dt_lib_navigation_t *)self->data;
 
-  const gboolean has_preview_image = dt_dev_pixelpipe_is_backbufer_valid(dev->preview_pipe, dev);
+  const gboolean has_preview_image = dt_dev_pixelpipe_is_backbufer_valid(dev->preview_pipe);
 
   static uint64_t image_hash = -1;
   static int wd = 0;
@@ -228,12 +268,14 @@ static gboolean _lib_navigation_draw_callback(GtkWidget *widget, cairo_t *crf, g
     if(d->image_surface) cairo_surface_destroy(d->image_surface);
     d->image_surface = dt_cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
 
-    // Fetch the backbuffer
-    struct dt_pixel_cache_entry_t *cache_entry;
-    void *data = dt_dev_pixelpipe_cache_get_read_only(darktable.pixelpipe_cache,
-                                                      dt_dev_backbuf_get_hash(&dev->preview_pipe->backbuf),
-                                                      &cache_entry, darktable.develop, dev->preview_pipe);
-    if(!data) return TRUE;
+    // Fetch the backbuffer. The preview pipe backbuffer already owns the cache keepalive ref:
+    // navigation only needs a short read-only critical section while it copies into its own cairo surface.
+    struct dt_pixel_cache_entry_t *cache_entry = NULL;
+    void *data = NULL;
+    if(!dt_dev_pixelpipe_cache_peek_gui(dev->preview_pipe, NULL, &data, &cache_entry, NULL, NULL, NULL))
+      return TRUE;
+
+    dt_dev_pixelpipe_cache_rdlock_entry(darktable.pixelpipe_cache, TRUE, cache_entry);
 
     wd = dev->preview_pipe->backbuf.width;
     ht = dev->preview_pipe->backbuf.height;
@@ -253,8 +295,7 @@ static gboolean _lib_navigation_draw_callback(GtkWidget *widget, cairo_t *crf, g
     cairo_surface_destroy(tmp_surface);
     cairo_destroy(cri);
 
-    dt_dev_pixelpipe_cache_close_read_only(darktable.pixelpipe_cache,
-                                           dt_dev_backbuf_get_hash(&dev->preview_pipe->backbuf), cache_entry);
+    dt_dev_pixelpipe_cache_rdlock_entry(darktable.pixelpipe_cache, FALSE, cache_entry);
 
     imgid = dev->image_storage.id;
   }
@@ -348,7 +389,7 @@ static gboolean _lib_navigation_draw_callback(GtkWidget *widget, cairo_t *crf, g
     if(dev->roi.scaling == 1.f)
       fit = g_strdup(_("Fit"));
   
-    zoomline = g_strdup_printf("%s %.0f%%", fit ? fit : "", dev->roi.scaling * dev->roi.natural_scale / darktable.gui->ppd * 100);
+    zoomline = g_strdup_printf("%s %.0f%%", fit ? fit : "", dev->roi.scaling * dev->roi.natural_scale * 100);
     if(fit)
     {
       dt_free(fit);
@@ -449,7 +490,7 @@ static gboolean _lib_navigation_motion_notify_callback(GtkWidget *widget, GdkEve
 static void _zoom_preset_change(dt_lib_zoom_t zoom)
 {
   dt_develop_t *dev = darktable.develop;
-  if(!dev) return;
+  if(IS_NULL_PTR(dev)) return;
 
   switch(zoom)
   {
@@ -489,8 +530,8 @@ static void _zoom_preset_change(dt_lib_zoom_t zoom)
   }
 
   // Actual pixelpipe scaling is dev->roi.scaling * dev->roi.natural_scale,
-  // where dev->roi.natural_scale ensures the images fits within viewport
-  dev->roi.scaling /= dev->roi.natural_scale / darktable.gui->ppd;
+  // where dev->roi.natural_scale ensures the image fits within the viewport.
+  dev->roi.scaling /= dev->roi.natural_scale;
 
   dt_dev_check_zoom_pos_bounds(dev, &dev->roi.x, &dev->roi.y, NULL, NULL);
   dt_dev_pixelpipe_change_zoom_main(dev);

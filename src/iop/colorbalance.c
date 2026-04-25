@@ -202,9 +202,17 @@ int default_group()
   return IOP_GROUP_COLOR;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
+}
+
+void input_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                  dt_iop_buffer_dsc_t *dsc)
+{
+  default_input_format(self, pipe, piece, dsc);
+  dsc->channels = 4;
+  dsc->datatype = TYPE_FLOAT;
 }
 
 int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version, void *new_params,
@@ -333,11 +341,14 @@ static inline float CDL(float x, float slope, float offset, float power)
 }
 
 // see http://www.brucelindbloom.com/Eqn_RGB_XYZ_Matrix.html for the transformation matrices
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_colorbalance_data_t *d = (dt_iop_colorbalance_data_t *)piece->data;
-  const int ch = piece->colors;
+  const int ch = 4;
 
   // these are RGB values!
   const dt_aligned_pixel_t gain = { d->gain[CHANNEL_RED] * d->gain[CHANNEL_FACTOR],
@@ -365,14 +376,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
                           gamma_inv = { (gamma[0] != 0.0) ? 1.0 / gamma[0] : 1000000.0,
                                         (gamma[1] != 0.0) ? 1.0 / gamma[1] : 1000000.0,
                                         (gamma[2] != 0.0) ? 1.0 / gamma[2] : 1000000.0 };
-
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) \
-      dt_omp_firstprivate(ch, gain, gamma_inv, lift, ivoid, ovoid, roi_in, \
-                          roi_out) \
-      shared(d) \
-      schedule(static)
-#endif
+      __OMP_PARALLEL_FOR_SIMD__()
       for(size_t k = 0; k < (size_t)ch * roi_in->width * roi_out->height; k += ch)
       {
         float *in = ((float *)ivoid) + k;
@@ -416,15 +420,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
                           gamma_inv = { (gamma[0] != 0.0) ? 1.0 / gamma[0] : 1000000.0,
                                         (gamma[1] != 0.0) ? 1.0 / gamma[1] : 1000000.0,
                                         (gamma[2] != 0.0) ? 1.0 / gamma[2] : 1000000.0 };
-
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) \
-      dt_omp_firstprivate(ch, contrast, gain, gamma_inv, grey, ivoid, lift, \
-                          ovoid, roi_in, roi_out, run_contrast, \
-                          run_saturation, run_saturation_out) \
-      shared(d) \
-      schedule(static)
-#endif
+      __OMP_PARALLEL_FOR_SIMD__()
       for(size_t k = 0; k < (size_t)ch * roi_in->width * roi_out->height; k += ch)
       {
         float *in = ((float *)ivoid) + k;
@@ -485,15 +481,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
                               gamma = { (2.0f - d->gamma[CHANNEL_RED]) * (2.0f - d->gamma[CHANNEL_FACTOR]),
                                         (2.0f - d->gamma[CHANNEL_GREEN]) * (2.0f - d->gamma[CHANNEL_FACTOR]),
                                         (2.0f - d->gamma[CHANNEL_BLUE]) * (2.0f - d->gamma[CHANNEL_FACTOR])};
-
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) \
-      dt_omp_firstprivate(ch, contrast, gain, gamma, grey, ivoid, lift, ovoid, \
-                          roi_in, roi_out, run_contrast, run_saturation, \
-                          run_saturation_out) \
-      shared(d) \
-      schedule(static)
-#endif
+      __OMP_PARALLEL_FOR_SIMD__()
       for(size_t k = 0; k < (size_t)ch * roi_in->width * roi_out->height; k += ch)
       {
         float *in = ((float *)ivoid) + k;
@@ -541,252 +529,19 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
       break;
     }
   }
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
   return 0;
 }
-
-#if defined(__SSE__)
-int process_sse2(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
-{
-  dt_iop_colorbalance_data_t *d = (dt_iop_colorbalance_data_t *)piece->data;
-  const int ch = piece->colors;
-  const __m128 gain = _mm_setr_ps(d->gain[CHANNEL_RED] * d->gain[CHANNEL_FACTOR],
-                                  d->gain[CHANNEL_GREEN] * d->gain[CHANNEL_FACTOR],
-                                  d->gain[CHANNEL_BLUE] * d->gain[CHANNEL_FACTOR],
-                                  0.0f);
-
-  float contrast_inv = (d->contrast != 0.0f) ? 1.0f / d->contrast : 1000000.0f;
-  const __m128 contrast = _mm_setr_ps(contrast_inv, contrast_inv, contrast_inv, 0.0f);
-  float grey_corr = d->grey / 100.0f;
-  const __m128 grey = _mm_setr_ps(grey_corr, grey_corr, grey_corr, 0.0f);
-  const __m128 saturation = _mm_setr_ps(d->saturation, d->saturation, d->saturation, 0.0f);
-  const __m128 saturation_out = _mm_setr_ps(d->saturation_out, d->saturation_out, d->saturation_out, 0.0f);
-  const __m128 zero = _mm_setzero_ps();
-  const __m128 one = _mm_set1_ps(1.0);
-
-  // For neutral parameters, skip the computations doing x^1 or (x-a)*1 + a to save time
-  const int run_contrast = (d->contrast == 1.0f) ? 0 : 1;
-  const int run_saturation = (d->saturation == 1.0f) ? 0: 1;
-  const int run_saturation_out = (d->saturation_out == 1.0f) ? 0: 1;
-
-  switch (d->mode)
-  {
-    case LEGACY:
-    {
-      // these are RGB values!
-      const __m128 lift = _mm_setr_ps(2.0 - (d->lift[CHANNEL_RED] * d->lift[CHANNEL_FACTOR]),
-                                      2.0 - (d->lift[CHANNEL_GREEN] * d->lift[CHANNEL_FACTOR]),
-                                      2.0 - (d->lift[CHANNEL_BLUE] * d->lift[CHANNEL_FACTOR]),
-                                      0.0f);
-
-      const __m128 gamma = _mm_setr_ps(d->gamma[CHANNEL_RED] * d->gamma[CHANNEL_FACTOR],
-                                   d->gamma[CHANNEL_GREEN] * d->gamma[CHANNEL_FACTOR],
-                                   d->gamma[CHANNEL_BLUE] * d->gamma[CHANNEL_FACTOR],
-                                   0.0f);
-
-      const __m128 gamma_inv = _mm_setr_ps((gamma[0] != 0.0) ? 1.0 / gamma[0] : 1000000.0,
-                                       (gamma[1] != 0.0) ? 1.0 / gamma[1] : 1000000.0,
-                                       (gamma[2] != 0.0) ? 1.0 / gamma[2] : 1000000.0,
-                                       0.0f);
-
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) \
-      dt_omp_firstprivate(ch, gain, gamma_inv, ivoid, lift, one, ovoid, roi_in, roi_out, zero) \
-      schedule(static)
-#endif
-      for(size_t k = 0; k < (size_t)ch * roi_in->width * roi_out->height; k += ch)
-      {
-        float *in = ((float *)ivoid) + k;
-        float *out = ((float *)ovoid) + k;
-
-        // transform the pixel to sRGB:
-        // Lab -> XYZ
-        __m128 XYZ = dt_Lab_to_XYZ_sse2(_mm_load_ps(in));
-        // XYZ -> sRGB
-        __m128 rgb = dt_XYZ_to_sRGB_sse2(XYZ);
-
-        // do the calculation in RGB space
-        // regular lift gamma gain
-        rgb = ((rgb - one) * lift + one) * gain;
-        rgb = _mm_max_ps(rgb, zero);
-        rgb = _mm_pow_ps(rgb, gamma_inv);
-
-        // transform the result back to Lab
-        // sRGB -> XYZ
-        XYZ = dt_sRGB_to_XYZ_sse2(rgb);
-        // XYZ -> Lab
-        _mm_stream_ps(out, dt_XYZ_to_Lab_sse2(XYZ));
-      }
-      break;
-    }
-
-    case LIFT_GAMMA_GAIN:
-    {
-      // these are RGB values!
-      const __m128 lift = _mm_setr_ps(2.0f - (d->lift[CHANNEL_RED] * d->lift[CHANNEL_FACTOR]),
-                                      2.0f - (d->lift[CHANNEL_GREEN] * d->lift[CHANNEL_FACTOR]),
-                                      2.0f - (d->lift[CHANNEL_BLUE] * d->lift[CHANNEL_FACTOR]),
-                                      0.0f);
-      const __m128 gamma = _mm_setr_ps(d->gamma[CHANNEL_RED] * d->gamma[CHANNEL_FACTOR],
-                                       d->gamma[CHANNEL_GREEN] * d->gamma[CHANNEL_FACTOR],
-                                       d->gamma[CHANNEL_BLUE] * d->gamma[CHANNEL_FACTOR],
-                                       0.0f);
-      const __m128 gamma_inv = _mm_setr_ps((gamma[0] != 0.0) ? 1.0 / gamma[0] : 1000000.0,
-                                           (gamma[1] != 0.0) ? 1.0 / gamma[1] : 1000000.0,
-                                           (gamma[2] != 0.0) ? 1.0 / gamma[2] : 1000000.0,
-                                           0.0f);
-
-      const __m128 gamma_RGB = _mm_set1_ps(2.2f);
-      const __m128 gamma_inv_RGB = _mm_set1_ps(1.0f/2.2f);
-
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) \
-      dt_omp_firstprivate(ch, contrast, gain, gamma_inv, gamma_inv_RGB, \
-                          gamma_RGB, grey, ivoid, lift, one, ovoid, roi_in, \
-                          roi_out, run_contrast, run_saturation, \
-                          run_saturation_out, saturation, saturation_out, \
-                          zero) \
-      schedule(static)
-#endif
-      for(size_t k = 0; k < (size_t)ch * roi_in->width * roi_out->height; k += ch)
-      {
-        float *in = ((float *)ivoid) + k;
-        float *out = ((float *)ovoid) + k;
-
-        // transform the pixel to sRGB:
-        // Lab -> XYZ
-        __m128 XYZ = dt_Lab_to_XYZ_sse2(_mm_load_ps(in));
-        // XYZ -> sRGB
-        __m128 rgb = dt_XYZ_to_prophotoRGB_sse2(XYZ);
-
-        __m128 luma;
-
-        // adjust main saturation input
-        if (run_saturation)
-        {
-          luma = _mm_set1_ps(XYZ[1]); // the Y channel is the relative luminance
-          rgb = luma + saturation * (rgb - luma);
-        }
-
-        // RGB gamma adjustment
-        rgb = _mm_pow_ps(_mm_max_ps(rgb, zero), gamma_inv_RGB);
-
-        // regular lift gamma gain
-        rgb = ((rgb - one) * lift + one) * gain;
-        rgb = _mm_max_ps(rgb, zero);
-        rgb = _mm_pow_ps(rgb, gamma_inv * gamma_RGB);
-
-        // adjust main saturation output
-        if (run_saturation_out)
-        {
-          XYZ = dt_prophotoRGB_to_XYZ_sse2(rgb);
-          luma = _mm_set1_ps(XYZ[1]); // the Y channel is the relative luminance
-          rgb = luma + saturation_out * (rgb - luma);
-        }
-
-        // fulcrum contrast
-        if (run_contrast)
-        {
-          rgb = _mm_max_ps(rgb, zero);
-          rgb = _mm_pow_ps(rgb / grey, contrast) * grey;
-        }
-
-        // transform the result back to Lab
-        // sRGB -> XYZ
-        XYZ = dt_prophotoRGB_to_XYZ_sse2(rgb);
-        // XYZ -> Lab
-        _mm_stream_ps(out, dt_XYZ_to_Lab_sse2(XYZ));
-      }
-
-      break;
-    }
-
-    case SLOPE_OFFSET_POWER:
-    {
-      // these are RGB values!
-      const __m128 lift = _mm_setr_ps((d->lift[CHANNEL_RED] + d->lift[CHANNEL_FACTOR] - 2.f),
-                                      (d->lift[CHANNEL_GREEN] + d->lift[CHANNEL_FACTOR] - 2.f),
-                                      (d->lift[CHANNEL_BLUE] + d->lift[CHANNEL_FACTOR] - 2.f),
-                                      0.0f);
-      const __m128 gamma = _mm_setr_ps((2.0f - d->gamma[CHANNEL_RED]) * (2.0f - d->gamma[CHANNEL_FACTOR]),
-                                      (2.0f - d->gamma[CHANNEL_GREEN]) * (2.0f - d->gamma[CHANNEL_FACTOR]),
-                                      (2.0f - d->gamma[CHANNEL_BLUE]) * (2.0f - d->gamma[CHANNEL_FACTOR]),
-                                      0.0f);
-
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) \
-      dt_omp_firstprivate(ch, contrast, gain, gamma, grey, ivoid, lift, ovoid, \
-                          roi_in, roi_out, run_contrast, run_saturation, \
-                          run_saturation_out, saturation, saturation_out, \
-                          zero) \
-      schedule(static)
-#endif
-      for(size_t k = 0; k < (size_t)ch * roi_in->width * roi_out->height; k += ch)
-      {
-        float *in = ((float *)ivoid) + k;
-        float *out = ((float *)ovoid) + k;
-
-        // transform the pixel to sRGB:
-        // Lab -> XYZ
-        __m128 XYZ = dt_Lab_to_XYZ_sse2(_mm_load_ps(in));
-        // XYZ -> sRGB
-        __m128 rgb = dt_XYZ_to_prophotoRGB_sse2(XYZ);
-
-        __m128 luma;
-
-        // adjust main saturation
-        if (run_saturation)
-        {
-          luma = _mm_set1_ps(XYZ[1]); // the Y channel is the relative luminance
-          rgb = luma + saturation * (rgb - luma);
-        }
-
-        // slope offset
-        rgb = rgb * gain + lift;
-
-        //power
-        rgb = _mm_max_ps(rgb, zero);
-        rgb = _mm_pow_ps(rgb, gamma);
-
-        // adjust main saturation output
-        if (run_saturation_out)
-        {
-          XYZ = dt_prophotoRGB_to_XYZ_sse2(rgb);
-          luma = _mm_set1_ps(XYZ[1]); // the Y channel is the relative luminance
-          rgb = luma + saturation_out * (rgb - luma);
-        }
-
-        // fulcrum contrast
-        if (run_contrast)
-        {
-          rgb = _mm_max_ps(rgb, zero);
-          rgb = _mm_pow_ps(rgb / grey, contrast) * grey;
-        }
-
-        // transform the result back to Lab
-        // sRGB -> XYZ
-        XYZ = dt_prophotoRGB_to_XYZ_sse2(rgb);
-        // XYZ -> Lab
-        _mm_stream_ps(out, dt_XYZ_to_Lab_sse2(XYZ));
-      }
-      break;
-    }
-  }
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
-  return 0;
-}
-#endif
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_colorbalance_data_t *d = (dt_iop_colorbalance_data_t *)piece->data;
   dt_iop_colorbalance_global_data_t *gd = (dt_iop_colorbalance_global_data_t *)self->global_data;
 
   cl_int err = -999;
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   const int width = roi_in->width;
   const int height = roi_in->height;
   size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
@@ -1383,7 +1138,7 @@ static void apply_autoluma(dt_iop_module_t *self)
   dt_dev_add_history_item(darktable.develop, self, TRUE, TRUE);
 }
 
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_colorbalance_gui_data_t *g = (dt_iop_colorbalance_gui_data_t *)self->gui_data;
   if     (picker == g->hue_lift)
@@ -1594,7 +1349,7 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
   dt_iop_colorbalance_params_t *p = (dt_iop_colorbalance_params_t *)self->params;
   dt_iop_colorbalance_gui_data_t *g = (dt_iop_colorbalance_gui_data_t *)self->gui_data;
 
-  if(!w || w == g->mode)
+  if(IS_NULL_PTR(w) || w == g->mode)
   {
     set_visible_widgets(g);
     _configure_slider_blocks(NULL, self);
@@ -1602,11 +1357,11 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
 
   ++darktable.gui->reset;
 
-  if(!w || w == g->lift_r  || w == g->lift_g  || w == g->lift_b)
+  if(IS_NULL_PTR(w) || w == g->lift_r  || w == g->lift_g  || w == g->lift_b)
     set_HSL_sliders(g->hue_lift, g->sat_lift, p->lift);
-  if(!w || w == g->gamma_r || w == g->gamma_g || w == g->gamma_b)
+  if(IS_NULL_PTR(w) || w == g->gamma_r || w == g->gamma_g || w == g->gamma_b)
     set_HSL_sliders(g->hue_gamma, g->sat_gamma, p->gamma);
-  if(!w || w == g->gain_r  || w == g->gain_g  || w == g->gain_b)
+  if(IS_NULL_PTR(w) || w == g->gain_r  || w == g->gain_g  || w == g->gain_b)
     set_HSL_sliders(g->hue_gain, g->sat_gain, p->gain);
 
   --darktable.gui->reset;

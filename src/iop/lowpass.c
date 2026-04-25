@@ -172,7 +172,7 @@ int default_group()
   return IOP_GROUP_EFFECTS;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
 }
@@ -227,18 +227,19 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
 
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  (void)piece->roi_out;
   dt_iop_lowpass_data_t *d = (dt_iop_lowpass_data_t *)piece->data;
   dt_iop_lowpass_global_data_t *gd = (dt_iop_lowpass_global_data_t *)self->global_data;
 
   cl_int err = -999;
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
 
   const int width = roi_in->width;
   const int height = roi_in->height;
-  const int channels = piece->colors;
+  const int channels = piece->dsc_in.channels;
 
   const float radius = fmax(0.1f, d->radius);
   const float sigma = radius * roi_in->scale;
@@ -267,7 +268,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   if(d->lowpass_algo == LOWPASS_ALGO_GAUSSIAN)
   {
     g = dt_gaussian_init_cl(devid, width, height, channels, Labmax, Labmin, sigma, order);
-    if(!g) goto error;
+    if(IS_NULL_PTR(g)) goto error;
     err = dt_gaussian_blur_cl(g, dev_in, dev_out);
     if(err != CL_SUCCESS) goto error;
     dt_gaussian_free_cl(g);
@@ -280,7 +281,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
     const float detail = -1.0f; // we want the bilateral base layer
 
     b = dt_bilateral_init_cl(devid, width, height, sigma_s, sigma_r);
-    if(!b) goto error;
+    if(IS_NULL_PTR(b)) goto error;
     err = dt_bilateral_splat_cl(b, dev_in);
     if(err != CL_SUCCESS) goto error;
     err = dt_bilateral_blur_cl(b);
@@ -292,19 +293,19 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   }
 
   dev_tmp = dt_opencl_alloc_device(devid, width, height, sizeof(float) * 4);
-  if(dev_tmp == NULL) goto error;
+  if(IS_NULL_PTR(dev_tmp)) goto error;
 
   dev_cm = dt_opencl_copy_host_to_device(devid, d->ctable, 256, 256, sizeof(float));
-  if(dev_cm == NULL) goto error;
+  if(IS_NULL_PTR(dev_cm)) goto error;
 
   dev_ccoeffs = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 3, d->cunbounded_coeffs);
-  if(dev_ccoeffs == NULL) goto error;
+  if(IS_NULL_PTR(dev_ccoeffs)) goto error;
 
   dev_lm = dt_opencl_copy_host_to_device(devid, d->ltable, 256, 256, sizeof(float));
-  if(dev_lm == NULL) goto error;
+  if(IS_NULL_PTR(dev_lm)) goto error;
 
   dev_lcoeffs = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 3, d->lunbounded_coeffs);
-  if(dev_lcoeffs == NULL) goto error;
+  if(IS_NULL_PTR(dev_lcoeffs)) goto error;
 
   size_t origin[] = { 0, 0, 0 };
   size_t region[] = { width, height, 1 };
@@ -348,11 +349,11 @@ error:
 }
 #endif
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_lowpass_data_t *d = (dt_iop_lowpass_data_t *)piece->data;
+  (void)pipe;
 
   const float radius = fmax(0.1f, d->radius);
   const float sigma = radius * roi_in->scale;
@@ -361,7 +362,7 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
 
   const int width = roi_in->width;
   const int height = roi_in->height;
-  const int channels = piece->colors;
+  const int channels = piece->dsc_in.channels;
 
   const size_t basebuffer = sizeof(float) * channels * width * height;
 
@@ -388,9 +389,12 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
   return;
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_lowpass_data_t *data = (dt_iop_lowpass_data_t *)piece->data;
   float *in = (float *)ivoid;
   float *out = (float *)ovoid;
@@ -398,7 +402,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
   const int width = roi_in->width;
   const int height = roi_in->height;
-  const int ch = piece->colors;
+  const int ch = piece->dsc_in.channels;
 
   const float radius = fmax(0.1f, data->radius);
   const float sigma = radius * roi_in->scale;
@@ -417,7 +421,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   if(data->lowpass_algo == LOWPASS_ALGO_GAUSSIAN)
   {
     dt_gaussian_t *g = dt_gaussian_init(width, height, ch, Labmax, Labmin, sigma, order);
-    if(!g) return 1;
+    if(IS_NULL_PTR(g)) return 1;
     dt_gaussian_blur_4c(g, in, out);
     dt_gaussian_free(g);
   }
@@ -428,7 +432,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     const float detail = -1.0f; // we want the bilateral base layer
 
     dt_bilateral_t *b = dt_bilateral_init(width, height, sigma_s, sigma_r);
-    if(!b) return 1;
+    if(IS_NULL_PTR(b)) return 1;
     dt_bilateral_splat(b, in);
     dt_bilateral_blur(b);
     dt_bilateral_slice(b, in, out, detail);
@@ -438,12 +442,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   // some aliased pointers for compilers that don't yet understand operators on __m128
   const float *const Labminf = (float *)&Labmin;
   const float *const Labmaxf = (float *)&Labmax;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, Labmaxf, Labminf, roi_out) \
-  shared(in, out, data) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < (size_t)roi_out->width * roi_out->height; k++)
   {
     out[k * ch + 0] = (out[k * ch + 0] < 100.0f)
@@ -505,12 +504,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
     const float boost = 5.0f;
     const float contrastm1sq = boost * (fabs(d->contrast) - 1.0f) * (fabs(d->contrast) - 1.0f);
     const float contrastscale = copysign(sqrtf(1.0f + contrastm1sq), d->contrast);
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(contrastm1sq, contrastscale) \
-    shared(d) \
-    schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(int k = 0; k < 0x10000; k++)
     {
       float kx2m1 = 2.0f * (float)k / 0x10000 - 1.0f;
@@ -529,13 +523,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
 
   // generate precomputed brightness curve
   const float gamma = (d->brightness >= 0.0f) ? 1.0f / (1.0f + d->brightness) : (1.0f - d->brightness);
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(gamma) \
-  shared(d) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int k = 0; k < 0x10000; k++)
   {
     d->ltable[k] = 100.0f * powf((float)k / 0x10000, gamma);

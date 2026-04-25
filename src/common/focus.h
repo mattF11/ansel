@@ -57,13 +57,7 @@ static inline void _dt_focus_cdf22_wtf(uint8_t *buf, const int l, const int widt
 
   const int step = 1 << l;
   const int st = step / 2;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(height, st, step, width, ch) \
-  shared(buf) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int j = 0; j < height; j++)
   {
     // rows
@@ -81,12 +75,7 @@ static inline void _dt_focus_cdf22_wtf(uint8_t *buf, const int l, const int widt
     if(i < width) /*for(ch=0; ch<3; ch++)*/
       gbuf(buf, i, j) += _from_uint8(gbuf(buf, i - st, j)) / 2;
   }
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(height, st, step, width, ch) \
-  shared(buf) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int i = 0; i < width; i++)
   {
     // cols
@@ -158,7 +147,7 @@ static void dt_focus_create_clusters(dt_focus_cluster_t *focus, int frows, int f
   // go through HH1 and detect sharp clusters:
   memset(focus, 0, sizeof(dt_focus_cluster_t) * fcols * frows);
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) default(shared)
+#pragma omp parallel for  default(shared)
 #endif
   for(int j = 0; j < ht - 1; j += 4)
     for(int i = 0; i < wd - 1; i += 4)
@@ -178,7 +167,7 @@ static void dt_focus_create_clusters(dt_focus_cluster_t *focus, int frows, int f
     memset(focus, 0, sizeof(dt_focus_cluster_t) * fs);
     _dt_focus_cdf22_wtf(buffer, 3, wd, ht);
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) default(shared)
+#pragma omp parallel for  default(shared)
 #endif
     for(int j = 0; j < ht - 1; j += 8)
     {
@@ -206,7 +195,7 @@ static void dt_focus_create_clusters(dt_focus_cluster_t *focus, int frows, int f
 #if 0 // simple high pass filter, doesn't work on slightly unsharp/high iso images
   memset(focus, 0, sizeof(dt_focus_cluster_t)*fs);
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) default(shared)
+#pragma omp parallel for  default(shared)
 #endif
   for(int j=1;j<ht-1;j++)
   {
@@ -277,16 +266,16 @@ static void dt_focus_draw_clusters(cairo_t *cr, int width, int height, int32_t i
     dt_dev_init(&dev, 0);
     dt_dev_load_image(&dev, imgid);
     dt_dev_pixelpipe_t pipe;
-    const int res = dt_dev_pixelpipe_init_dummy(&pipe);
+    const int res = dt_dev_pixelpipe_init_dummy(&pipe, &dev);
     if(res)
     {
       // set mem pointer to 0, won't be used.
-      dt_dev_pixelpipe_set_input(&pipe, &dev, UNKNOWN_IMAGE, wd, ht, DT_MIPMAP_NONE);
-      dt_dev_pixelpipe_create_nodes(&pipe, &dev);
-      dt_dev_pixelpipe_synch_all(&pipe, &dev);
-      dt_dev_pixelpipe_get_roi_out(&pipe, &dev, pipe.iwidth, pipe.iheight, &pipe.processed_width,
+      dt_dev_pixelpipe_set_input(&pipe, UNKNOWN_IMAGE, wd, ht, 1.0f, DT_MIPMAP_NONE);
+      dt_dev_pixelpipe_create_nodes(&pipe);
+      dt_dev_pixelpipe_synch_all(&pipe);
+      dt_dev_pixelpipe_get_roi_out(&pipe, pipe.iwidth, pipe.iheight, &pipe.processed_width,
                                       &pipe.processed_height);
-      dt_dev_distort_transform_plus(&dev, &pipe, 0.f, DT_DEV_TRANSFORM_DIR_ALL, pos, fs * 3);
+      dt_dev_distort_transform_plus(&pipe, 0.f, DT_DEV_TRANSFORM_DIR_ALL, pos, fs * 3);
       dt_dev_pixelpipe_cleanup(&pipe);
       wd = pipe.processed_width;
       ht = pipe.processed_height;

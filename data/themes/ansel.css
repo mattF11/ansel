@@ -436,10 +436,16 @@ spinbutton button
 /* Buttons in modules header, path-bar on filechooser dialog window and all text-button and related */
 .dt_module_btn,
 .path-bar button,
-header button,
 .text-button,
 .text-button radio, /* this line and following one are needed to set good margin inside some buttons, especially in header buttons in about dialog window and on radio button and label inside star icon overlay menu */
 .text-button label
+{
+  min-height: 1.5em;
+  min-width: 1.5em;
+}
+
+#module-header button,
+header button
 {
   min-height: 1.1em;
   min-width: 1.1em;
@@ -659,13 +665,17 @@ menubar menuitem label
   ---------------------------*/
 /* Frame around modules boxes */
 /*** NOTE: bauhaus controls inherit their font properties from there ***/
-dialog,  /* dialog window background */
 dialog .sidebar row:selected,   /* .sidebar lines here allow to select same settings for sidebar in preferences and filechooser */
 dialog .sidebar row:selected:hover label,
 #bauhaus-slider,  /* be sure there's some visible "spacing" around arrow on sliders by setting specific background on bauhaus-slider */
 #background-job-eventbox  /* background of export progress bar */
 {
   background-color: @plugin_bg_color;
+}
+
+dialog  /* dialog window background */
+{
+  background-color: @bg_color;
 }
 
 .dt_plugin_ui
@@ -1218,6 +1228,9 @@ notebook header /* add space between notebook tabs and options below */
 
 #modules-tabs notebook tabs arrow
 {
+  min-width: 1.4em;
+  min-height: 1.4em;
+  padding: 0.1em;
   border: none;
   color: @grey_70;
 }
@@ -1294,6 +1307,101 @@ notebook header /* add space between notebook tabs and options below */
 
 #modules-tabs notebook:disabled tab label,
 #modules-tabs notebook:disabled tab label.dt_modulegroups_tab_label
+{
+  color: @grey_65;
+  border: none;
+}
+
+#colorequal-ring-tabs > header > tabs > tab
+{
+  min-width: 5.1em;
+  min-height: 2.1em;
+  padding: 0;
+  margin: 0.22em 0.12em 0;
+  border: 1px solid alpha(@grey_95, 0.10);
+  border-radius: 0.48em 0.48em 0 0;
+  background-color: @grey_35;
+}
+
+#colorequal-ring-tabs > header > tabs arrow
+{
+  border: none;
+  color: @grey_70;
+}
+
+#colorequal-ring-tabs > header
+{
+  margin: 0;
+  background-color: @bg_color;
+  border-bottom: none;
+}
+
+#colorequal-ring-tabs > header > tabs
+{
+  background-color: transparent;
+  border: none;
+  border-bottom: 1px solid alpha(@grey_95, 0.36);
+}
+
+#colorequal-ring-tabs > header,
+#colorequal-ring-tabs
+{
+  margin-bottom: 0;
+  border: none;
+  box-shadow: none;
+}
+
+#colorequal-ring-tabs > header > tabs > tab label,
+#colorequal-ring-tabs > header > tabs > tab label.dt_modulegroups_tab_label
+{
+  color: @grey_70;
+  opacity: 1;
+  font-size: 0.95em;
+  font-weight: 500;
+  background-color: transparent;
+  border: none;
+  padding: 0.16em 0.36em 0.14em;
+}
+
+#colorequal-ring-tabs > header > tabs > tab:hover
+{
+  border-color: alpha(@grey_95, 0.20);
+  background-color: @grey_38;
+}
+
+#colorequal-ring-tabs > header > tabs > tab:hover label,
+#colorequal-ring-tabs > header > tabs > tab:hover label.dt_modulegroups_tab_label
+{
+  color: @grey_90;
+  border: none;
+}
+
+#colorequal-ring-tabs > header > tabs > tab:checked
+{
+  border-top: 1px solid alpha(@grey_95, 0.36);
+  border-left: 1px solid alpha(@grey_95, 0.36);
+  border-right: 1px solid alpha(@grey_95, 0.36);
+  border-bottom: none;
+  background-color: @grey_44;
+  margin-bottom: -1px;
+}
+
+#colorequal-ring-tabs > header > tabs > tab:checked label,
+#colorequal-ring-tabs > header > tabs > tab:checked label.dt_modulegroups_tab_label
+{
+  color: @grey_100;
+  font-weight: 700;
+  border: none;
+}
+
+#colorequal-ring-tabs:disabled > header > tabs > tab
+{
+  border-color: alpha(@grey_95, 0.08);
+  background-color: @grey_35;
+}
+
+#colorequal-ring-tabs:disabled > header > tabs > tab label,
+#colorequal-ring-tabs:disabled > header > tabs > tab label.dt_modulegroups_tab_label
 {
   color: @grey_65;
   border: none;
@@ -1402,6 +1510,7 @@ treeview header label
 #quick-presets-manager box  /* set same setting on quick preset manager dialog window ; accessible to bottom left button on footer bar in darkroom view */
 {
   margin: 0; /* reset default dialog margin to main items. And needed to have an hover and selected effect on all width of categories in sidebar */
+  background-color: @bg_color;
 }
 
 /* Set preferences margins in main part */
@@ -1414,10 +1523,7 @@ treeview header label
 /* Edit CSS view on preferences dialog window */
 #usercss-box
 {
-  border: 0.07em inset @border_color;
-  background-color: shade(@bg_color, 1.075);
-  margin-top: 0.7em;
-  padding: 0.7em;
+  margin: 2em 0;
 }
 
 /* Set text size */
@@ -1558,7 +1664,7 @@ filechooser .sidebar,
 {
   padding: 0; /* needed to have an hover and selected effect on all width of categories in sidebar */
   font-size: 1.1em;
-  background-color: @bg_color;
+  background-color: @grey_40;
 }
 
 #preferences-box .sidebar row
@@ -2198,6 +2304,19 @@ Details :
   border: 4px solid @thumbnail_bg_color;
 }
 
+/* Filmstrip thumbs are constrained to square cells whose side is the strip height.
+ * Keep the outer frame visible, but reduce fixed spacing so tiny strips still let
+ * the image surface occupy most of the available square. */
+#thumbtable-filmstrip .thumb-main
+{
+  margin: 2px;
+}
+
+#thumbtable-filmstrip .thumb-background
+{
+  border-width: 2px;
+}
+
 /* set hover effect */
 .thumb-main:hover .thumb-background
 {
@@ -2219,6 +2338,11 @@ Details :
 .thumb-image
 {
   margin: 4px; /* needs to be set equal to .thumb-background border to avoid overlap */
+}
+
+#thumbtable-filmstrip .thumb-image
+{
+  margin: 2px; /* keep in sync with #thumbtable-filmstrip .thumb-background border-width */
 }
 
 /* Set top margin on active image in filmstrip */
@@ -2331,6 +2455,12 @@ Details :
   border: 0;
   margin: 0;
   padding: 4px;
+}
+
+#thumbtable-filmstrip .thumb-bottom,
+#thumbtable-filmstrip .thumb-top
+{
+  padding: 2px;
 }
 
 /* Set background on thumbnails hover overlays */
@@ -2677,10 +2807,10 @@ togglebutton,
 spinbutton,
 #non-flat
 {
-  margin: 1px 2px;
-  padding: 4px 8px;
+  margin: 0.2em;
+  padding: 0.3em;
   border: none;
-  border-radius: 2px;
+  border-radius: 3px;
   box-shadow: none;
   background-image: none;
   background-color: @button_bg;
@@ -2751,13 +2881,20 @@ spinbutton button
   min-height: 1em;
 }
 
-.quick_filter_box button,
-.quick_filter_box togglebutton,
-.quick_filter_box .dt_module_btn,
 #module-header button,
 #module-header togglebutton,
 #module-header .dt_module_btn
 {
+  padding: 3px;
+  background-color: transparent;
+  background-image: none;
+}
+
+.quick_filter_box button,
+.quick_filter_box togglebutton,
+.quick_filter_box .dt_module_btn
+{
+  margin: 0.05em;
   padding: 3px;
   background-color: transparent;
   background-image: none;

@@ -149,9 +149,17 @@ int flags()
   return IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_DEPRECATED;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
+}
+
+void input_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                  dt_iop_buffer_dsc_t *dsc)
+{
+  default_input_format(self, pipe, piece, dsc);
+  dsc->channels = 4;
+  dsc->datatype = TYPE_FLOAT;
 }
 
 const char **description(struct dt_iop_module_t *self)
@@ -190,7 +198,7 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
 
 static void dt_iop_levels_compute_levels_manual(const uint32_t *histogram, float *levels)
 {
-  if(!histogram) return;
+  if(IS_NULL_PTR(histogram)) return;
 
   // search histogram for min (search from bottom)
   for(int k = 0; k <= 4 * 255; k += 4)
@@ -213,11 +221,25 @@ static void dt_iop_levels_compute_levels_manual(const uint32_t *histogram, float
   levels[1] = levels[0] / 2 + levels[2] / 2;
 }
 
-static void dt_iop_levels_compute_levels_automatic(dt_dev_pixelpipe_iop_t *piece)
+__DT_CLONE_TARGETS__
+static void dt_iop_levels_compute_levels_automatic(dt_iop_module_t *self,
+                                                   const dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_levels_data_t *d = (dt_iop_levels_data_t *)piece->data;
+  dt_dev_histogram_stats_t histogram_stats = { 0 };
+  uint32_t *histogram = NULL;
 
-  uint32_t total = piece->histogram_stats.pixels;
+  dt_iop_gui_enter_critical_section(self);
+  histogram_stats = self->histogram_stats;
+  if(self->histogram && histogram_stats.bins_count > 0)
+  {
+    const size_t histogram_size = 4 * histogram_stats.bins_count * sizeof(uint32_t);
+    histogram = dt_alloc_align(histogram_size);
+    if(!IS_NULL_PTR(histogram)) memcpy(histogram, self->histogram, histogram_size);
+  }
+  dt_iop_gui_leave_critical_section(self);
+
+  uint32_t total = histogram_stats.pixels;
 
   dt_aligned_pixel_t thr;
   for(int k = 0; k < 3; k++)
@@ -226,22 +248,25 @@ static void dt_iop_levels_compute_levels_automatic(dt_dev_pixelpipe_iop_t *piece
     d->levels[k] = NAN;
   }
 
-  if(piece->histogram == NULL) return;
+  if(IS_NULL_PTR(histogram)) return;
 
   // find min and max levels
   size_t n = 0;
-  for(uint32_t i = 0; i < piece->histogram_stats.bins_count; i++)
+  for(uint32_t i = 0; i < histogram_stats.bins_count; i++)
   {
-    n += piece->histogram[4 * i];
+    n += histogram[4 * i];
 
     for(int k = 0; k < 3; k++)
     {
       if(isnan(d->levels[k]) && (n >= thr[k]))
       {
-        d->levels[k] = (float)i / (float)(piece->histogram_stats.bins_count - 1);
+        d->levels[k] = (float)i / (float)(histogram_stats.bins_count - 1);
       }
     }
   }
+
+  dt_free_align(histogram);
+
   // for numerical reasons sometimes the threshold is sharp but in float and n is size_t.
   // in this case we want to make sure we don't keep nan:
   if(isnan(d->levels[2])) d->levels[2] = 1.0f;
@@ -252,7 +277,8 @@ static void dt_iop_levels_compute_levels_automatic(dt_dev_pixelpipe_iop_t *piece
     d->levels[1] = (1.0f - center) * d->levels[0] + center * d->levels[2];
 }
 
-static void compute_lut(dt_dev_pixelpipe_iop_t *piece)
+__DT_CLONE_TARGETS__
+static void compute_lut(const dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_levels_data_t *d = (dt_iop_levels_data_t *)piece->data;
 
@@ -269,8 +295,10 @@ static void compute_lut(dt_dev_pixelpipe_iop_t *piece)
   }
 }
 
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
+  (void)pipe;
+  (void)piece;
   dt_iop_levels_gui_data_t *c = (dt_iop_levels_gui_data_t *)self->gui_data;
   dt_iop_levels_params_t *p = (dt_iop_levels_params_t *)self->params;
 
@@ -336,14 +364,15 @@ void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpi
  * WARNING: unlike commit_params, which is thread safe wrt gui thread and
  * pipes, this function lives in the pipeline thread, and NOT thread safe!
  */
-static void commit_params_late(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece)
+static inline __attribute__((always_inline)) void commit_params_late(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                               const dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_levels_data_t *d = (dt_iop_levels_data_t *)piece->data;
   dt_iop_levels_gui_data_t *g = (dt_iop_levels_gui_data_t *)self->gui_data;
 
   if(d->mode == LEVELS_MODE_AUTOMATIC)
   {
-    if(g && !dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, &piece->planned_roi_out))
+    if(!IS_NULL_PTR(g) && !dt_dev_pixelpipe_has_preview_output(self->dev, pipe, &piece->roi_out))
     {
       dt_iop_gui_enter_critical_section(self);
       const uint64_t hash = g->hash;
@@ -365,15 +394,15 @@ static void commit_params_late(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
       compute_lut(piece);
     }
 
-    if(dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, &piece->planned_roi_out)
+    if(dt_dev_pixelpipe_has_preview_output(self->dev, pipe, &piece->roi_out)
        || isnan(d->levels[0]) || isnan(d->levels[1])
        || isnan(d->levels[2]))
     {
-      dt_iop_levels_compute_levels_automatic(piece);
+      dt_iop_levels_compute_levels_automatic(self, piece);
       compute_lut(piece);
     }
 
-    if(g && dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, &piece->planned_roi_out)
+    if(!IS_NULL_PTR(g) && dt_dev_pixelpipe_has_preview_output(self->dev, pipe, &piece->roi_out)
        && d->mode == LEVELS_MODE_AUTOMATIC)
     {
       uint64_t hash = piece->global_hash;
@@ -387,28 +416,24 @@ static void commit_params_late(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
   }
 }
 
-int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
-             const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+            const void *const ivoid, void *const ovoid)
 {
-  const int ch = piece->colors;
-  assert(piece->colors >= 3);
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
+  const int ch = 4;
   const dt_iop_levels_data_t *const d = (dt_iop_levels_data_t *)piece->data;
+  (void)pipe;
 
   if(d->mode == LEVELS_MODE_AUTOMATIC)
   {
-    commit_params_late(self, piece);
+    commit_params_late(self, pipe, piece);
   }
 
   const float *const restrict in = (float*)ivoid;
   float *const restrict out = (float*)ovoid;
   const size_t npixels = (size_t)roi_out->width * roi_out->height;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, d) \
-  dt_omp_sharedconst(in, out, npixels) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int i = 0; i < ch * npixels; i += ch)
   {
     const float L_in = in[i] / 100.0f;
@@ -432,7 +457,7 @@ int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *co
     out[i+2] = in[i+2] * L_out / denom;
   }
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
     dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
   return 0;
 }
@@ -761,7 +786,7 @@ static gboolean dt_iop_levels_area_draw(GtkWidget *widget, cairo_t *crf, gpointe
     uint32_t *hist = self->histogram;
     const gboolean is_linear = FALSE;
     float hist_max = is_linear ? self->histogram_max[0] : logf(1.0 + self->histogram_max[0]);
-    if(hist && hist_max > 0.0f)
+    if(!IS_NULL_PTR(hist) && hist_max > 0.0f)
     {
       cairo_save(cr);
       cairo_scale(cr, width / 255.0, -(height - DT_PIXEL_APPLY_DPI(5)) / hist_max);
@@ -801,7 +826,7 @@ static void dt_iop_levels_move_handle(dt_iop_module_t *self, int handle_move, fl
 
   if((handle_move < 0) || handle_move > 2) return;
 
-  if(levels == NULL) return;
+  if(IS_NULL_PTR(levels)) return;
 
   // Determining the minimum and maximum bounds for the drag handles
   switch(handle_move)
@@ -826,7 +851,7 @@ static void dt_iop_levels_move_handle(dt_iop_module_t *self, int handle_move, fl
 
   if(handle_move != 1) levels[1] = levels[0] + (drag_start_percentage * (levels[2] - levels[0]));
 
-  if(c->activeToggleButton != NULL) gtk_toggle_button_set_active(c->activeToggleButton, FALSE);
+  if(!IS_NULL_PTR(c->activeToggleButton)) gtk_toggle_button_set_active(c->activeToggleButton, FALSE);
   c->last_picked_color = -1;
 }
 
@@ -970,7 +995,7 @@ static void dt_iop_levels_autoadjust_callback(GtkRange *range, dt_iop_module_t *
 
   dt_iop_levels_compute_levels_manual(self->histogram, p->levels);
 
-  if(c->activeToggleButton != NULL) gtk_toggle_button_set_active(c->activeToggleButton, FALSE);
+  if(!IS_NULL_PTR(c->activeToggleButton)) gtk_toggle_button_set_active(c->activeToggleButton, FALSE);
   c->last_picked_color = -1;
 
   dt_dev_add_history_item(darktable.develop, self, TRUE, TRUE);

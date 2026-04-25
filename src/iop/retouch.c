@@ -116,7 +116,8 @@ typedef struct dt_iop_retouch_form_data_t
 typedef struct retouch_user_data_t
 {
   dt_iop_module_t *self;
-  dt_dev_pixelpipe_iop_t *piece;
+  const dt_dev_pixelpipe_t *pipe;
+  const dt_dev_pixelpipe_iop_t *piece;
   dt_iop_roi_t roi;
   int display_scale;
   int mask_display;
@@ -247,7 +248,7 @@ int flags()
   return IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_NO_MASKS | IOP_FLAGS_INTERNAL_MASKS;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -389,11 +390,11 @@ static int rt_get_index_from_formid(dt_iop_retouch_params_t *p, const int formid
 
 static int rt_get_selected_shape_id(const dt_iop_module_t *self)
 {
-  if(!self || !self->dev) return 0;
+  if(IS_NULL_PTR(self) || IS_NULL_PTR(self->dev)) return 0;
 
   const dt_masks_form_gui_t *gui = self->dev->form_gui;
   const dt_masks_form_t *visible_form = dt_masks_get_visible_form(self->dev);
-  if(!gui || !visible_form || !(visible_form->type & DT_MASKS_GROUP)) return 0;
+  if(IS_NULL_PTR(gui) || IS_NULL_PTR(visible_form) || !(visible_form->type & DT_MASKS_GROUP)) return 0;
 
   const dt_masks_form_group_t *selected_group_entry
       = dt_masks_form_get_selected_group_live(visible_form, gui);
@@ -405,10 +406,10 @@ static dt_masks_form_group_t *rt_get_mask_point_group(dt_iop_module_t *self, int
   dt_masks_form_group_t *form_point_group = NULL;
 
   const dt_develop_blend_params_t *bp = self->blend_params;
-  if(!bp) return form_point_group;
+  if(IS_NULL_PTR(bp)) return form_point_group;
 
   const dt_masks_form_t *grp = dt_masks_get_from_id(self->dev, bp->mask_id);
-  if(grp && (grp->type & DT_MASKS_GROUP))
+  if(!IS_NULL_PTR(grp) && (grp->type & DT_MASKS_GROUP))
   {
     for(const GList *forms = grp->points; forms; forms = g_list_next(forms))
     {
@@ -480,7 +481,7 @@ static void rt_show_hide_controls(const dt_iop_module_t *self)
   const int selected_formid = rt_get_selected_shape_id(self);
   if(selected_formid > 0)
     form = dt_masks_get_from_id(self->dev, selected_formid);
-  if(form)
+  if(!IS_NULL_PTR(form))
     gtk_widget_show(GTK_WIDGET(g->sl_mask_opacity));
   else
     gtk_widget_hide(GTK_WIDGET(g->sl_mask_opacity));
@@ -492,7 +493,7 @@ static void rt_display_selected_shapes_lbl(dt_iop_retouch_gui_data_t *g)
   const dt_masks_form_t *form = selected_formid > 0
                                 ? dt_masks_get_from_id(darktable.develop, selected_formid)
                                 : NULL;
-  if(form)
+  if(!IS_NULL_PTR(form))
     gtk_label_set_text(g->label_form_selected, form->name);
   else
     gtk_label_set_text(g->label_form_selected, _("none"));
@@ -504,7 +505,7 @@ static int rt_get_selected_shape_index(dt_iop_retouch_params_t *p)
   return rt_get_index_from_formid(p, selected_formid);
 }
 
-static void rt_shape_selection_changed(dt_iop_module_t *self)
+static void rt_load_shape_algo_in_gui(dt_iop_module_t *self, const int form_selected_id)
 {
   dt_iop_retouch_params_t *p = (dt_iop_retouch_params_t *)self->params;
   dt_iop_retouch_gui_data_t *g = (dt_iop_retouch_gui_data_t *)self->gui_data;
@@ -513,7 +514,7 @@ static void rt_shape_selection_changed(dt_iop_module_t *self)
 
   gboolean selection_changed = FALSE;
 
-  const int index = rt_get_selected_shape_index(p);
+  const int index = rt_get_index_from_formid(p, form_selected_id);
   if(index >= 0)
   {
     const dt_iop_retouch_form_data_t *const selected_form = &p->rt_forms[index];
@@ -559,7 +560,6 @@ static void rt_shape_selection_changed(dt_iop_module_t *self)
 
   if(selection_changed) rt_show_hide_controls(self);
 
-
   rt_display_selected_shapes_lbl(g);
 
   if(index >= 0)
@@ -568,8 +568,6 @@ static void rt_shape_selection_changed(dt_iop_module_t *self)
     gtk_widget_hide(GTK_WIDGET(g->sl_mask_opacity));
 
   --darktable.gui->reset;
-
-  if(selection_changed) dt_dev_add_history_item(darktable.develop, self, TRUE, TRUE);
 }
 
 //---------------------------------------------------------------------------------
@@ -579,7 +577,7 @@ static void rt_shape_selection_changed(dt_iop_module_t *self)
 static void rt_masks_form_change_opacity(dt_iop_module_t *self, int formid, float opacity)
 {
   dt_masks_form_group_t *grpt = rt_get_mask_point_group(self, formid);
-  if(grpt)
+  if(!IS_NULL_PTR(grpt))
   {
     grpt->opacity = CLAMP(opacity, 0.05f, 1.0f);
     dt_conf_set_float("plugins/darkroom/masks/opacity", grpt->opacity);
@@ -591,7 +589,7 @@ static void rt_masks_form_change_opacity(dt_iop_module_t *self, int formid, floa
 static float rt_masks_form_get_opacity(dt_iop_module_t *self, int formid)
 {
   dt_masks_form_group_t *grpt = rt_get_mask_point_group(self, formid);
-  if(grpt)
+  if(!IS_NULL_PTR(grpt))
     return grpt->opacity;
   else
     return 1.0f;
@@ -613,7 +611,7 @@ static int rt_allow_create_form(dt_iop_module_t *self)
   int allow = 1;
 
   dt_iop_retouch_params_t *p = (dt_iop_retouch_params_t *)self->params;
-  if(p)
+  if(!IS_NULL_PTR(p))
   {
     allow = (p->rt_forms[RETOUCH_NO_FORMS - 1].formid == 0);
   }
@@ -652,7 +650,7 @@ static void rt_show_forms_for_current_scale(dt_iop_module_t *self)
   dt_iop_retouch_params_t *p = (dt_iop_retouch_params_t *)self->params;
   dt_iop_gui_blend_data_t *bd = (dt_iop_gui_blend_data_t *)self->blend_data;
   dt_iop_retouch_gui_data_t *g = (dt_iop_retouch_gui_data_t *)self->gui_data;
-  if(bd == NULL) return;
+  if(IS_NULL_PTR(bd)) return;
 
   const int scale = p->curr_scale;
   int count = 0;
@@ -690,7 +688,7 @@ static void rt_show_forms_for_current_scale(dt_iop_module_t *self)
     {
       const int formid = p->rt_forms[i].formid;
       dt_masks_form_t *form = dt_masks_get_from_id(darktable.develop, formid);
-      if(!form) continue;
+      if(IS_NULL_PTR(form)) continue;
       
       dt_masks_form_group_t *fpt = (dt_masks_form_group_t *)malloc(sizeof(dt_masks_form_group_t));
       fpt->formid = formid;
@@ -726,7 +724,7 @@ static void rt_resynch_params(struct dt_iop_module_t *self)
 
   // we go through all forms in blend params
   dt_masks_form_t *grp = dt_masks_get_from_id(darktable.develop, bp->mask_id);
-  if(!grp || !(grp->type & DT_MASKS_GROUP))
+  if(IS_NULL_PTR(grp) || !(grp->type & DT_MASKS_GROUP))
     return;
   
   int new_form_index = 0;
@@ -735,7 +733,7 @@ static void rt_resynch_params(struct dt_iop_module_t *self)
   for(GList *forms = grp->points; (new_form_index < RETOUCH_NO_FORMS) && forms; forms = g_list_next(forms))
   {
     dt_masks_form_group_t *grpt = (dt_masks_form_group_t *)forms->data;
-    if(!grpt) return;
+    if(IS_NULL_PTR(grpt)) return;
     
     const int formid = grpt->formid;
 
@@ -751,7 +749,7 @@ static void rt_resynch_params(struct dt_iop_module_t *self)
     {
       // if it does not exists, add it to the new array
       const dt_masks_form_t *parent_form = dt_masks_get_from_id(darktable.develop, formid);
-      if(!parent_form) continue;
+      if(IS_NULL_PTR(parent_form)) continue;
       
       forms_d[new_form_index].formid = formid;
       forms_d[new_form_index].scale = p->curr_scale;
@@ -796,12 +794,13 @@ void post_history_commit(dt_iop_module_t *self)
   rt_resynch_params(self);
 
   dt_iop_retouch_gui_data_t *g = (dt_iop_retouch_gui_data_t *)self->gui_data;
-  if(g == NULL) return;
+  if(IS_NULL_PTR(g)) return;
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_circle), rt_shape_is_being_added(self, DT_MASKS_CIRCLE));
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_polygon), rt_shape_is_being_added(self, DT_MASKS_POLYGON));
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_ellipse), rt_shape_is_being_added(self, DT_MASKS_ELLIPSE));
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_brush), rt_shape_is_being_added(self, DT_MASKS_BRUSH));
 
+  // Get the total form count and display it in the module
   const dt_masks_form_t *grp = dt_masks_get_from_id(self->dev, self->blend_params->mask_id);
   guint nb = 0;
   if(grp && (grp->type & DT_MASKS_GROUP)) nb = g_list_length(grp->points);
@@ -809,12 +808,11 @@ void post_history_commit(dt_iop_module_t *self)
   gtk_label_set_text(g->label_form, str);
   dt_free(str);
 
-  // update edit shapes status
-  dt_iop_gui_blend_data_t *bd = (dt_iop_gui_blend_data_t *)self->blend_data;
-
   //only toggle shape show button if shapes exist
-  if(grp && (grp->type & DT_MASKS_GROUP) && grp->points)
+  if(!IS_NULL_PTR(grp) && (grp->type & DT_MASKS_GROUP) && grp->points)
   {
+    dt_iop_gui_blend_data_t *bd = (dt_iop_gui_blend_data_t *)self->blend_data;
+    if(IS_NULL_PTR(bd)) return;
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_edit_masks),
                                  (bd->masks_shown != DT_MASKS_EDIT_OFF) && (self->dev->gui_module == self));
   }
@@ -822,17 +820,17 @@ void post_history_commit(dt_iop_module_t *self)
   {
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_edit_masks), FALSE);
   }
-
 }
 
-static gboolean rt_masks_form_is_in_roi(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
-                                        dt_masks_form_t *form, const dt_iop_roi_t *roi_in,
+static gboolean rt_masks_form_is_in_roi(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                                        const dt_dev_pixelpipe_iop_t *piece, dt_masks_form_t *form, const dt_iop_roi_t *roi_in,
                                         const dt_iop_roi_t *roi_out)
 {
   // we get the area for the form
   int fl, ft, fw, fh;
+  dt_dev_pixelpipe_iop_t piece_copy = *piece;
 
-  if(dt_masks_get_area(self, piece, form, &fw, &fh, &fl, &ft) != 0) return FALSE;
+  if(dt_masks_get_area(self, (dt_dev_pixelpipe_t *)pipe, &piece_copy, form, &fw, &fh, &fl, &ft) != 0) return FALSE;
 
   // is the form outside of the roi?
   fw *= roi_in->scale, fh *= roi_in->scale, fl *= roi_in->scale, ft *= roi_in->scale;
@@ -843,10 +841,11 @@ static gboolean rt_masks_form_is_in_roi(dt_iop_module_t *self, dt_dev_pixelpipe_
   return TRUE;
 }
 
-static void rt_masks_point_denormalize(dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t *roi, const float *points,
+static void rt_masks_point_denormalize(const dt_dev_pixelpipe_t *pipe, const dt_iop_roi_t *roi,
+                                       const float *points,
                                        size_t points_count, float *new)
 {
-  const float scalex = piece->pipe->iwidth * roi->scale, scaley = piece->pipe->iheight * roi->scale;
+  const float scalex = pipe->iwidth * roi->scale, scaley = pipe->iheight * roi->scale;
 
   for(size_t i = 0; i < points_count * 2; i += 2)
   {
@@ -855,7 +854,8 @@ static void rt_masks_point_denormalize(dt_dev_pixelpipe_iop_t *piece, const dt_i
   }
 }
 
-static int rt_masks_point_calc_delta(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t *roi,
+static int rt_masks_point_calc_delta(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                                     const dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t *roi,
                                      const float *target, const float *source, float *dx, float *dy,
                                      const int distort_mode)
 {
@@ -864,18 +864,19 @@ static int rt_masks_point_calc_delta(dt_iop_module_t *self, dt_dev_pixelpipe_iop
   dt_boundingbox_t points;
   if(distort_mode == 1)
   {
-    rt_masks_point_denormalize(piece, roi, target, 1, points);
-    rt_masks_point_denormalize(piece, roi, source, 1, points + 2);
+    rt_masks_point_denormalize(pipe, roi, target, 1, points);
+    rt_masks_point_denormalize(pipe, roi, source, 1, points + 2);
   }
   else
   {
-    points[0] = target[0] * piece->pipe->iwidth;
-    points[1] = target[1] * piece->pipe->iheight;
-    points[2] = source[0] * piece->pipe->iwidth;
-    points[3] = source[1] * piece->pipe->iheight;
+    points[0] = target[0] * pipe->iwidth;
+    points[1] = target[1] * pipe->iheight;
+    points[2] = source[0] * pipe->iwidth;
+    points[3] = source[1] * pipe->iheight;
   }
 
-  const int res = dt_dev_distort_transform_plus(self->dev, piece->pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points, 2);
+  const int res = dt_dev_distort_transform_plus(pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL,
+                                                points, 2);
   if(!res) return res;
 
   if(distort_mode == 1)
@@ -893,46 +894,47 @@ static int rt_masks_point_calc_delta(dt_iop_module_t *self, dt_dev_pixelpipe_iop
 }
 
 /* returns (dx dy) to get from the source to the destination */
-static int rt_masks_get_delta_to_destination(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+static int rt_masks_get_delta_to_destination(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                                             const dt_dev_pixelpipe_iop_t *piece,
                                              const dt_iop_roi_t *roi, dt_masks_form_t *form, float *dx, float *dy,
                                              const int distort_mode)
 {
-  if(!form || !form->points) return 0;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 0;
   int res = 0;
 
   if(form->type & DT_MASKS_POLYGON)
   {
     const dt_masks_node_polygon_t *pt = (dt_masks_node_polygon_t *)form->points->data;
-    if(!pt) return 0;
+    if(IS_NULL_PTR(pt)) return 0;
 
-    res = rt_masks_point_calc_delta(self, piece, roi, pt->node, form->source, dx, dy, distort_mode);
+    res = rt_masks_point_calc_delta(self, pipe, piece, roi, pt->node, form->source, dx, dy, distort_mode);
   }
   else if(form->type & DT_MASKS_CIRCLE)
   {
     const dt_masks_node_circle_t *pt = (dt_masks_node_circle_t *)form->points->data;
-    if(!pt) return 0;
+    if(IS_NULL_PTR(pt)) return 0;
 
-    res = rt_masks_point_calc_delta(self, piece, roi, pt->center, form->source, dx, dy, distort_mode);
+    res = rt_masks_point_calc_delta(self, pipe, piece, roi, pt->center, form->source, dx, dy, distort_mode);
   }
   else if(form->type & DT_MASKS_ELLIPSE)
   {
     const dt_masks_node_ellipse_t *pt = (dt_masks_node_ellipse_t *)form->points->data;
-    if(!pt) return 0;
+    if(IS_NULL_PTR(pt)) return 0;
 
-    res = rt_masks_point_calc_delta(self, piece, roi, pt->center, form->source, dx, dy, distort_mode);
+    res = rt_masks_point_calc_delta(self, pipe, piece, roi, pt->center, form->source, dx, dy, distort_mode);
   }
   else if(form->type & DT_MASKS_BRUSH)
   {
     const dt_masks_node_brush_t *pt = (dt_masks_node_brush_t *)form->points->data;
-    if(!pt) return 0;
+    if(IS_NULL_PTR(pt)) return 0;
 
-    res = rt_masks_point_calc_delta(self, piece, roi, pt->node, form->source, dx, dy, distort_mode);
+    res = rt_masks_point_calc_delta(self, pipe, piece, roi, pt->node, form->source, dx, dy, distort_mode);
   }
 
   return res;
 }
 
-static void rt_clamp_minmax(float levels_old[3], float levels_new[3])
+static inline __attribute__((always_inline)) void rt_clamp_minmax(float levels_old[3], float levels_new[3])
 {
   // left or right has changed
   if((levels_old[0] != levels_new[0] || levels_old[2] != levels_new[2]) && levels_old[1] == levels_new[1])
@@ -986,13 +988,13 @@ static int rt_shape_is_being_added(dt_iop_module_t *self, const int shape_type)
     if(dt_masks_get_visible_form(self->dev)->type & DT_MASKS_GROUP)
     {
       GList *forms = dt_masks_get_visible_form(self->dev)->points;
-      if(!forms) goto end;
+      if(IS_NULL_PTR(forms)) goto end;
       
       dt_masks_form_group_t *grpt = (dt_masks_form_group_t *)forms->data;
-      if(!grpt) goto end;
+      if(IS_NULL_PTR(grpt)) goto end;
       
       const dt_masks_form_t *form = dt_masks_get_from_id(darktable.develop, grpt->formid);
-      if(form) being_added = (form->type & shape_type);
+      if(!IS_NULL_PTR(form)) being_added = (form->type & shape_type);
     }
     else
       being_added = (dt_masks_get_visible_form(self->dev)->type & shape_type);
@@ -1494,7 +1496,7 @@ static void rt_gslider_changed(GtkDarktableGradientSlider *gslider, dt_iop_modul
 }
 
 
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_retouch_gui_data_t *g = (dt_iop_retouch_gui_data_t *)self->gui_data;
   dt_iop_retouch_params_t *p = (dt_iop_retouch_params_t *)self->params;
@@ -1728,7 +1730,7 @@ static gboolean rt_edit_masks_callback(GtkWidget *widget, GdkEventButton *event,
     dt_iop_color_picker_reset(self, TRUE);
 
     dt_masks_form_t *grp = dt_masks_get_from_id(darktable.develop, self->blend_params->mask_id);
-    if(grp && (grp->type & DT_MASKS_GROUP) && grp->points)
+    if(!IS_NULL_PTR(grp) && (grp->type & DT_MASKS_GROUP) && grp->points)
     {
       const gboolean control_button_pressed = dt_modifier_is(event->state, GDK_CONTROL_MASK);
 
@@ -1971,10 +1973,10 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
 void masks_selection_changed(struct dt_iop_module_t *self, const int form_selected_id)
 {
   dt_iop_retouch_gui_data_t *g = (dt_iop_retouch_gui_data_t *)self->gui_data;
-  if(!g) return;
+  if(IS_NULL_PTR(g)) return;
 
   dt_iop_gui_enter_critical_section(self);
-  rt_shape_selection_changed(self);
+  rt_load_shape_algo_in_gui(self, form_selected_id);
   dt_iop_gui_leave_critical_section(self);
 }
 
@@ -2038,7 +2040,7 @@ void gui_focus(struct dt_iop_module_t *self, gboolean in)
       dt_iop_gui_blend_data_t *bd = (dt_iop_gui_blend_data_t *)self->blend_data;
       //only show shapes if shapes exist
       dt_masks_form_t *grp = dt_masks_get_from_id(darktable.develop, self->blend_params->mask_id);
-      if(grp && (grp->type & DT_MASKS_GROUP) && grp->points)
+      if(!IS_NULL_PTR(grp) && (grp->type & DT_MASKS_GROUP) && grp->points)
       {
         // got focus, show all shapes
         if(bd->masks_shown == DT_MASKS_EDIT_OFF)
@@ -2079,9 +2081,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *params, dt_dev
   memcpy(piece->data, params, sizeof(dt_iop_retouch_params_t));
 }
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
   dt_iop_retouch_params_t *p = (dt_iop_retouch_params_t *)self->params;
   const float require = 2.0f;
@@ -2171,7 +2171,7 @@ void gui_update(dt_iop_module_t *self)
   dt_iop_gui_blend_data_t *bd = (dt_iop_gui_blend_data_t *)self->blend_data;
 
   //only toggle shape show button if shapes exist
-  if(grp && (grp->type & DT_MASKS_GROUP) && grp->points)
+  if(!IS_NULL_PTR(grp) && (grp->type & DT_MASKS_GROUP) && grp->points)
   {
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_edit_masks),
                                  (bd->masks_shown != DT_MASKS_EDIT_OFF) && (self->dev->gui_module == self));
@@ -2190,7 +2190,7 @@ void gui_update(dt_iop_module_t *self)
 void change_image(struct dt_iop_module_t *self)
 {
   dt_iop_retouch_gui_data_t *g = (dt_iop_retouch_gui_data_t *)self->gui_data;
-  if(g)
+  if(!IS_NULL_PTR(g))
   {
     g->copied_scale = -1;
     g->mask_display = 0;
@@ -2232,7 +2232,7 @@ void gui_init(dt_iop_module_t *self)
   g->bt_edit_masks = dt_iop_togglebutton_new(self, N_("editing"), N_("show and edit shapes on the current scale"),
                                                                   N_("show and edit shapes in restricted mode"),
                                              G_CALLBACK(rt_edit_masks_callback), TRUE, 0, 0,
-                                             dtgtk_cairo_paint_masks_eye, hbox_shapes);
+                                             dtgtk_cairo_paint_masks_edit, hbox_shapes);
 
   g->bt_brush = dt_iop_togglebutton_new(self, N_("shapes"), N_("add brush"), N_("add multiple brush strokes"),
                                         G_CALLBACK(rt_add_shape_callback), TRUE, 0, 0,
@@ -2240,7 +2240,7 @@ void gui_init(dt_iop_module_t *self)
 
   g->bt_polygon = dt_iop_togglebutton_new(self, N_("shapes"), N_("add polygon"), N_("add multiple polygons"),
                                        G_CALLBACK(rt_add_shape_callback), TRUE, 0, 0,
-                                       dtgtk_cairo_paint_masks_path, hbox_shapes);
+                                       dtgtk_cairo_paint_masks_polygon, hbox_shapes);
 
   g->bt_ellipse = dt_iop_togglebutton_new(self, N_("shapes"), N_("add ellipse"), N_("add multiple ellipses"),
                                           G_CALLBACK(rt_add_shape_callback), TRUE, 0, 0,
@@ -2519,13 +2519,15 @@ void gui_cleanup(dt_iop_module_t *self)
   IOP_GUI_FREE;
 }
 
-void modify_roi_out(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t *roi_out,
+void modify_roi_out(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe,
+                    struct dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t *roi_out,
                     const dt_iop_roi_t *roi_in)
 {
   *roi_out = *roi_in;
 }
 
-static void rt_compute_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
+static void rt_compute_roi_in(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *const pipe,
+                              struct dt_dev_pixelpipe_iop_t *piece,
                               dt_iop_roi_t *roi_in, int *_roir, int *_roib, int *_roix, int *_roiy)
 {
   dt_iop_retouch_params_t *p = (dt_iop_retouch_params_t *)piece->data;
@@ -2538,12 +2540,12 @@ static void rt_compute_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelp
 
   // We iterate through all forms
   const dt_masks_form_t *grp = dt_masks_get_from_id(self->dev, bp->mask_id);
-  if(grp && (grp->type & DT_MASKS_GROUP))
+  if(!IS_NULL_PTR(grp) && (grp->type & DT_MASKS_GROUP))
   {
     for(const GList *forms = grp->points; forms; forms = g_list_next(forms))
     {
       const dt_masks_form_group_t *grpt = (dt_masks_form_group_t *)forms->data;
-      if(!grpt) continue;
+      if(IS_NULL_PTR(grpt)) continue;
       
       const int formid = grpt->formid;
       const int index = rt_get_index_from_formid(p, formid);
@@ -2554,12 +2556,12 @@ static void rt_compute_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelp
 
       // we get the spot
       dt_masks_form_t *form = dt_masks_get_from_id(self->dev, formid);
-      if(!form) continue;
+      if(IS_NULL_PTR(form)) continue;
         
       // if the form is outside the roi, we just skip it
       // we get the area for the form
       int fl, ft, fw, fh;
-      if(!dt_masks_get_area(self, piece, form, &fw, &fh, &fl, &ft))
+      if(dt_masks_get_area(self, pipe, piece, form, &fw, &fh, &fl, &ft) != 0)
       {
         continue;
       }
@@ -2595,7 +2597,7 @@ static void rt_compute_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelp
           || p->rt_forms[index].algorithm == DT_IOP_RETOUCH_CLONE)
       {
         float dx = 0.f, dy = 0.f;
-        if(rt_masks_get_delta_to_destination(self, piece, roi_in, form, &dx, &dy,
+        if(rt_masks_get_delta_to_destination(self, pipe, piece, roi_in, form, &dx, &dy,
                                               p->rt_forms[index].distort_mode))
         {
           roiy = fminf(ft - dy, roiy);
@@ -2615,7 +2617,8 @@ static void rt_compute_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelp
 
 // for a given form, if a previous clone/heal destination intersects the source area,
 // include that area in roi_in too
-static void rt_extend_roi_in_from_source_clones(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
+static void rt_extend_roi_in_from_source_clones(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *const pipe,
+                                                struct dt_dev_pixelpipe_iop_t *piece,
                                                 dt_iop_roi_t *roi_in, const int formid_src, const int fl_src,
                                                 const int ft_src, const int fw_src, const int fh_src, int *_roir,
                                                 int *_roib, int *_roix, int *_roiy)
@@ -2630,12 +2633,12 @@ static void rt_extend_roi_in_from_source_clones(struct dt_iop_module_t *self, st
 
   // We iterate through all forms
   const dt_masks_form_t *grp = dt_masks_get_from_id(self->dev, bp->mask_id);
-  if(grp && (grp->type & DT_MASKS_GROUP))
+  if(!IS_NULL_PTR(grp) && (grp->type & DT_MASKS_GROUP))
   {
     for(const GList *forms = grp->points; forms; forms = g_list_next(forms))
     {
       const dt_masks_form_group_t *grpt = (dt_masks_form_group_t *)forms->data;
-      if(!grpt) continue;
+      if(IS_NULL_PTR(grpt)) continue;
       
       const int formid = grpt->formid;
 
@@ -2653,11 +2656,11 @@ static void rt_extend_roi_in_from_source_clones(struct dt_iop_module_t *self, st
 
       // we get the spot
       dt_masks_form_t *form = dt_masks_get_from_id(self->dev, formid);
-      if(!form) continue;
+      if(IS_NULL_PTR(form)) continue;
       
       // we get the source area
       int fl, ft, fw, fh;
-      if(!dt_masks_get_source_area(self, piece, form, &fw, &fh, &fl, &ft))
+      if(dt_masks_get_source_area(self, pipe, piece, form, &fw, &fh, &fl, &ft) != 0)
       {
         continue;
       }
@@ -2666,7 +2669,7 @@ static void rt_extend_roi_in_from_source_clones(struct dt_iop_module_t *self, st
       // get the destination area
       int fl_dest, ft_dest;
       float dx = 0.f, dy = 0.f;
-      if(!rt_masks_get_delta_to_destination(self, piece, roi_in, form, &dx, &dy,
+      if(!rt_masks_get_delta_to_destination(self, pipe, piece, roi_in, form, &dx, &dy,
                                             p->rt_forms[index].distort_mode))
       {
         continue;
@@ -2703,7 +2706,8 @@ static void rt_extend_roi_in_from_source_clones(struct dt_iop_module_t *self, st
 
 // for clone and heal, if the source area is the destination from another clone/heal,
 // we also need the area from that previous clone/heal
-static void rt_extend_roi_in_for_clone(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
+static void rt_extend_roi_in_for_clone(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *const pipe,
+                                       struct dt_dev_pixelpipe_iop_t *piece,
                                        dt_iop_roi_t *roi_in, int *_roir, int *_roib, int *_roix, int *_roiy)
 {
   dt_iop_retouch_params_t *p = (dt_iop_retouch_params_t *)piece->data;
@@ -2716,12 +2720,12 @@ static void rt_extend_roi_in_for_clone(struct dt_iop_module_t *self, struct dt_d
 
   // go through all clone and heal forms
   const dt_masks_form_t *grp = dt_masks_get_from_id(self->dev, bp->mask_id);
-  if(grp && (grp->type & DT_MASKS_GROUP))
+  if(!IS_NULL_PTR(grp) && (grp->type & DT_MASKS_GROUP))
   {
     for(const GList *forms = grp->points; forms; forms = g_list_next(forms))
     {
       dt_masks_form_group_t *grpt = (dt_masks_form_group_t *)forms->data;
-      if(!grpt) continue;
+      if(IS_NULL_PTR(grpt)) continue;
       
       const int formid = grpt->formid;
       const int index = rt_get_index_from_formid(p, formid);
@@ -2734,14 +2738,14 @@ static void rt_extend_roi_in_for_clone(struct dt_iop_module_t *self, struct dt_d
 
       // we get the spot
       dt_masks_form_t *form = dt_masks_get_from_id(self->dev, formid);
-      if(form == NULL)
+      if(IS_NULL_PTR(form))
       {
         continue;
       }
 
       // get the source area
       int fl_src, ft_src, fw_src, fh_src;
-      if(!dt_masks_get_source_area(self, piece, form, &fw_src, &fh_src, &fl_src, &ft_src))
+      if(dt_masks_get_source_area(self, pipe, piece, form, &fw_src, &fh_src, &fl_src, &ft_src) != 0)
       {
         continue;
       }
@@ -2752,8 +2756,8 @@ static void rt_extend_roi_in_for_clone(struct dt_iop_module_t *self, struct dt_d
       const int intersects
           = !(roib < ft_src || ft_src + fh_src < roiy || roir < fl_src || fl_src + fw_src < roix);
       if(intersects)
-        rt_extend_roi_in_from_source_clones(self, piece, roi_in, formid, fl_src, ft_src, fw_src, fh_src, &roir,
-                                            &roib, &roix, &roiy);
+        rt_extend_roi_in_from_source_clones(self, pipe, piece, roi_in, formid, fl_src, ft_src, fw_src, fh_src,
+                                            &roir, &roib, &roix, &roiy);
     }
   }
 
@@ -2764,9 +2768,11 @@ static void rt_extend_roi_in_for_clone(struct dt_iop_module_t *self, struct dt_d
 }
 
 // needed if mask dest is in roi and mask src is not
-void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t *roi_out,
+void modify_roi_in(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe,
+                   struct dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t *roi_out,
                    dt_iop_roi_t *roi_in)
 {
+  dt_dev_pixelpipe_t *const processing_pipe = (dt_dev_pixelpipe_t *)pipe;
   *roi_in = *roi_out;
 
   int roir = roi_in->width + roi_in->x;
@@ -2774,7 +2780,7 @@ void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *
   int roix = roi_in->x;
   int roiy = roi_in->y;
 
-  rt_compute_roi_in(self, piece, roi_in, &roir, &roib, &roix, &roiy);
+  rt_compute_roi_in(self, processing_pipe, piece, roi_in, &roir, &roib, &roix, &roiy);
 
   int roir_prev = -1, roib_prev = -1, roix_prev = -1, roiy_prev = -1;
 
@@ -2785,7 +2791,7 @@ void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *
     roix_prev = roix;
     roiy_prev = roiy;
 
-    rt_extend_roi_in_for_clone(self, piece, roi_in, &roir, &roib, &roix, &roiy);
+    rt_extend_roi_in_for_clone(self, processing_pipe, piece, roi_in, &roir, &roib, &roix, &roiy);
   }
 
   // now we set the values
@@ -2803,35 +2809,7 @@ void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *
 static void image_rgb2lab(float *img_src, const int width, const int height, const int ch, const int use_sse)
 {
   const int stride = width * height * ch;
-
-#if defined(__SSE__)
-  if(ch == 4 && use_sse)
-  {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(ch, stride) \
-    shared(img_src) \
-    schedule(static)
-#endif
-    for(int i = 0; i < stride; i += ch)
-    {
-      // RGB -> XYZ
-      __m128 rgb = _mm_load_ps(img_src + i);
-      __m128 XYZ = dt_RGB_to_XYZ_sse2(rgb);
-      // XYZ -> Lab
-      _mm_store_ps(img_src + i, dt_XYZ_to_Lab_sse2(XYZ));
-    }
-
-    return;
-  }
-#endif
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, stride) \
-  shared(img_src) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int i = 0; i < stride; i += ch)
   {
     dt_aligned_pixel_t XYZ;
@@ -2844,35 +2822,7 @@ static void image_rgb2lab(float *img_src, const int width, const int height, con
 static void image_lab2rgb(float *img_src, const int width, const int height, const int ch, const int use_sse)
 {
   const int stride = width * height * ch;
-
-#if defined(__SSE__)
-  if(ch == 4 && use_sse)
-  {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, stride) \
-  shared(img_src) \
-  schedule(static)
-#endif
-    for(int i = 0; i < stride; i += ch)
-    {
-      // Lab -> XYZ
-      __m128 Lab = _mm_load_ps(img_src + i);
-      __m128 XYZ = dt_Lab_to_XYZ_sse2(Lab);
-      // XYZ -> RGB
-      _mm_store_ps(img_src + i, dt_XYZ_to_RGB_sse2(XYZ));
-    }
-
-    return;
-  }
-#endif
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, stride) \
-  shared(img_src) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int i = 0; i < stride; i += ch)
   {
     dt_aligned_pixel_t XYZ;
@@ -2882,24 +2832,17 @@ static void image_lab2rgb(float *img_src, const int width, const int height, con
   }
 }
 
-static void rt_process_stats(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, float *const img_src,
-                             const int width, const int height, const int ch, float levels[3])
+__DT_CLONE_TARGETS__
+static void rt_process_stats(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                             float *const img_src, const int width, const int height, const int ch, float levels[3])
 {
   const int size = width * height * ch;
   float l_max = -INFINITY;
   float l_min = INFINITY;
   float l_sum = 0.f;
   int count = 0;
-  const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(piece->pipe);
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, img_src, size, work_profile) \
-  schedule(static) \
-  reduction(+ : count, l_sum) \
-  reduction(max : l_max) \
-  reduction(min : l_min)
-#endif
+  const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(pipe);
+  __OMP_PARALLEL_FOR__(reduction(+ : count, l_sum) reduction(max : l_max) reduction(min : l_min))
   for(int i = 0; i < size; i += ch)
   {
     dt_aligned_pixel_t Lab = { 0 };
@@ -2928,11 +2871,13 @@ static void rt_process_stats(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
   levels[1] = (l_sum / (float)count) / 100.f;
 }
 
-static void rt_adjust_levels(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, float *img_src, const int width,
-                             const int height, const int ch, const float levels[3])
+__DT_CLONE_TARGETS__
+static void rt_adjust_levels(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                             float *img_src, const int width, const int height, const int ch,
+                             const float levels[3])
 {
   const int size = width * height * ch;
-  const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(piece->pipe);
+  const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(pipe);
 
   const float left = levels[0];
   const float middle = levels[1];
@@ -2944,16 +2889,10 @@ static void rt_adjust_levels(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piec
   const float mid = left + delta;
   const float tmp = (middle - mid) / delta;
   const float in_inv_gamma = powf(10, tmp);
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, in_inv_gamma, left, right, size, work_profile) \
-  shared(img_src) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int i = 0; i < size; i += ch)
   {
-    if(work_profile)
+    if(!IS_NULL_PTR(work_profile))
     {
       dt_ioppr_rgb_matrix_to_lab(img_src + i, img_src + i, work_profile->matrix_in_transposed,
                                   work_profile->lut_in, work_profile->unbounded_coeffs_in,
@@ -2982,7 +2921,7 @@ static void rt_adjust_levels(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piec
       }
     }
 
-    if(work_profile)
+    if(!IS_NULL_PTR(work_profile))
     {
       dt_ioppr_lab_to_rgb_matrix(img_src + i, img_src + i, work_profile->matrix_out_transposed,
                                  work_profile->lut_out, work_profile->unbounded_coeffs_out,
@@ -3024,6 +2963,7 @@ static void rt_intersect_2_rois(dt_iop_roi_t *const roi_1, dt_iop_roi_t *const r
   roi_dest->height = y_to - y_from;
 }
 
+__DT_CLONE_TARGETS__
 static void rt_copy_in_to_out(const float *const in, const struct dt_iop_roi_t *const roi_in, float *const out,
                               const struct dt_iop_roi_t *const roi_out, const int ch, const int dx, const int dy)
 {
@@ -3031,13 +2971,7 @@ static void rt_copy_in_to_out(const float *const in, const struct dt_iop_roi_t *
   const int xoffs = roi_out->x - roi_in->x - dx;
   const int yoffs = roi_out->y - roi_in->y - dy;
   const int y_to = MIN(roi_out->height, roi_in->height);
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, in, out, roi_in, roi_out, rowsize, xoffs,  yoffs, \
-                      y_to) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int y = 0; y < y_to; y++)
   {
     const size_t iindex = ((size_t)(y + yoffs) * roi_in->width + xoffs) * ch;
@@ -3074,20 +3008,14 @@ static int rt_build_scaled_mask(float *const mask, dt_iop_roi_t *const roi_mask,
   const int y_to = roi_mask_scaled->height + roi_mask_scaled->y;
 
   mask_tmp = dt_pixelpipe_cache_alloc_align_float_cache((size_t)roi_mask_scaled->width * roi_mask_scaled->height, 0);
-  if(mask_tmp == NULL)
+  if(IS_NULL_PTR(mask_tmp))
   {
     fprintf(stderr, "rt_build_scaled_mask: error allocating memory\n");
     err = 1;
     goto cleanup;
   }
   dt_iop_image_fill(mask_tmp, 0.0f, roi_mask_scaled->width, roi_mask_scaled->height, 1);
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(mask, roi_in, roi_mask, x_to, y_to) \
-  shared(mask_tmp, roi_mask_scaled) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int yy = roi_mask_scaled->y; yy < y_to; yy++)
   {
     const int mask_index = ((int)(yy / roi_in->scale)) - roi_mask->y;
@@ -3117,12 +3045,7 @@ static void rt_copy_image_masked(float *const img_src, float *img_dest, dt_iop_r
                                  float *const mask_scaled, dt_iop_roi_t *const roi_mask_scaled,
                                  const float opacity)
 {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(img_src, mask_scaled, opacity, roi_dest, roi_mask_scaled) \
-    shared(img_dest) \
-    schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int yy = 0; yy < roi_mask_scaled->height; yy++)
   {
     const int mask_index = yy * roi_mask_scaled->width;
@@ -3151,11 +3074,7 @@ static void rt_copy_mask_to_alpha(float *const img, dt_iop_roi_t *const roi_img,
                                   float *const mask_scaled, dt_iop_roi_t *const roi_mask_scaled,
                                   const float opacity)
 {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, img, mask_scaled, opacity, roi_img, roi_mask_scaled) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int yy = 0; yy < roi_mask_scaled->height; yy++)
   {
     const int mask_index = yy * roi_mask_scaled->width;
@@ -3176,11 +3095,7 @@ static void rt_copy_mask_to_alpha(float *const img, dt_iop_roi_t *const roi_img,
 static void _retouch_fill(float *const in, dt_iop_roi_t *const roi_in, float *const mask_scaled,
                           dt_iop_roi_t *const roi_mask_scaled, const float opacity, const float *const fill_color)
 {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(fill_color, in, mask_scaled, opacity, roi_in, roi_mask_scaled) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int yy = 0; yy < roi_mask_scaled->height; yy++)
   {
     const int mask_index = yy * roi_mask_scaled->width;
@@ -3205,7 +3120,7 @@ static int _retouch_clone(float *const in, dt_iop_roi_t *const roi_in, float *co
 {
   // alloc temp image to avoid issues when areas self-intersects
   float *img_src = dt_pixelpipe_cache_alloc_align_float_cache((size_t)4 * roi_mask_scaled->width * roi_mask_scaled->height, 0);
-  if(img_src == NULL)
+  if(IS_NULL_PTR(img_src))
   {
     fprintf(stderr, "retouch_clone: error allocating memory for cloning\n");
     return 1;
@@ -3221,9 +3136,10 @@ static int _retouch_clone(float *const in, dt_iop_roi_t *const roi_in, float *co
   return 0;
 }
 
-static int _retouch_blur(dt_iop_module_t *self, float *const in, dt_iop_roi_t *const roi_in, float *const mask_scaled,
+static int _retouch_blur(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, float *const in,
+                         dt_iop_roi_t *const roi_in, float *const mask_scaled,
                          dt_iop_roi_t *const roi_mask_scaled, const float opacity, const int blur_type,
-                         const float blur_radius, dt_dev_pixelpipe_iop_t *piece, const int use_sse)
+                         const float blur_radius, const int use_sse)
 {
   if(fabsf(blur_radius) <= 0.1f) return 0;
 
@@ -3233,7 +3149,7 @@ static int _retouch_blur(dt_iop_module_t *self, float *const in, dt_iop_roi_t *c
 
   // alloc temp image to blur
   img_dest = dt_pixelpipe_cache_alloc_align_float_cache((size_t)4 * roi_mask_scaled->width * roi_mask_scaled->height, 0);
-  if(img_dest == NULL)
+  if(IS_NULL_PTR(img_dest))
   {
     fprintf(stderr, "retouch_blur: error allocating memory for blurring\n");
     return 1;
@@ -3249,7 +3165,7 @@ static int _retouch_blur(dt_iop_module_t *self, float *const in, dt_iop_roi_t *c
 
     dt_gaussian_t *g = dt_gaussian_init(roi_mask_scaled->width, roi_mask_scaled->height, 4, Labmax, Labmin, sigma,
                                         DT_IOP_GAUSSIAN_ZERO);
-    if(g)
+    if(!IS_NULL_PTR(g))
     {
       dt_gaussian_blur_4c(g, img_dest, img_dest);
       dt_gaussian_free(g);
@@ -3265,9 +3181,9 @@ static int _retouch_blur(dt_iop_module_t *self, float *const in, dt_iop_roi_t *c
     if(b)
     {
       int converted_cst;
-      const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(piece->pipe);
+      const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(pipe);
 
-      if(work_profile)
+      if(!IS_NULL_PTR(work_profile))
         dt_ioppr_transform_image_colorspace(self, img_dest, img_dest, roi_mask_scaled->width,
                                             roi_mask_scaled->height, IOP_CS_RGB, IOP_CS_LAB, &converted_cst,
                                             work_profile);
@@ -3279,7 +3195,7 @@ static int _retouch_blur(dt_iop_module_t *self, float *const in, dt_iop_roi_t *c
       dt_bilateral_slice(b, img_dest, img_dest, detail);
       dt_bilateral_free(b);
 
-      if(work_profile)
+      if(!IS_NULL_PTR(work_profile))
         dt_ioppr_transform_image_colorspace(self, img_dest, img_dest, roi_mask_scaled->width,
                                             roi_mask_scaled->height, IOP_CS_LAB, IOP_CS_RGB, &converted_cst,
                                             work_profile);
@@ -3305,7 +3221,7 @@ static int _retouch_heal(float *const in, dt_iop_roi_t *const roi_in, float *con
   // alloc temp images for source and destination
   img_src  = dt_pixelpipe_cache_alloc_align_float_cache((size_t)4 * roi_mask_scaled->width * roi_mask_scaled->height, 0);
   img_dest = dt_pixelpipe_cache_alloc_align_float_cache((size_t)4 * roi_mask_scaled->width * roi_mask_scaled->height, 0);
-  if((img_src == NULL) || (img_dest == NULL))
+  if((IS_NULL_PTR(img_src)) || (IS_NULL_PTR(img_dest)))
   {
     fprintf(stderr, "retouch_heal: error allocating memory for healing\n");
     err = 1;
@@ -3333,7 +3249,8 @@ static int rt_process_forms(float *layer, dwt_params_t *const wt_p, const int sc
   int scale = scale1;
   retouch_user_data_t *usr_d = (retouch_user_data_t *)wt_p->user_data;
   dt_iop_module_t *self = usr_d->self;
-  dt_dev_pixelpipe_iop_t *piece = usr_d->piece;
+  const dt_dev_pixelpipe_t *pipe = usr_d->pipe;
+  const dt_dev_pixelpipe_iop_t *piece = usr_d->piece;
 
   // if preview a single scale, just process that scale and original image
   // unless merge is activated
@@ -3358,12 +3275,12 @@ static int rt_process_forms(float *layer, dwt_params_t *const wt_p, const int sc
 
   // iterate through all forms
   const dt_masks_form_t *grp = dt_masks_get_from_id(self->dev, bp->mask_id);
-  if(!grp || !(grp->type & DT_MASKS_GROUP)) return 0;
+  if(IS_NULL_PTR(grp) || !(grp->type & DT_MASKS_GROUP)) return 0;
   
   for(const GList *forms = grp->points; forms; forms = g_list_next(forms))
   {
     const dt_masks_form_group_t *grpt = (dt_masks_form_group_t *)forms->data;
-    if(grpt == NULL)
+    if(IS_NULL_PTR(grpt))
     {
       fprintf(stderr, "rt_process_forms: invalid form\n");
       continue;
@@ -3391,14 +3308,14 @@ static int rt_process_forms(float *layer, dwt_params_t *const wt_p, const int sc
 
     // get the spot
     dt_masks_form_t *form = dt_masks_get_from_id(self->dev, formid);
-    if(form == NULL)
+    if(IS_NULL_PTR(form))
     {
       fprintf(stderr, "rt_process_forms: missing form=%i from masks\n", formid);
       continue;
     }
 
     // if the form is outside the roi, we just skip it
-    if(!rt_masks_form_is_in_roi(self, piece, form, roi_layer, roi_layer))
+    if(!rt_masks_form_is_in_roi(self, pipe, piece, form, roi_layer, roi_layer))
     {
       continue;
     }
@@ -3407,8 +3324,9 @@ static int rt_process_forms(float *layer, dwt_params_t *const wt_p, const int sc
     float *mask = NULL;
     dt_iop_roi_t roi_mask = { 0 };
 
-    dt_masks_get_mask(self, piece, form, &mask, &roi_mask.width, &roi_mask.height, &roi_mask.x, &roi_mask.y);
-    if(mask == NULL)
+    dt_masks_get_mask(self, (dt_dev_pixelpipe_t *)pipe, piece, form, &mask, &roi_mask.width, &roi_mask.height,
+                      &roi_mask.x, &roi_mask.y);
+    if(IS_NULL_PTR(mask))
     {
       fprintf(stderr, "rt_process_forms: error retrieving mask\n");
       continue;
@@ -3420,7 +3338,7 @@ static int rt_process_forms(float *layer, dwt_params_t *const wt_p, const int sc
 
     if(algo != DT_IOP_RETOUCH_BLUR && algo != DT_IOP_RETOUCH_FILL)
     {
-      if(!rt_masks_get_delta_to_destination(self, piece, roi_layer, form, &dx, &dy,
+      if(!rt_masks_get_delta_to_destination(self, pipe, piece, roi_layer, form, &dx, &dy,
                                             p->rt_forms[index].distort_mode))
       {
         dt_pixelpipe_cache_free_align(mask);
@@ -3438,13 +3356,13 @@ static int rt_process_forms(float *layer, dwt_params_t *const wt_p, const int sc
     }
 
     // we don't need the original mask anymore
-    if(mask)
+    if(!IS_NULL_PTR(mask))
     {
       dt_pixelpipe_cache_free_align(mask);
       mask = NULL;
     }
 
-    if(mask_scaled == NULL)
+    if(IS_NULL_PTR(mask_scaled))
     {
       continue;
     }
@@ -3470,8 +3388,8 @@ static int rt_process_forms(float *layer, dwt_params_t *const wt_p, const int sc
       }
       else if(algo == DT_IOP_RETOUCH_BLUR)
       {
-        if(_retouch_blur(self, layer, roi_layer, mask_scaled, &roi_mask_scaled, form_opacity,
-                          p->rt_forms[index].blur_type, p->rt_forms[index].blur_radius, piece, wt_p->use_sse) != 0)
+        if(_retouch_blur(self, pipe, layer, roi_layer, mask_scaled, &roi_mask_scaled, form_opacity,
+                          p->rt_forms[index].blur_type, p->rt_forms[index].blur_radius, wt_p->use_sse) != 0)
         {
           dt_pixelpipe_cache_free_align(mask_scaled);
           return 1;
@@ -3509,13 +3427,12 @@ static int rt_process_forms(float *layer, dwt_params_t *const wt_p, const int sc
   return 0;
 }
 
-static int process_internal(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+__DT_CLONE_TARGETS__
+static int process_internal(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                            const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
                             void *const ovoid, const dt_iop_roi_t *const roi_in,
                             const dt_iop_roi_t *const roi_out, const int use_sse)
 {
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
-                                         ivoid, ovoid, roi_in, roi_out))
-    return 0;
 
   dt_iop_retouch_params_t *p = (dt_iop_retouch_params_t *)piece->data;
   dt_iop_retouch_gui_data_t *g = (dt_iop_retouch_gui_data_t *)self->gui_data;
@@ -3535,7 +3452,7 @@ static int process_internal(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
   // we will do all the clone, heal, etc on the input image,
   // this way the source for one algorithm can be the destination from a previous one
   in_retouch = dt_pixelpipe_cache_alloc_align_float_cache((size_t)4 * roi_rt->width * roi_rt->height, 0);
-  if(in_retouch == NULL)
+  if(IS_NULL_PTR(in_retouch))
   {
     err = 1;
     goto cleanup;
@@ -3545,37 +3462,38 @@ static int process_internal(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
 
   // user data passed from the decompose routine to the one that process each scale
   usr_data.self = self;
+  usr_data.pipe = pipe;
   usr_data.piece = piece;
   usr_data.roi = *roi_rt;
   usr_data.mask_display = 0;
   usr_data.suppress_mask = (g && g->suppress_mask && self->dev->gui_attached && (self == self->dev->gui_module)
-                            && (piece->pipe == self->dev->pipe));
+                            && (pipe == self->dev->pipe));
   usr_data.display_scale = p->curr_scale;
 
   // init the decompose routine
   dwt_p = dt_dwt_init(in_retouch, roi_rt->width, roi_rt->height, 4, p->num_scales,
-                      (!display_wavelet_scale || piece->pipe->type != DT_DEV_PIXELPIPE_FULL) ? 0 : p->curr_scale,
+                      (!display_wavelet_scale || pipe->type != DT_DEV_PIXELPIPE_FULL) ? 0 : p->curr_scale,
                       p->merge_from_scale, &usr_data,
                       roi_in->scale, use_sse);
-  if(dwt_p == NULL)
+  if(IS_NULL_PTR(dwt_p))
   {
     err = 1;
     goto cleanup;
   }
 
   // check if this module should expose mask.
-  if(piece->pipe->type == DT_DEV_PIXELPIPE_FULL && g
+  if(pipe->type == DT_DEV_PIXELPIPE_FULL && !IS_NULL_PTR(g)
      && (g->mask_display || display_wavelet_scale) && self->dev->gui_attached
-     && (self == self->dev->gui_module) && (piece->pipe == self->dev->pipe))
+     && (self == self->dev->gui_module) && (pipe == self->dev->pipe))
   {
     for(size_t j = 0; j < (size_t)roi_rt->width * roi_rt->height * 4; j += 4) in_retouch[j + 3] = 0.f;
 
-    piece->pipe->mask_display = g->mask_display ? DT_DEV_PIXELPIPE_DISPLAY_MASK : DT_DEV_PIXELPIPE_DISPLAY_PASSTHRU;
-    piece->pipe->bypass_blendif = 1;
+    ((dt_dev_pixelpipe_t *)pipe)->mask_display = g->mask_display ? DT_DEV_PIXELPIPE_DISPLAY_MASK : DT_DEV_PIXELPIPE_DISPLAY_PASSTHRU;
+    ((dt_dev_pixelpipe_t *)pipe)->bypass_blendif = 1;
     usr_data.mask_display = 1;
   }
 
-  if(piece->pipe->type == DT_DEV_PIXELPIPE_FULL)
+  if(pipe->type == DT_DEV_PIXELPIPE_FULL)
   {
     // check if the image support this number of scales
     if(gui_active)
@@ -3600,7 +3518,7 @@ static int process_internal(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
   dt_aligned_pixel_t levels = { p->preview_levels[0], p->preview_levels[1], p->preview_levels[2] };
 
   // process auto levels
-  if(g && piece->pipe->type == DT_DEV_PIXELPIPE_FULL)
+  if(!IS_NULL_PTR(g) && pipe->type == DT_DEV_PIXELPIPE_FULL)
   {
     dt_iop_gui_enter_critical_section(self);
     if(g->preview_auto_levels == 1 && !darktable.gui->reset)
@@ -3610,7 +3528,7 @@ static int process_internal(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
       dt_iop_gui_leave_critical_section(self);
 
       levels[0] = levels[1] = levels[2] = 0;
-      rt_process_stats(self, piece, in_retouch, roi_rt->width, roi_rt->height, 4, levels);
+      rt_process_stats(self, pipe, in_retouch, roi_rt->width, roi_rt->height, 4, levels);
       rt_clamp_minmax(levels, levels);
 
       for(int i = 0; i < 3; i++) g->preview_levels[i] = levels[i];
@@ -3624,11 +3542,11 @@ static int process_internal(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
   // if user wants to preview a detail scale adjust levels
   if(dwt_p->return_layer > 0 && dwt_p->return_layer < dwt_p->scales + 1)
   {
-    rt_adjust_levels(self, piece, in_retouch, roi_rt->width, roi_rt->height, 4, levels);
+    rt_adjust_levels(self, pipe, in_retouch, roi_rt->width, roi_rt->height, 4, levels);
   }
 
   // copy alpha channel if needed
-  if((piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) && g && !g->mask_display)
+  if((pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) && !IS_NULL_PTR(g) && !g->mask_display)
   {
     dt_iop_alpha_copy(ivoid, in_retouch, roi_rt->width, roi_rt->height);
   }
@@ -3642,30 +3560,27 @@ cleanup:
   return err;
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
-  return process_internal(self, piece, ivoid, ovoid, roi_in, roi_out, 0);
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
+  return process_internal(self, pipe, piece, ivoid, ovoid, roi_in, roi_out, 0);
 }
 
-#if defined(__SSE__)
-int process_sse2(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-                  void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+void distort_mask(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, struct dt_dev_pixelpipe_iop_t *piece,
+                  const float *const in, float *const out, const dt_iop_roi_t *const roi_in,
+                  const dt_iop_roi_t *const roi_out)
 {
-  return process_internal(self, piece, ivoid, ovoid, roi_in, roi_out, 1);
-}
-#endif
-
-void distort_mask(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const float *const in,
-                  float *const out, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
-{
+  (void)pipe;
   rt_copy_in_to_out(in, roi_in, out, roi_out, 1, 0, 0);
 }
 
 #ifdef HAVE_OPENCL
 
-cl_int rt_process_stats_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const int devid, cl_mem dev_img,
-                           const int width, const int height, float levels[3])
+cl_int rt_process_stats_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                           const int devid, cl_mem dev_img, const int width, const int height,
+                           float levels[3])
 {
   cl_int err = CL_SUCCESS;
 
@@ -3674,7 +3589,7 @@ cl_int rt_process_stats_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   float *src_buffer = NULL;
 
   src_buffer = dt_pixelpipe_cache_alloc_align_float_cache((size_t)ch * width * height, 0);
-  if(src_buffer == NULL)
+  if(IS_NULL_PTR(src_buffer))
   {
     fprintf(stderr, "dt_heal_cl: error allocating memory for healing\n");
     err = DT_OPENCL_SYSMEM_ALLOCATION;
@@ -3689,7 +3604,7 @@ cl_int rt_process_stats_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   }
 
   // just call the CPU version for now
-  rt_process_stats(self, piece, src_buffer, width, height, ch, levels);
+  rt_process_stats(self, pipe, src_buffer, width, height, ch, levels);
 
   err = dt_opencl_write_buffer_to_device(devid, src_buffer, dev_img, 0, sizeof(float) * ch * width * height, CL_TRUE);
   if(err != CL_SUCCESS)
@@ -3703,8 +3618,9 @@ cleanup:
   return err;
 }
 
-cl_int rt_adjust_levels_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const int devid, cl_mem dev_img,
-                           const int width, const int height, const float levels[3])
+cl_int rt_adjust_levels_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                           const int devid, cl_mem dev_img, const int width, const int height,
+                           const float levels[3])
 {
   cl_int err = CL_SUCCESS;
 
@@ -3713,7 +3629,7 @@ cl_int rt_adjust_levels_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   float *src_buffer = NULL;
 
   src_buffer = dt_pixelpipe_cache_alloc_align_float_cache((size_t)ch * width * height, 0);
-  if(src_buffer == NULL)
+  if(IS_NULL_PTR(src_buffer))
   {
     fprintf(stderr, "dt_heal_cl: error allocating memory for healing\n");
     err = DT_OPENCL_SYSMEM_ALLOCATION;
@@ -3728,7 +3644,7 @@ cl_int rt_adjust_levels_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   }
 
   // just call the CPU version for now
-  rt_adjust_levels(self, piece, src_buffer, width, height, ch, levels);
+  rt_adjust_levels(self, pipe, src_buffer, width, height, ch, levels);
 
   err = dt_opencl_write_buffer_to_device(devid, src_buffer, dev_img, 0, sizeof(float) * ch * width * height, CL_TRUE);
   if(err != CL_SUCCESS)
@@ -3759,7 +3675,7 @@ static cl_int rt_copy_in_to_out_cl(const int devid, cl_mem dev_in, const struct 
 
   dev_roi_in = dt_opencl_copy_host_to_device_constant(devid, sizeof(dt_iop_roi_t), (void *)roi_in);
   dev_roi_out = dt_opencl_copy_host_to_device_constant(devid, sizeof(dt_iop_roi_t), (void *)roi_out);
-  if(dev_roi_in == NULL || dev_roi_out == NULL)
+  if(IS_NULL_PTR(dev_roi_in) || IS_NULL_PTR(dev_roi_out))
   {
     fprintf(stderr, "rt_copy_in_to_out_cl error 1\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -3794,14 +3710,14 @@ static cl_int rt_build_scaled_mask_cl(const int devid, float *const mask, dt_iop
   cl_int err = CL_SUCCESS;
 
   rt_build_scaled_mask(mask, roi_mask, mask_scaled, roi_mask_scaled, roi_in, dx, dy, algo);
-  if(*mask_scaled == NULL)
+  if(IS_NULL_PTR(*mask_scaled))
   {
     goto cleanup;
   }
 
   const cl_mem dev_mask_scaled
       = dt_opencl_alloc_device_buffer(devid, sizeof(float) * roi_mask_scaled->width * roi_mask_scaled->height);
-  if(dev_mask_scaled == NULL)
+  if(IS_NULL_PTR(dev_mask_scaled))
   {
     fprintf(stderr, "rt_build_scaled_mask_cl error 2\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -3838,7 +3754,7 @@ static cl_int rt_copy_image_masked_cl(const int devid, cl_mem dev_src, cl_mem de
   const cl_mem dev_roi_mask_scaled
       = dt_opencl_copy_host_to_device_constant(devid, sizeof(dt_iop_roi_t), (void *)roi_mask_scaled);
 
-  if(dev_roi_dest == NULL || dev_roi_mask_scaled == NULL)
+  if(IS_NULL_PTR(dev_roi_dest) || IS_NULL_PTR(dev_roi_mask_scaled))
   {
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
@@ -3873,7 +3789,7 @@ static cl_int rt_copy_mask_to_alpha_cl(const int devid, cl_mem dev_layer, dt_iop
   const cl_mem  dev_roi_layer = dt_opencl_copy_host_to_device_constant(devid, sizeof(dt_iop_roi_t), (void *)roi_layer);
   const cl_mem dev_roi_mask_scaled
       = dt_opencl_copy_host_to_device_constant(devid, sizeof(dt_iop_roi_t), (void *)roi_mask_scaled);
-  if(dev_roi_layer == NULL || dev_roi_mask_scaled == NULL)
+  if(IS_NULL_PTR(dev_roi_layer) || IS_NULL_PTR(dev_roi_mask_scaled))
   {
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
@@ -3906,7 +3822,7 @@ static cl_int _retouch_clone_cl(const int devid, cl_mem dev_layer, dt_iop_roi_t 
   // alloc source temp image to avoid issues when areas self-intersects
   const cl_mem dev_src = dt_opencl_alloc_device_buffer(devid,
                                           sizeof(float) * ch * roi_mask_scaled->width * roi_mask_scaled->height);
-  if(dev_src == NULL)
+  if(IS_NULL_PTR(dev_src))
   {
     fprintf(stderr, "retouch_clone_cl error 2\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -3950,7 +3866,7 @@ static cl_int _retouch_fill_cl(const int devid, cl_mem dev_layer, dt_iop_roi_t *
   const cl_mem dev_roi_layer = dt_opencl_copy_host_to_device_constant(devid, sizeof(dt_iop_roi_t), (void *)roi_layer);
   const cl_mem dev_roi_mask_scaled
       = dt_opencl_copy_host_to_device_constant(devid, sizeof(dt_iop_roi_t), (void *)roi_mask_scaled);
-  if(dev_roi_layer == NULL || dev_roi_mask_scaled == NULL)
+  if(IS_NULL_PTR(dev_roi_layer) || IS_NULL_PTR(dev_roi_mask_scaled))
   {
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
@@ -3977,8 +3893,7 @@ cleanup:
 
 static cl_int _retouch_blur_cl(const int devid, cl_mem dev_layer, dt_iop_roi_t *const roi_layer,
                                cl_mem dev_mask_scaled, dt_iop_roi_t *const roi_mask_scaled, const float opacity,
-                               const int blur_type, const float blur_radius, dt_dev_pixelpipe_iop_t *piece,
-                               dt_iop_retouch_global_data_t *gd)
+                               const int blur_type, const float blur_radius, dt_iop_retouch_global_data_t *gd)
 {
   cl_int err = CL_SUCCESS;
 
@@ -3989,7 +3904,7 @@ static cl_int _retouch_blur_cl(const int devid, cl_mem dev_layer, dt_iop_roi_t *
 
   const cl_mem dev_dest =
     dt_opencl_alloc_device(devid, roi_mask_scaled->width, roi_mask_scaled->height, sizeof(float) * ch);
-  if(dev_dest == NULL)
+  if(IS_NULL_PTR(dev_dest))
   {
     fprintf(stderr, "retouch_blur_cl error 2\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -4086,7 +4001,7 @@ static cl_int _retouch_heal_cl(const int devid, cl_mem dev_layer, dt_iop_roi_t *
   cl_mem dev_dest = NULL;
   cl_mem dev_src = dt_opencl_alloc_device_buffer(devid,
                                           sizeof(float) * ch * roi_mask_scaled->width * roi_mask_scaled->height);
-  if(dev_src == NULL)
+  if(IS_NULL_PTR(dev_src))
   {
     fprintf(stderr, "retouch_heal_cl: error allocating memory for healing\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -4095,7 +4010,7 @@ static cl_int _retouch_heal_cl(const int devid, cl_mem dev_layer, dt_iop_roi_t *
 
   dev_dest = dt_opencl_alloc_device_buffer(devid,
                                            sizeof(float) * ch * roi_mask_scaled->width * roi_mask_scaled->height);
-  if(dev_dest == NULL)
+  if(IS_NULL_PTR(dev_dest))
   {
     fprintf(stderr, "retouch_heal_cl: error allocating memory for healing\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -4154,7 +4069,8 @@ static cl_int rt_process_forms_cl(cl_mem dev_layer, dwt_params_cl_t *const wt_p,
   int scale = scale1;
   retouch_user_data_t *usr_d = (retouch_user_data_t *)wt_p->user_data;
   dt_iop_module_t *self = usr_d->self;
-  dt_dev_pixelpipe_iop_t *piece = usr_d->piece;
+  const dt_dev_pixelpipe_t *pipe = usr_d->pipe;
+  const dt_dev_pixelpipe_iop_t *piece = usr_d->piece;
 
   // if preview a single scale, just process that scale and original image
   // unless merge is activated
@@ -4166,7 +4082,7 @@ static cl_int rt_process_forms_cl(cl_mem dev_layer, dwt_params_cl_t *const wt_p,
   dt_develop_blend_params_t *bp = (dt_develop_blend_params_t *)piece->blendop_data;
   dt_iop_retouch_params_t *p = (dt_iop_retouch_params_t *)piece->data;
   dt_iop_retouch_global_data_t *gd = (dt_iop_retouch_global_data_t *)self->global_data;
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   dt_iop_roi_t *roi_layer = &usr_d->roi;
   const int mask_display = usr_d->mask_display && (scale == usr_d->display_scale);
 
@@ -4182,12 +4098,12 @@ static cl_int rt_process_forms_cl(cl_mem dev_layer, dwt_params_cl_t *const wt_p,
   if(!usr_d->suppress_mask)
   {
     dt_masks_form_t *grp = dt_masks_get_from_id(self->dev, bp->mask_id);
-    if(!grp || !(grp->type & DT_MASKS_GROUP)) return err;
+    if(IS_NULL_PTR(grp) || !(grp->type & DT_MASKS_GROUP)) return err;
 
     for(const GList *forms = grp->points; forms && err == CL_SUCCESS; forms = g_list_next(forms))
     {
       dt_masks_form_group_t *grpt = (dt_masks_form_group_t *)forms->data;
-      if(grpt == NULL)
+      if(IS_NULL_PTR(grpt))
       {
         fprintf(stderr, "rt_process_forms: invalid form\n");
         continue;
@@ -4215,14 +4131,14 @@ static cl_int rt_process_forms_cl(cl_mem dev_layer, dwt_params_cl_t *const wt_p,
 
       // get the spot
       dt_masks_form_t *form = dt_masks_get_from_id(self->dev, formid);
-      if(form == NULL)
+      if(IS_NULL_PTR(form))
       {
         fprintf(stderr, "rt_process_forms: missing form=%i from masks\n", formid);
         continue;
       }
 
       // if the form is outside the roi, we just skip it
-      if(!rt_masks_form_is_in_roi(self, piece, form, roi_layer, roi_layer))
+      if(!rt_masks_form_is_in_roi(self, pipe, piece, form, roi_layer, roi_layer))
       {
         continue;
       }
@@ -4231,8 +4147,9 @@ static cl_int rt_process_forms_cl(cl_mem dev_layer, dwt_params_cl_t *const wt_p,
       float *mask = NULL;
       dt_iop_roi_t roi_mask = { 0 };
 
-      dt_masks_get_mask(self, piece, form, &mask, &roi_mask.width, &roi_mask.height, &roi_mask.x, &roi_mask.y);
-      if(mask == NULL)
+      dt_masks_get_mask(self, (dt_dev_pixelpipe_t *)pipe, piece, form, &mask, &roi_mask.width, &roi_mask.height,
+                        &roi_mask.x, &roi_mask.y);
+      if(IS_NULL_PTR(mask))
       {
         fprintf(stderr, "rt_process_forms: error retrieving mask\n");
         continue;
@@ -4244,7 +4161,7 @@ static cl_int rt_process_forms_cl(cl_mem dev_layer, dwt_params_cl_t *const wt_p,
       const dt_iop_retouch_algo_type_t algo = p->rt_forms[index].algorithm;
       if(algo != DT_IOP_RETOUCH_BLUR && algo != DT_IOP_RETOUCH_FILL)
       {
-        if(!rt_masks_get_delta_to_destination(self, piece, roi_layer, form, &dx, &dy,
+        if(!rt_masks_get_delta_to_destination(self, (dt_dev_pixelpipe_t *)pipe, piece, roi_layer, form, &dx, &dy,
                                               p->rt_forms[index].distort_mode))
         {
           dt_pixelpipe_cache_free_align(mask);
@@ -4261,7 +4178,7 @@ static cl_int rt_process_forms_cl(cl_mem dev_layer, dwt_params_cl_t *const wt_p,
                                     roi_layer, dx, dy, algo);
 
       // only heal needs mask scaled
-      if(algo != DT_IOP_RETOUCH_HEAL && mask_scaled != NULL)
+      if(algo != DT_IOP_RETOUCH_HEAL && !IS_NULL_PTR(mask_scaled))
       {
         dt_pixelpipe_cache_free_align(mask_scaled);
         mask_scaled = NULL;
@@ -4274,7 +4191,7 @@ static cl_int rt_process_forms_cl(cl_mem dev_layer, dwt_params_cl_t *const wt_p,
         mask = NULL;
       }
 
-      if(mask_scaled == NULL && algo == DT_IOP_RETOUCH_HEAL)
+      if(IS_NULL_PTR(mask_scaled) && algo == DT_IOP_RETOUCH_HEAL)
       {
         dt_opencl_release_mem_object(dev_mask_scaled);
         dev_mask_scaled = NULL;
@@ -4298,7 +4215,7 @@ static cl_int rt_process_forms_cl(cl_mem dev_layer, dwt_params_cl_t *const wt_p,
         else if(algo == DT_IOP_RETOUCH_BLUR)
         {
           err = _retouch_blur_cl(devid, dev_layer, roi_layer, dev_mask_scaled, &roi_mask_scaled, form_opacity,
-                                  p->rt_forms[index].blur_type, p->rt_forms[index].blur_radius, piece, gd);
+                                  p->rt_forms[index].blur_type, p->rt_forms[index].blur_radius, gd);
         }
         else if(algo == DT_IOP_RETOUCH_FILL)
         {
@@ -4336,20 +4253,21 @@ static cl_int rt_process_forms_cl(cl_mem dev_layer, dwt_params_cl_t *const wt_p,
   return err;
 }
 
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_retouch_params_t *p = (dt_iop_retouch_params_t *)piece->data;
   dt_iop_retouch_global_data_t *gd = (dt_iop_retouch_global_data_t *)self->global_data;
   dt_iop_retouch_gui_data_t *g = (dt_iop_retouch_gui_data_t *)self->gui_data;
 
   cl_int err = CL_SUCCESS;
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
 
   dt_iop_roi_t roi_retouch = *roi_in;
   dt_iop_roi_t *roi_rt = &roi_retouch;
 
-  const int ch = piece->colors;
+  const int ch = piece->dsc_in.channels;
   retouch_user_data_t usr_data = { 0 };
   dwt_params_cl_t *dwt_p = NULL;
 
@@ -4359,7 +4277,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   // we will do all the clone, heal, etc on the input image,
   // this way the source for one algorithm can be the destination from a previous one
   const cl_mem in_retouch = dt_opencl_alloc_device_buffer(devid, sizeof(float) * ch * roi_rt->width * roi_rt->height);
-  if(in_retouch == NULL)
+  if(IS_NULL_PTR(in_retouch))
   {
     dt_print(DT_DEBUG_OPENCL, "[retouch process_cl] error allocating memory for wavelet decompose on device %d\n", devid);
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -4376,20 +4294,21 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   // user data passed from the decompose routine to the one that process each scale
   usr_data.self = self;
+  usr_data.pipe = pipe;
   usr_data.piece = piece;
   usr_data.roi = *roi_rt;
   usr_data.mask_display = 0;
   usr_data.suppress_mask = (g && g->suppress_mask && self->dev->gui_attached && (self == self->dev->gui_module)
-                            && (piece->pipe == self->dev->pipe));
+                            && (pipe == self->dev->pipe));
   usr_data.display_scale = p->curr_scale;
 
   // init the decompose routine
   dwt_p = dt_dwt_init_cl(devid, in_retouch, roi_rt->width, roi_rt->height, p->num_scales,
                          (!display_wavelet_scale
-                          || piece->pipe->type != DT_DEV_PIXELPIPE_FULL) ? 0 : p->curr_scale,
+                          || pipe->type != DT_DEV_PIXELPIPE_FULL) ? 0 : p->curr_scale,
                          p->merge_from_scale, &usr_data,
                          roi_in->scale);
-  if(dwt_p == NULL)
+  if(IS_NULL_PTR(dwt_p))
   {
     dt_print(DT_DEBUG_OPENCL, "[retouch process_cl] error initializing wavelet decompose on device %d\n", devid);
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -4397,8 +4316,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   }
 
   // check if this module should expose mask.
-  if(piece->pipe->type == DT_DEV_PIXELPIPE_FULL && g && g->mask_display && self->dev->gui_attached
-     && (self == self->dev->gui_module) && (piece->pipe == self->dev->pipe))
+  if(pipe->type == DT_DEV_PIXELPIPE_FULL && g && g->mask_display && self->dev->gui_attached
+     && (self == self->dev->gui_module) && (pipe == self->dev->pipe))
   {
     const int kernel = gd->kernel_retouch_clear_alpha;
     const size_t sizes[] = { ROUNDUPDWD(roi_rt->width, devid), ROUNDUPDHT(roi_rt->height, devid), 1 };
@@ -4409,12 +4328,12 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
     err = dt_opencl_enqueue_kernel_2d(devid, kernel, sizes);
     if(err != CL_SUCCESS) goto cleanup;
 
-    piece->pipe->mask_display = DT_DEV_PIXELPIPE_DISPLAY_MASK;
-    piece->pipe->bypass_blendif = 1;
+    ((dt_dev_pixelpipe_t *)pipe)->mask_display = DT_DEV_PIXELPIPE_DISPLAY_MASK;
+    ((dt_dev_pixelpipe_t *)pipe)->bypass_blendif = 1;
     usr_data.mask_display = 1;
   }
 
-  if(piece->pipe->type == DT_DEV_PIXELPIPE_FULL)
+  if(pipe->type == DT_DEV_PIXELPIPE_FULL)
   {
     // check if the image support this number of scales
     if(gui_active)
@@ -4436,7 +4355,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dt_aligned_pixel_t levels = { p->preview_levels[0], p->preview_levels[1], p->preview_levels[2] };
 
   // process auto levels
-  if(g && piece->pipe->type == DT_DEV_PIXELPIPE_FULL)
+  if(g && pipe->type == DT_DEV_PIXELPIPE_FULL)
   {
     dt_iop_gui_enter_critical_section(self);
     if(g->preview_auto_levels == 1 && !darktable.gui->reset)
@@ -4446,7 +4365,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
       dt_iop_gui_leave_critical_section(self);
 
       levels[0] = levels[1] = levels[2] = 0;
-      err = rt_process_stats_cl(self, piece, devid, in_retouch, roi_rt->width, roi_rt->height, levels);
+      err = rt_process_stats_cl(self, pipe, devid, in_retouch, roi_rt->width, roi_rt->height, levels);
       if(err != CL_SUCCESS) goto cleanup;
 
       rt_clamp_minmax(levels, levels);
@@ -4462,12 +4381,12 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   // if user wants to preview a detail scale adjust levels
   if(dwt_p->return_layer > 0 && dwt_p->return_layer < dwt_p->scales + 1)
   {
-    err = rt_adjust_levels_cl(self, piece, devid, in_retouch, roi_rt->width, roi_rt->height, levels);
+    err = rt_adjust_levels_cl(self, pipe, devid, in_retouch, roi_rt->width, roi_rt->height, levels);
     if(err != CL_SUCCESS) goto cleanup;
   }
 
   // copy alpha channel if needed
-  if((piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) && g && !g->mask_display)
+  if((pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) && g && !g->mask_display)
   {
     const int kernel = gd->kernel_retouch_copy_alpha;
     const size_t sizes[] = { ROUNDUPDWD(roi_rt->width, devid), ROUNDUPDHT(roi_rt->height, devid), 1 };
@@ -4509,7 +4428,7 @@ static void rt_menu_select_algorithm_callback(GtkWidget *widget, gpointer user_d
   if(algo < DT_IOP_RETOUCH_CLONE || algo > DT_IOP_RETOUCH_FILL) return;
   if(p->rt_forms[index].algorithm == algo) return;
   dt_masks_form_t *form = dt_masks_get_from_id(self->dev, formid);
-  if(!form) return;
+  if(IS_NULL_PTR(form)) return;
 
   // Apply the new algorithm to the form
   p->rt_forms[index].algorithm = algo;
@@ -4529,9 +4448,9 @@ static void rt_menu_select_algorithm_callback(GtkWidget *widget, gpointer user_d
   form->type = masks_type;
 
   // Update GUI
-  rt_shape_selection_changed(self);
+  rt_load_shape_algo_in_gui(self, formid);
 
-  //dt_dev_add_history_item(darktable.develop, self, TRUE, TRUE);
+  dt_dev_add_history_item(darktable.develop, self, TRUE, TRUE);
 }
 
 int populate_masks_context_menu(struct dt_iop_module_t *self, GtkWidget *menu, const int formid,const float pzx, const float pzy)

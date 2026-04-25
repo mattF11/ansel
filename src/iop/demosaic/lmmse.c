@@ -52,11 +52,6 @@
   #define LMMSE_GRP 136
 #endif
 
-#ifdef __GNUC__
-  #pragma GCC push_options
-  #pragma GCC optimize ("fast-math", "fp-contract=fast", "finite-math-only", "no-math-errno")
-#endif
-
 #define LMMSE_OVERLAP 8
 #define BORDER_AROUND 4
 #define LMMSE_TILESIZE (LMMSE_GRP - 2 * BORDER_AROUND)
@@ -131,11 +126,7 @@ static INLINE float calc_gamma(float val, float *table)
   const float p2 = table[idx+1] - p1;
   return (p1 + p2 * diff);
 }
-
-#ifdef _OPENMP
-  #pragma omp declare simd aligned(in, out, gamma_in, gamma_out)
-#endif
-static void lmmse_demosaic(dt_dev_pixelpipe_iop_t *piece, float *const restrict out, const float *const restrict in, dt_iop_roi_t *const roi_out,
+static void lmmse_demosaic(const dt_dev_pixelpipe_iop_t *piece, float *const restrict out, const float *const restrict in, dt_iop_roi_t *const roi_out,
                                    const dt_iop_roi_t *const roi_in, const uint32_t filters, const uint32_t mode, float *const restrict gamma_in, float *const restrict gamma_out)
 {
   const int width = roi_in->width;
@@ -164,14 +155,13 @@ static void lmmse_demosaic(dt_dev_pixelpipe_iop_t *piece, float *const restrict 
   // refinement steps
   const int refine = (mode > 2) ? mode - 2 : 0;
 
-  const float scaler = fmaxf(piece->pipe->dsc.processed_maximum[0], fmaxf(piece->pipe->dsc.processed_maximum[1], piece->pipe->dsc.processed_maximum[2]));
+  const float scaler = fmaxf(piece->dsc_in.processed_maximum[0], fmaxf(piece->dsc_in.processed_maximum[1], piece->dsc_in.processed_maximum[2]));
   const float revscaler = 1.0f / scaler;
 
   const int num_vertical =   1 + (height - 2 * LMMSE_OVERLAP -1) / LMMSE_TILEVALID;
   const int num_horizontal = 1 + (width  - 2 * LMMSE_OVERLAP -1) / LMMSE_TILEVALID;
 #ifdef _OPENMP
-  #pragma omp parallel \
-  dt_omp_firstprivate(width, height, out, in, scaler, revscaler, filters)
+  #pragma omp parallel
 #endif
   {
     float *qix[6];
@@ -584,11 +574,6 @@ static void lmmse_demosaic(dt_dev_pixelpipe_iop_t *piece, float *const restrict 
     dt_pixelpipe_cache_free_align(buffer);
   }
 }
-
-// revert specific aggressive optimizing
-#ifdef __GNUC__
-  #pragma GCC pop_options
-#endif
 
 #undef LMMSE_TILESIZE
 #undef LMMSE_OVERLAP

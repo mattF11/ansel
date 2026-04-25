@@ -22,6 +22,7 @@
 
 #include "bauhaus/bauhaus.h"
 #include "common/atomic.h"
+#include "common/cache.h"
 #include "common/collection.h"
 #include "common/darktable.h"
 #include "common/file_location.h"
@@ -30,6 +31,7 @@
 #include "common/import.h"
 #include "common/image.h"
 #include "common/image_cache.h"
+#include "common/imageio.h"
 #include "common/metadata.h"
 #include "common/datetime.h"
 #include "common/selection.h"
@@ -187,7 +189,7 @@ static void _recurse_folder(GVfs *vfs, GFile *folder, dt_import_t *const import)
   {
     // g_file_enumerator_iterate returns FALSE only on errors, not on end of enumeration.
     // We need an ugly break here else infinite loop.
-    if(!file) break;
+    if(IS_NULL_PTR(file)) break;
 
     // Shutdown ASAP
     if((*import->shutdown))
@@ -208,7 +210,7 @@ static void _recurse_selection(GSList *selection, dt_import_t *const import)
   // GtkFileChooser gives us a GSList for selection, so we can't directly recurse from here
   // since the import job expects a GList.
 
-  if(*(import->shutdown) || selection == NULL) return;
+  if(*(import->shutdown) || IS_NULL_PTR(selection)) return;
 
   GVfs *vfs = g_vfs_get_default();
   for(GSList *uri = selection; uri; uri = g_slist_next(uri))
@@ -315,8 +317,11 @@ static GdkPixbuf *_import_get_thumbnail(const gchar *filename, const int width, 
   int th_width;
   int th_height;
   char *mime_type = NULL;
+  const char *const extension = g_strrstr(filename, ".");
+  const dt_image_flags_t file_type = extension ? dt_imageio_get_type_from_extension(extension + 1) : 0u;
   dt_colorspaces_color_profile_type_t color_space;
-  if(!dt_imageio_large_thumbnail(filename, &buffer, &th_width, &th_height, &color_space, width, height))
+  if(!(file_type & DT_IMAGE_HDR)
+     && !dt_imageio_large_thumbnail(filename, &buffer, &th_width, &th_height, &color_space, width, height))
   {
     const float ratio = ((float)th_height) / ((float)th_width);
 
@@ -326,11 +331,13 @@ static GdkPixbuf *_import_get_thumbnail(const gchar *filename, const int width, 
         0);
     if(rgb)
     {
+      __OMP_PARALLEL_FOR__()
       for(size_t k = 0; k < th_width * th_height; k++)
       {
-        rgb[k * 3] = buffer[k * 4];
-        rgb[k * 3 + 1] = buffer[k * 4 + 1];
-        rgb[k * 3 + 2] = buffer[k * 4 + 2];
+        const float alpha = buffer[k * 4 + 3] > 0 ? buffer[k * 4 + 3] / 255.0f : 1.0f;
+        rgb[k * 3] = CLAMP((int)roundf((buffer[k * 4] / 255.0f * alpha + (1.0f - alpha)) * 255.0f), 0, 255);
+        rgb[k * 3 + 1] = CLAMP((int)roundf((buffer[k * 4 + 1] / 255.0f * alpha + (1.0f - alpha)) * 255.0f), 0, 255);
+        rgb[k * 3 + 2] = CLAMP((int)roundf((buffer[k * 4 + 2] / 255.0f * alpha + (1.0f - alpha)) * 255.0f), 0, 255);
       }
 
       // Build the actual pixbuf object
@@ -348,11 +355,60 @@ static GdkPixbuf *_import_get_thumbnail(const gchar *filename, const int width, 
     dt_free(mime_type);
   }
 
+  if(IS_NULL_PTR(pixbuf))
+  {
+    const gboolean use_internal_loader = !(file_type & DT_IMAGE_RAW);
+
+    if(use_internal_loader)
+    {
+      dt_cache_entry_t cache_entry = { 0 };
+      dt_mipmap_buffer_t mipbuf = { 0 };
+      mipbuf.size = DT_MIPMAP_FULL;
+      mipbuf.cache_entry = &cache_entry;
+
+      /* If embedded preview extraction failed, non-RAW files should still get a preview by
+       * decoding the real image through Ansel instead of relying on the desktop pixbuf stack.
+       * RAWs stay excluded here because the import dialog only wants a lightweight fallback. */
+      if(dt_imageio_open(img, filename, &mipbuf) == DT_IMAGEIO_OK
+         && !IS_NULL_PTR(mipbuf.buf) && mipbuf.width > 0 && mipbuf.height > 0)
+      {
+        const size_t pixels = (size_t)mipbuf.width * mipbuf.height;
+        uint8_t *rgb = dt_pixelpipe_cache_alloc_align_cache(pixels * 3 * sizeof(uint8_t), 0);
+        if(!IS_NULL_PTR(rgb))
+        {
+          const float *const in = (const float *const)mipbuf.buf;
+          __OMP_PARALLEL_FOR__()
+          for(size_t k = 0; k < pixels; k++)
+          {
+            const float alpha = in[k * 4 + 3] > 0.0f ? CLAMPF(in[k * 4 + 3], 0.0f, 1.0f) : 1.0f;
+            rgb[k * 3] = CLAMP((int)roundf((CLAMPF(in[k * 4], 0.0f, 1.0f) * alpha + (1.0f - alpha)) * 255.0f), 0, 255);
+            rgb[k * 3 + 1] = CLAMP((int)roundf((CLAMPF(in[k * 4 + 1], 0.0f, 1.0f) * alpha + (1.0f - alpha)) * 255.0f), 0, 255);
+            rgb[k * 3 + 2] = CLAMP((int)roundf((CLAMPF(in[k * 4 + 2], 0.0f, 1.0f) * alpha + (1.0f - alpha)) * 255.0f), 0, 255);
+          }
+
+          GdkPixbuf *tmp = gdk_pixbuf_new_from_data(rgb, 0, FALSE, 8, mipbuf.width, mipbuf.height,
+                                                    mipbuf.width * 3 * sizeof(uint8_t), NULL, NULL);
+          if(!IS_NULL_PTR(tmp))
+          {
+            const float ratio = (float)mipbuf.height / (float)mipbuf.width;
+            pixbuf = gdk_pixbuf_scale_simple(tmp, roundf((float)width / ratio), height, GDK_INTERP_HYPER);
+            g_object_unref(tmp);
+          }
+
+          dt_pixelpipe_cache_free_align(rgb);
+        }
+      }
+
+      dt_free_align(cache_entry.data);
+      cache_entry.data = NULL;
+    }
+  }
+
   // Fallback to whatever Gtk found in the file
-  if(pixbuf == NULL)
+  if(IS_NULL_PTR(pixbuf))
     pixbuf = gdk_pixbuf_new_from_file_at_size(filename, width, height, NULL);
 
-  if(pixbuf == NULL) return NULL;
+  if(IS_NULL_PTR(pixbuf)) return NULL;
 
   // Rotate the image to the correct orientation
   GdkPixbuf *tmp = pixbuf;
@@ -510,7 +566,7 @@ static int _is_in_library_by_metadata(GFile *file)
                             G_FILE_ATTRIBUTE_STANDARD_NAME ","
                             G_FILE_ATTRIBUTE_TIME_MODIFIED,
                             G_FILE_QUERY_INFO_NONE, NULL, &error);
-  if(!info)
+  if(IS_NULL_PTR(info))
   {
     if(error) g_error_free(error);
     return 0;
@@ -533,7 +589,7 @@ static void update_preview_cb(GtkFileChooser *file_chooser, gpointer userdata)
 {
   dt_lib_import_t *d = (dt_lib_import_t *)userdata;
   char *uri = gtk_file_chooser_get_preview_uri(file_chooser);
-  if(uri == NULL)
+  if(IS_NULL_PTR(uri))
   {
     gtk_file_chooser_set_preview_widget_active(file_chooser, FALSE);
     return; // nothing to do, nothing to free.
@@ -543,19 +599,25 @@ static void update_preview_cb(GtkFileChooser *file_chooser, gpointer userdata)
   GFile *in = g_vfs_get_file_for_uri(vfs, (const char *)uri);
   char *filename = g_file_get_path(in);
 
-  gboolean have_file = (filename != NULL) && g_file_test(filename, G_FILE_TEST_IS_REGULAR);
+  gboolean have_file = (!IS_NULL_PTR(filename)) && g_file_test(filename, G_FILE_TEST_IS_REGULAR);
   gtk_file_chooser_set_preview_widget_active(file_chooser, have_file);
 
   dt_image_t *img = NULL;
   int valid_exif = 0;
   if(have_file)
   {
+    const char *const extension = g_strrstr(filename, ".");
+    const dt_image_flags_t file_type = extension ? dt_imageio_get_type_from_extension(extension + 1) : 0u;
+
     dt_free(d->path_file);
     d->path_file = g_strdup(filename);
 
     img = malloc(sizeof(dt_image_t));
     dt_image_init(img);
-    valid_exif = dt_exif_read(img, filename);
+    if(!(file_type & DT_IMAGE_HDR))
+      valid_exif = dt_exif_read(img, filename);
+    else
+      valid_exif = 1;
     _set_test_path(d, img);
   }
   else
@@ -658,7 +720,7 @@ static void _set_help_string(dt_lib_import_t *d, gboolean copy)
 
 static void _set_test_path(dt_lib_import_t *d, dt_image_t *img)
 {
-  if(!d->path_file || d->path_file == NULL)
+  if(IS_NULL_PTR(d->path_file) || IS_NULL_PTR(d->path_file))
     return;
 
   const gboolean duplicate = dt_conf_get_bool("ui_last/import_copy");
@@ -678,7 +740,7 @@ static void _set_test_path(dt_lib_import_t *d, dt_image_t *img)
     return;
   }
 
-  if(!file->data || !dt_supported_image(file->data))
+  if(IS_NULL_PTR(file->data) || !dt_supported_image(file->data))
   {
     gtk_label_set_text(GTK_LABEL(d->test_path), _("Result of the pattern : please select a picture file"));
     return;
@@ -699,7 +761,7 @@ static void _set_test_path(dt_lib_import_t *d, dt_image_t *img)
                                 };
 
     gboolean free_after = FALSE;
-    if(img == NULL)
+    if(IS_NULL_PTR(img))
     {
       img = malloc(sizeof(dt_image_t));
       dt_image_init(img);
@@ -738,7 +800,7 @@ static void _set_test_path(dt_lib_import_t *d, dt_image_t *img)
 static void _filelist_changed_callback(gpointer instance, GList *files, guint elements, guint finished, gpointer user_data)
 {
   dt_lib_import_t *d = (dt_lib_import_t *)user_data;
-  if(!d || !d->selected_files) return;
+  if(IS_NULL_PTR(d) || IS_NULL_PTR(d->selected_files)) return;
 
   if(finished)
   {
@@ -1234,7 +1296,7 @@ static void _do_select_new(dt_lib_import_t *d)
   {
     // g_file_enumerator_iterate returns FALSE only on errors, not on end of enumeration.
     // We need an ugly break here else infinite loop.
-    if(!file) break;
+    if(IS_NULL_PTR(file)) break;
 
     GtkFileFilterInfo filter_info = { gtk_file_filter_get_needed(filter),
                                       g_file_get_parse_name(file),

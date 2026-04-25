@@ -82,15 +82,15 @@ void dt_dev_pixelpipe_change_zoom_main(struct dt_develop_t *dev);
 // all modules of the pipe. This chains calls to module's modify_roi_out() methods in pipeline order.
 // Doesn't actually compute pixels.
 // NOTE: pipe must be a real or virtual pipe with nodes; NULL pipes are not supported anymore.
-void dt_dev_pixelpipe_get_roi_out(struct dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev, const int width_in,
+void dt_dev_pixelpipe_get_roi_out(struct dt_dev_pixelpipe_t *pipe, const int width_in,
                                   const int height_in, int *width, int *height);
                                 
-// Compute and save into each piece->planned_roi_out/in the proper module-wise ROI to achieve
+// Compute and save into each piece->roi_out/in the proper module-wise ROI to achieve
 // the desired sizes from roi_out, from end to start. This chains calls to module's modify_roi_in() methods
 // in pipeline reverse order.
 // Doesn't actually compute pixels.
 // NOTE: pipe must be a real or virtual pipe with nodes; NULL pipes are not supported anymore.
-void dt_dev_pixelpipe_get_roi_in(struct dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev, const struct dt_iop_roi_t roi_out);
+void dt_dev_pixelpipe_get_roi_in(struct dt_dev_pixelpipe_t *pipe, const struct dt_iop_roi_t roi_out);
 
 // Check if current_module is performing operations that dev->gui_module (active GUI module)
 // wants disabled. Use that to disable some features of current_module.
@@ -106,7 +106,7 @@ gboolean dt_dev_pixelpipe_activemodule_disables_currentmodule(struct dt_develop_
 
 // wrapper for cleanup_nodes, create_nodes, synch_all and synch_top, decides upon changed event which one to
 // take on. also locks dev->history_mutex.
-void dt_dev_pixelpipe_change(struct dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev);
+void dt_dev_pixelpipe_change(struct dt_dev_pixelpipe_t *pipe);
 void dt_dev_pixelpipe_sync_virtual(struct dt_develop_t *dev, dt_dev_pixelpipe_change_t flag);
 
 // Get the global hash of a pipe node (piece), or a fallback if none.
@@ -114,15 +114,97 @@ uint64_t dt_dev_pixelpipe_node_hash(struct dt_dev_pixelpipe_t *pipe,
                                     const struct dt_dev_pixelpipe_iop_t *piece, 
                                     const struct dt_iop_roi_t, const int pos);
 
+/**
+ * @brief Return the enabled piece owned by @p module in @p pipe.
+ *
+ * @details
+ * GUI-side cache readers must resolve the current live piece from the current
+ * pipe graph every time they sample. Piece pointers are not stable across
+ * history resyncs or pipe rebuilds, so callers should never persist them.
+ *
+ * @param pipe Current pipe graph.
+ * @param module Module instance to look up.
+ *
+ * @return The enabled piece matching @p module, or NULL if none exists in the
+ * current pipe graph.
+ */
+const struct dt_dev_pixelpipe_iop_t *dt_dev_pixelpipe_get_module_piece(const struct dt_dev_pixelpipe_t *pipe,
+                                                                       const struct dt_iop_module_t *module);
+
+/**
+ * @brief Return the closest enabled piece located immediately before @p piece in @p pipe.
+ *
+ * @details
+ * Cache readers that need the input buffer of one module must reopen the previous enabled module output,
+ * not simply the previous list node, because disabled pieces keep their place in `pipe->nodes` while not
+ * producing any cacheline. This utility keeps that rule centralized at the pixelpipe level.
+ *
+ * @param pipe Current pipe graph.
+ * @param piece Reference piece inside @p pipe.
+ *
+ * @return The previous enabled piece, or NULL if @p piece is the first enabled node or if either input is invalid.
+ */
+const struct dt_dev_pixelpipe_iop_t *dt_dev_pixelpipe_get_prev_enabled_piece(const struct dt_dev_pixelpipe_t *pipe,
+                                                                             const struct dt_dev_pixelpipe_iop_t *piece);
+
+typedef void (*dt_dev_pixelpipe_cache_ready_callback_t)(gpointer user_data);
+
+typedef struct dt_dev_pixelpipe_cache_wait_t
+{
+  struct dt_dev_pixelpipe_t *pipe;
+  const struct dt_iop_module_t *module;
+  uint64_t hash;
+  dt_dev_pixelpipe_cache_ready_callback_t restart;
+  gpointer user_data;
+  gboolean connected;
+} dt_dev_pixelpipe_cache_wait_t;
+
+void dt_dev_pixelpipe_cache_wait_cleanup(dt_dev_pixelpipe_cache_wait_t *wait);
+
+/**
+ * @brief Reopen one GUI-visible host cacheline, or queue the minimal pipe recompute needed to publish it.
+ *
+ * @details
+ * GUI samplers only consume host-visible buffers. This wrapper first tries to reopen the requested cacheline:
+ * - @p piece output if @p piece is not NULL,
+ * - the pipe final backbuffer cacheline if @p piece is NULL.
+ *
+ * If that cacheline does not exist yet, or only exists as a device-side OpenCL payload, the wrapper schedules one
+ * dedicated pipe run:
+ * - module requests stop recursion at that module and force one host cacheline there,
+ * - NULL requests ask for the final pipe backbuffer.
+ *
+ * The request uses a dedicated pipe state instead of pretending history changed, so the worker can rerun just
+ * enough of the current synchronized graph to satisfy the GUI reader.
+ *
+ * @param pipe Current live pipe.
+ * @param piece Target module piece, or NULL for the final backbuffer.
+ * @param data Returned host-visible pixel buffer on success.
+ * @param cache_entry Returned cache entry owning @p data on success.
+ * @param wait Optional one-shot cacheline-ready watcher owned by the caller.
+ * @param restart Optional restart callback used with @p wait when the cacheline must be published asynchronously.
+ * @param restart_data Opaque pointer forwarded to @p restart.
+ *
+ * @return TRUE when a host buffer is immediately available, FALSE when the caller must retry after the queued pipe
+ * update completed.
+ */
+gboolean dt_dev_pixelpipe_cache_peek_gui(dt_dev_pixelpipe_t *pipe,
+                                         const struct dt_dev_pixelpipe_iop_t *piece,
+                                         void **data,
+                                         struct dt_pixel_cache_entry_t **cache_entry,
+                                         dt_dev_pixelpipe_cache_wait_t *wait,
+                                         dt_dev_pixelpipe_cache_ready_callback_t restart,
+                                         gpointer restart_data);
+
 // Compute the sequential hash over the pipeline for each module.
 // Need to run after dt_dev_pixelpipe_get_roi_in() has updated processed ROI in/out
-void dt_pixelpipe_get_global_hash(struct dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev);
+void dt_pixelpipe_get_global_hash(struct dt_dev_pixelpipe_t *pipe);
 
 // Return TRUE if the current backbuffer for the current pipe is in sync with current dev history stack.
-gboolean dt_dev_pixelpipe_is_backbufer_valid(struct dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev);
+gboolean dt_dev_pixelpipe_is_backbufer_valid(struct dt_dev_pixelpipe_t *pipe);
 
 // Return TRUE if the current pipeline (topology and node parameters) is in sync with current dev history stack.
-gboolean dt_dev_pixelpipe_is_pipeline_valid(struct dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev);
+gboolean dt_dev_pixelpipe_is_pipeline_valid(struct dt_dev_pixelpipe_t *pipe);
 
 
 #ifdef __cplusplus

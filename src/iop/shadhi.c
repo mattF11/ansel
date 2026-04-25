@@ -204,7 +204,7 @@ int default_group()
   return IOP_GROUP_TONES;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
 }
@@ -317,19 +317,18 @@ static inline float sign(float x)
 {
   return (x < 0 ? -1.0f : 1.0f);
 }
-
-#ifdef _OPENMP
-#pragma omp declare simd aligned(ivoid, ovoid : 64)
-#endif
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const dt_iop_shadhi_data_t *const restrict data = (dt_iop_shadhi_data_t *)piece->data;
   const float *const restrict in = (float *)ivoid;
   float *const restrict out = (float *)ovoid;
   const int width = roi_out->width;
   const int height = roi_out->height;
-  const int ch = piece->colors;
+  const int ch = piece->dsc_in.channels;
 
   const int order = data->order;
   const float radius = fmaxf(0.1f, data->radius);
@@ -360,7 +359,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     }
 
     dt_gaussian_t *g = dt_gaussian_init(width, height, ch, Labmax, Labmin, sigma, order);
-    if(!g) return 1;
+    if(IS_NULL_PTR(g)) return 1;
     dt_gaussian_blur_4c(g, in, out);
     dt_gaussian_free(g);
   }
@@ -371,7 +370,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     const float detail = -1.0f; // we want the bilateral base layer
 
     dt_bilateral_t *b = dt_bilateral_init(width, height, sigma_s, sigma_r);
-    if(!b) return 1;
+    if(IS_NULL_PTR(b)) return 1;
     dt_bilateral_splat(b, in);
     dt_bilateral_blur(b);
     dt_bilateral_slice(b, in, out, detail);
@@ -384,17 +383,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   const float lmax = max[0] + fabsf(min[0]);
   const float halfmax = lmax / 2.0;
   const float doublemax = lmax * 2.0;
-
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, compress, doublemax, flags, halfmax, height, \
-                      highlights, highlights_ccorrect, lmax, lmin, \
-                      low_approximation, max, min,  shadows, \
-                      shadows_ccorrect, unbound_mask, whitepoint, width) \
-  dt_omp_sharedconst(in, out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t j = 0; j < (size_t)width * height * ch; j += ch)
   {
     dt_aligned_pixel_t ta, tb;
@@ -476,20 +465,21 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     _Lab_rescale(ta, &out[j]);
   }
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
   return 0;
 }
 
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
+  (void)self;
+  (void)pipe;
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_shadhi_data_t *d = (dt_iop_shadhi_data_t *)piece->data;
 
   const int width = roi_in->width;
   const int height = roi_in->height;
-  const int channels = piece->colors;
+  const int channels = piece->dsc_in.channels;
 
   const float radius = fmax(0.1f, d->radius);
   const float sigma = radius * roi_in->scale;

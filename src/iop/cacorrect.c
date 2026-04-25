@@ -131,9 +131,17 @@ int flags()
   return IOP_FLAGS_ONE_INSTANCE | IOP_FLAGS_DEPRECATED;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RAW;
+}
+
+void input_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                  dt_iop_buffer_dsc_t *dsc)
+{
+  default_input_format(self, pipe, piece, dsc);
+  dsc->channels = 1;
+  dt_iop_buffer_dsc_update_bpp(dsc);
 }
 
 int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version,
@@ -202,6 +210,7 @@ static INLINE float intp(const float a, const float b, const float c)
 //
 ////////////////////////////////////////////////////////////////
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+__DT_CLONE_TARGETS__
 static gboolean LinEqSolve(int nDim, double *pfMatr, double *pfVect, double *pfSolution)
 {
   //==============================================================================
@@ -305,9 +314,10 @@ static inline void pixSort(float *a, float *b)
   There is no "maths background" so i chose this after a lot of testing.
 */
 #define CA_SIZE_MINIMUM (1600)
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o,
-                    const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   const float *const in2 = (float *)i;
   float *out = (float *) o;
 
@@ -316,7 +326,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   const int h_width = (width + 1) / 2;
   const int h_height = (height + 1) / 2;
 
-  const uint32_t filters = piece->pipe->dsc.filters;
+  const uint32_t filters = piece->dsc_in.filters;
 
   const gboolean valid = MAX(width, height) >= CA_SIZE_MINIMUM;
 
@@ -365,31 +375,29 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   if(avoidshift)
   {
     const size_t buffsize = (size_t)h_width * h_height;
-    redfactor = dt_pixelpipe_cache_alloc_align_float(buffsize, piece->pipe);
-    if(!redfactor)
+    redfactor = dt_pixelpipe_cache_alloc_align_float(buffsize, pipe);
+    if(IS_NULL_PTR(redfactor))
     {
       err = 1;
       goto cleanup;
     }
     memset(redfactor, 0, sizeof(float) * buffsize);
-    bluefactor = dt_pixelpipe_cache_alloc_align_float(buffsize, piece->pipe);
-    if(!bluefactor)
+    bluefactor = dt_pixelpipe_cache_alloc_align_float(buffsize, pipe);
+    if(IS_NULL_PTR(bluefactor))
     {
       err = 1;
       goto cleanup;
     }
     memset(bluefactor, 0, sizeof(float) * buffsize);
-    oldraw = dt_pixelpipe_cache_alloc_align_float(buffsize * 2, piece->pipe);
-    if(!oldraw)
+    oldraw = dt_pixelpipe_cache_alloc_align_float(buffsize * 2, pipe);
+    if(IS_NULL_PTR(oldraw))
     {
       err = 1;
       goto cleanup;
     }
     memset(oldraw, 0, sizeof(float) * buffsize * 2);
     // copy raw values before ca correction
-#ifdef _OPENMP
-        #pragma omp parallel for
-#endif
+    __OMP_PARALLEL_FOR__()
     for(int row = 0; row < height; row++)
     {
       for(int col = (FC(row, 0, filters) & 1); col < width; col += 2)
@@ -400,8 +408,8 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   }
 
   // temporary array to store simple interpolation of G
-  Gtmp = dt_pixelpipe_cache_alloc_align_float((size_t)height * width, piece->pipe);
-  if(!Gtmp)
+  Gtmp = dt_pixelpipe_cache_alloc_align_float((size_t)height * width, pipe);
+  if(IS_NULL_PTR(Gtmp))
   {
     err = 1;
     goto cleanup;
@@ -409,8 +417,8 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   memset(Gtmp, 0, sizeof(float) * height * width);
 
   // temporary array to avoid race conflicts, only every second pixel needs to be saved here
-  RawDataTmp = dt_pixelpipe_cache_alloc_align_float(height * width / 2 + 4, piece->pipe);
-  if(!RawDataTmp)
+  RawDataTmp = dt_pixelpipe_cache_alloc_align_float(height * width / 2 + 4, pipe);
+  if(IS_NULL_PTR(RawDataTmp))
   {
     err = 1;
     goto cleanup;
@@ -425,7 +433,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   const int hblsz = ceil((float)(width + border2) / (ts - border2) + 2 + hz1);
 
   buffer1 = (char *)calloc((size_t)vblsz * hblsz * (2 * 2 + 1), sizeof(float));
-  if(!buffer1)
+  if(IS_NULL_PTR(buffer1))
   {
     err = 1;
     goto cleanup;
@@ -433,7 +441,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
   const size_t buffersize = sizeof(float) * 3 * ts * ts + 6 * sizeof(float) * ts * tsh + 8 * 64 + 63;
   thread_buffers = (char *)dt_pixelpipe_cache_alloc_perthread(buffersize + 63, sizeof(char), &padded_buffersize);
-  if(!thread_buffers)
+  if(IS_NULL_PTR(thread_buffers))
   {
     err = 1;
     goto cleanup;
@@ -506,9 +514,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
     {
 // Main algorithm: Tile loop calculating correction parameters per tile
-#ifdef _OPENMP
-#pragma omp for collapse(2) schedule(static) nowait
-#endif
+      __OMP_FOR__(collapse(2)  nowait)
       for(int top = -border; top < height; top += ts - border2)
         for(int left = -border; left < width; left += ts - border2)
         {
@@ -989,9 +995,8 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     // Main algorithm: Tile loop
     if(processpasstwo)
     {
-#ifdef _OPENMP
-#pragma omp for schedule(static) collapse(2) nowait
-#endif
+
+      __OMP_FOR__(collapse(2) nowait)
 
       for(int top = -border; top < height; top += ts - border2)
         for(int left = -border; left < width; left += ts - border2)
@@ -1280,9 +1285,8 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 #pragma omp barrier
 #endif
 // copy temporary image matrix back to image matrix
-#ifdef _OPENMP
-#pragma omp for
-#endif
+
+      __OMP_FOR__()
 
       for(int row = 0; row < height; row++)
         for(int col = 0 + (FC(row, 0, filters) & 1), indx = (row * width + col) >> 1; col < width;
@@ -1301,9 +1305,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     // to avoid or at least reduce the colour shift caused by raw ca correction we compute the per pixel difference factors
     // of red and blue channel and apply a gaussian blur to them.
     // Then we apply the resulting factors per pixel on the result of raw ca correction
-#ifdef _OPENMP
-  #pragma omp parallel for
-#endif
+    __OMP_PARALLEL_FOR__()
     for(int row = 0; row < height; row++)
     {
       const int firstCol = FC(row, 0, filters) & 1;
@@ -1344,7 +1346,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     float valmin[] = { 0.1f };
     dt_gaussian_t *red  = dt_gaussian_init(h_width, h_height, 1, valmax, valmin, 30.0f, 0);
     dt_gaussian_t *blue = dt_gaussian_init(h_width, h_height, 1, valmax, valmin, 30.0f, 0);
-    if(!red || !blue)
+    if(IS_NULL_PTR(red) || IS_NULL_PTR(blue))
     {
       err = 1;
       if(red)  dt_gaussian_free(red);
@@ -1394,7 +1396,7 @@ void reload_defaults(dt_iop_module_t *module)
 {
   dt_image_t *img = &module->dev->image_storage;
   // can't be switched on for non-raw or x-trans images:
-  const gboolean active = (dt_image_is_raw(img) && (img->buf_dsc.filters != 9u) && !(dt_image_is_monochrome(img)));
+  const gboolean active = (dt_image_is_raw(img) && (img->dsc.filters != 9u) && !(dt_image_is_monochrome(img)));
   module->hide_enable_button = !active;
 }
 
@@ -1405,8 +1407,8 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *params, dt_dev
   dt_iop_cacorrect_params_t *p = (dt_iop_cacorrect_params_t *)params;
   dt_iop_cacorrect_data_t *d = (dt_iop_cacorrect_data_t *) piece->data;
 
-  dt_image_t *img = &pipe->image;
-  const gboolean active = (dt_image_is_raw(img) && (img->buf_dsc.filters != 9u) && !(dt_image_is_monochrome(img)));
+  dt_image_t *img = &pipe->dev->image_storage;
+  const gboolean active = (dt_image_is_raw(img) && (img->dsc.filters != 9u) && !(dt_image_is_monochrome(img)));
 
   if(!active) piece->enabled = 0;
 
@@ -1433,7 +1435,7 @@ void gui_update(dt_iop_module_t *self)
 
   dt_image_t *img = &self->dev->image_storage;
 
-  const gboolean active = (dt_image_is_raw(img) && (img->buf_dsc.filters != 9u) && !(dt_image_is_monochrome(img)));
+  const gboolean active = (dt_image_is_raw(img) && (img->dsc.filters != 9u) && !(dt_image_is_monochrome(img)));
   self->hide_enable_button = !active;
 
   gtk_stack_set_visible_child_name(GTK_STACK(self->widget), active ? "raw" : "non_raw");
@@ -1451,7 +1453,7 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
 
   dt_image_t *img = &self->dev->image_storage;
 
-  const gboolean active = (dt_image_is_raw(img) && (img->buf_dsc.filters != 9u) && !(dt_image_is_monochrome(img)));
+  const gboolean active = (dt_image_is_raw(img) && (img->dsc.filters != 9u) && !(dt_image_is_monochrome(img)));
 
   gtk_stack_set_visible_child_name(GTK_STACK(self->widget), active ? "raw" : "non_raw");
 

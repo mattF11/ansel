@@ -107,7 +107,7 @@ int flags()
   return IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_NO_MASKS | IOP_FLAGS_DEPRECATED | IOP_FLAGS_INTERNAL_MASKS;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -274,13 +274,13 @@ static int _shape_is_being_added(dt_iop_module_t *self, const int shape_type)
     if(dt_masks_get_visible_form(self->dev)->type & DT_MASKS_GROUP)
     {
       GList *forms = dt_masks_get_visible_form(self->dev)->points;
-      if(forms)
+      if(!IS_NULL_PTR(forms))
       {
         dt_masks_form_group_t *grpt = (dt_masks_form_group_t *)forms->data;
         if(grpt)
         {
           const dt_masks_form_t *form = dt_masks_get_from_id(darktable.develop, grpt->formid);
-          if(form) being_added = (form->type & shape_type);
+          if(!IS_NULL_PTR(form)) being_added = (form->type & shape_type);
         }
       }
     }
@@ -387,14 +387,16 @@ static gboolean _edit_masks(GtkWidget *widget, GdkEventButton *e, dt_iop_module_
   return TRUE;
 }
 
-static gboolean masks_form_is_in_roi(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+static inline __attribute__((always_inline)) gboolean masks_form_is_in_roi(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, 
+                                     const dt_dev_pixelpipe_iop_t *piece,
                                      dt_masks_form_t *form, const dt_iop_roi_t *roi_in,
                                      const dt_iop_roi_t *roi_out)
 {
   // we get the area for the form
   int fl, ft, fw, fh;
+  dt_dev_pixelpipe_iop_t piece_copy = *piece;
 
-  if(dt_masks_get_area(self, piece, form, &fw, &fh, &fl, &ft) != 0) return FALSE;
+  if(dt_masks_get_area(self, (dt_dev_pixelpipe_t *)pipe, &piece_copy, form, &fw, &fh, &fl, &ft) != 0) return FALSE;
 
   // is the form outside of the roi?
   fw *= roi_in->scale, fh *= roi_in->scale, fl *= roi_in->scale, ft *= roi_in->scale;
@@ -405,16 +407,19 @@ static gboolean masks_form_is_in_roi(dt_iop_module_t *self, dt_dev_pixelpipe_iop
   return TRUE;
 }
 
-void modify_roi_out(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t *roi_out,
+void modify_roi_out(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe,
+                    struct dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t *roi_out,
                     const dt_iop_roi_t *roi_in)
 {
   *roi_out = *roi_in;
 }
 
 // needed if mask dest is in roi and mask src is not
-void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
+void modify_roi_in(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe,
+                   struct dt_dev_pixelpipe_iop_t *piece,
                    const dt_iop_roi_t *roi_out, dt_iop_roi_t *roi_in)
 {
+  dt_dev_pixelpipe_t *const processing_pipe = (dt_dev_pixelpipe_t *)pipe;
   *roi_in = *roi_out;
 
   int roir = roi_in->width + roi_in->x;
@@ -422,7 +427,6 @@ void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *
   int roix = roi_in->x;
   int roiy = roi_in->y;
 
-  // dt_iop_spots_params_t *d = (dt_iop_spots_params_t *)piece->data;
   dt_develop_blend_params_t *bp = self->blend_params;
 
   // We iterate through all spots or polygons
@@ -434,10 +438,10 @@ void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *
       dt_masks_form_group_t *grpt = (dt_masks_form_group_t *)forms->data;
       // we get the spot
       dt_masks_form_t *form = dt_masks_get_from_id(self->dev, grpt->formid);
-      if(form)
+      if(!IS_NULL_PTR(form))
       {
         // if the form is outside the roi, we just skip it
-        if(!masks_form_is_in_roi(self, piece, form, roi_in, roi_out))
+        if(!masks_form_is_in_roi(self, processing_pipe, piece, form, roi_in, roi_out))
         {
           continue;
         }
@@ -445,7 +449,7 @@ void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *
         // we get the area for the source
         int fl, ft, fw, fh;
 
-        if(dt_masks_get_source_area(self, piece, form, &fw, &fh, &fl, &ft) != 0)
+        if(dt_masks_get_source_area(self, processing_pipe, piece, form, &fw, &fh, &fl, &ft) != 0)
         {
           continue;
         }
@@ -468,10 +472,11 @@ void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *
   roi_in->height = CLAMP(roib - roi_in->y, 1, scheight + .5f - roi_in->y);
 }
 
-static void masks_point_denormalize(dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t *roi,
+__DT_CLONE_TARGETS__
+static void masks_point_denormalize(const dt_dev_pixelpipe_t *pipe, const dt_iop_roi_t *roi,
                                     const float *points, size_t points_count, float *new)
 {
-  const float scalex = piece->pipe->iwidth * roi->scale, scaley = piece->pipe->iheight * roi->scale;
+  const float scalex = pipe->iwidth * roi->scale, scaley = pipe->iheight * roi->scale;
 
   for(size_t i = 0; i < points_count * 2; i += 2)
   {
@@ -480,15 +485,15 @@ static void masks_point_denormalize(dt_dev_pixelpipe_iop_t *piece, const dt_iop_
   }
 }
 
-static int masks_point_calc_delta(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+static inline __attribute__((always_inline)) int masks_point_calc_delta(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
                                   const dt_iop_roi_t *roi, const float *target, const float *source, int *dx,
                                   int *dy)
 {
   dt_boundingbox_t points;
-  masks_point_denormalize(piece, roi, target, 1, points);
-  masks_point_denormalize(piece, roi, source, 1, points + 2);
+  masks_point_denormalize(pipe, roi, target, 1, points);
+  masks_point_denormalize(pipe, roi, source, 1, points + 2);
 
-  const int res = dt_dev_distort_transform_plus(self->dev, piece->pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points, 2);
+  const int res = dt_dev_distort_transform_plus(pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points, 2);
   if(!res) return res;
 
   *dx = points[0] - points[2];
@@ -497,7 +502,8 @@ static int masks_point_calc_delta(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   return res;
 }
 
-static int masks_get_delta(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t *roi,
+static inline __attribute__((always_inline)) int masks_get_delta(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                           const dt_iop_roi_t *roi,
                            dt_masks_form_t *form, int *dx, int *dy)
 {
   int res = 0;
@@ -506,36 +512,34 @@ static int masks_get_delta(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   {
     dt_masks_node_polygon_t *pt = (dt_masks_node_polygon_t *)form->points->data;
 
-    res = masks_point_calc_delta(self, piece, roi, pt->node, form->source, dx, dy);
+    res = masks_point_calc_delta(self, pipe, roi, pt->node, form->source, dx, dy);
   }
   else if(form->type & DT_MASKS_CIRCLE)
   {
     dt_masks_node_circle_t *pt = (dt_masks_node_circle_t *)form->points->data;
 
-    res = masks_point_calc_delta(self, piece, roi, pt->center, form->source, dx, dy);
+    res = masks_point_calc_delta(self, pipe, roi, pt->center, form->source, dx, dy);
   }
   else if(form->type & DT_MASKS_ELLIPSE)
   {
     dt_masks_node_ellipse_t *pt = (dt_masks_node_ellipse_t *)form->points->data;
 
-    res = masks_point_calc_delta(self, piece, roi, pt->center, form->source, dx, dy);
+    res = masks_point_calc_delta(self, pipe, roi, pt->center, form->source, dx, dy);
   }
 
   return res;
 }
 
-static int _process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const float *const in,
+__DT_CLONE_TARGETS__
+static int _process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+                    const float *const in,
                     float *const out, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out, const int ch)
 {
   dt_iop_spots_params_t *d = (dt_iop_spots_params_t *)piece->data;
   dt_develop_blend_params_t *bp = self->blend_params;
 
 // we don't modify most of the image:
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, in, out, roi_in, roi_out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int k = 0; k < roi_out->height; k++)
   {
     float *outb = out + (size_t)ch * k * roi_out->width;
@@ -554,13 +558,13 @@ static int _process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
       dt_masks_form_group_t *grpt = (dt_masks_form_group_t *)forms->data;
       // we get the spot
       dt_masks_form_t *form = dt_masks_get_from_id(self->dev, grpt->formid);
-      if(!form)
+      if(IS_NULL_PTR(form))
       {
         continue;
       }
 
       // if the form is outside the roi, we just skip it
-      if(!masks_form_is_in_roi(self, piece, form, roi_in, roi_out))
+      if(!masks_form_is_in_roi(self, pipe, piece, form, roi_in, roi_out))
       {
         continue;
       }
@@ -570,10 +574,10 @@ static int _process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
         dt_masks_node_circle_t *circle = (dt_masks_node_circle_t *)form->points->data;
 
         dt_boundingbox_t points;
-        masks_point_denormalize(piece, roi_in, circle->center, 1, points);
-        masks_point_denormalize(piece, roi_in, form->source, 1, points + 2);
+        masks_point_denormalize(pipe, roi_in, circle->center, 1, points);
+        masks_point_denormalize(pipe, roi_in, form->source, 1, points + 2);
 
-        if(!dt_dev_distort_transform_plus(self->dev, piece->pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points, 2))
+        if(!dt_dev_distort_transform_plus(pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points, 2))
         {
           continue;
         }
@@ -581,7 +585,7 @@ static int _process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
         // convert from world space:
         float radius10[2] = { circle->radius, circle->radius };
         float radf[2];
-        masks_point_denormalize(piece, roi_in, radius10, 1, radf);
+        masks_point_denormalize(pipe, roi_in, radius10, 1, radf);
 
         const int rad = MIN(radf[0], radf[1]);
         const int posx = points[0] - rad;
@@ -593,7 +597,7 @@ static int _process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
         const int fw = 2 * rad, fh = 2 * rad;
 
         float *filter = malloc(sizeof(float) * (2 * rad + 1));
-        if(filter == NULL) return 1;
+        if(IS_NULL_PTR(filter)) return 1;
 
         if(rad > 0)
         {
@@ -637,7 +641,7 @@ static int _process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
         // we get the mask
         float *mask = NULL;
         int posx, posy, width, height;
-        if(dt_masks_get_mask(self, piece, form, &mask, &width, &height, &posx, &posy) != 0)
+        if(dt_masks_get_mask(self, (dt_dev_pixelpipe_t *)pipe, piece, form, &mask, &width, &height, &posx, &posy) != 0)
         {
           return 1;
         }
@@ -653,7 +657,7 @@ static int _process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
         int dx = 0, dy = 0;
 
         // now we search the delta with the source
-        if(!masks_get_delta(self, piece, roi_in, form, &dx, &dy))
+        if(!masks_get_delta(self, pipe, roi_in, form, &dx, &dy))
         {
           dt_pixelpipe_cache_free_align(mask);
           continue;
@@ -692,18 +696,21 @@ static int _process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   return 0;
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o,
-             const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const float *in = (float *)i;
   float *out = (float *)o;
-  return _process(self, piece, in, out, roi_in, roi_out, piece->colors);
+  return _process(self, pipe, piece, in, out, roi_in, roi_out, piece->dsc_in.channels);
 }
 
-void distort_mask(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const float *const in,
-                  float *const out, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+void distort_mask(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                  const float *const in, float *const out, const dt_iop_roi_t *const roi_in,
+                  const dt_iop_roi_t *const roi_out)
 {
-  if(_process(self, piece, in, out, roi_in, roi_out, 1)) return;
+  (void)pipe;
+  if(_process(self, pipe, piece, in, out, roi_in, roi_out, 1)) return;
 }
 
 /** init, cleanup, commit to pipeline */
@@ -832,11 +839,11 @@ void gui_init(dt_iop_module_t *self)
 
   g->bt_edit_masks = dt_iop_togglebutton_new(self, NULL, N_("show and edit shapes"), NULL,
                                              G_CALLBACK(_edit_masks), TRUE, 0, 0,
-                                             dtgtk_cairo_paint_masks_eye, hbox);
+                                             dtgtk_cairo_paint_masks_edit, hbox);
 
   g->bt_path = dt_iop_togglebutton_new(self, N_("shapes"), N_("add path"), N_("add multiple paths"),
                                        G_CALLBACK(_add_shape_callback), TRUE, 0, 0,
-                                       dtgtk_cairo_paint_masks_path, hbox);
+                                       dtgtk_cairo_paint_masks_polygon, hbox);
 
   g->bt_ellipse = dt_iop_togglebutton_new(self, N_("shapes"), N_("add ellipse"), N_("add multiple ellipses"),
                                           G_CALLBACK(_add_shape_callback), TRUE, 0, 0,

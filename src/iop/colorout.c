@@ -74,9 +74,6 @@
 #include "gui/gtk.h"
 #include "iop/iop_api.h"
 
-#if defined(__SSE__)
-#include <xmmintrin.h>
-#endif
 #include <assert.h>
 #include <gdk/gdkkeysyms.h>
 #include <math.h>
@@ -141,43 +138,47 @@ int flags()
   return IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_ONE_INSTANCE | IOP_FLAGS_NO_HISTORY_STACK;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
 
-int input_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe,
-                     dt_dev_pixelpipe_iop_t *piece)
+static dt_iop_colorspace_type_t _colorout_input_format_cst(dt_iop_module_t *self,
+                                                           const dt_dev_pixelpipe_t *pipe)
 {
-  if(piece)
-  {
-    const dt_iop_colorout_data_t *const d = (dt_iop_colorout_data_t *)piece->data;
-    if(d->type == DT_COLORSPACE_LAB) return IOP_CS_LAB;
-  }
-  else
-  {
-    dt_iop_colorout_params_t *p = (dt_iop_colorout_params_t *)self->params;
-    if(p->type == DT_COLORSPACE_LAB) return IOP_CS_LAB;
-  }
+  const dt_iop_colorout_params_t *const p = (dt_iop_colorout_params_t *)self->params;
+  dt_colorspaces_color_profile_type_t type = p->type;
 
-  return IOP_CS_RGB;
+  /* Export overrides are applied in commit_params(), but the sealed pipeline needs the buffer
+   * contract before that. Mirror the only colorspace-affecting override here so colorout
+   * advertises the current RGB/Lab contract instead of the previous image runtime state. */
+  if(pipe->type == DT_DEV_PIXELPIPE_EXPORT && pipe->icc_type != DT_COLORSPACE_NONE)
+    type = pipe->icc_type;
+
+  return (type == DT_COLORSPACE_LAB) ? IOP_CS_LAB : IOP_CS_RGB;
 }
 
-int output_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe,
-                      dt_dev_pixelpipe_iop_t *piece)
+static dt_iop_colorspace_type_t _colorout_output_format_cst(dt_iop_module_t *self,
+                                                            const dt_dev_pixelpipe_t *pipe)
 {
-  int cst = IOP_CS_RGB;
-  if(piece)
-  {
-    const dt_iop_colorout_data_t *const d = (dt_iop_colorout_data_t *)piece->data;
-    if(d->type == DT_COLORSPACE_LAB) cst = IOP_CS_LAB;
-  }
-  else
-  {
-    dt_iop_colorout_params_t *p = (dt_iop_colorout_params_t *)self->params;
-    if(p->type == DT_COLORSPACE_LAB) cst = IOP_CS_LAB;
-  }
-  return cst;
+  const dt_iop_colorspace_type_t input_cst = _colorout_input_format_cst(self, pipe);
+  return input_cst == IOP_CS_LAB ? IOP_CS_LAB : IOP_CS_RGB_DISPLAY;
+}
+
+void input_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                  dt_iop_buffer_dsc_t *dsc)
+{
+  dsc->channels = 4;
+  dsc->datatype = TYPE_FLOAT;
+  dsc->cst = _colorout_input_format_cst(self, pipe);
+}
+
+void output_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                   dt_iop_buffer_dsc_t *dsc)
+{
+  dsc->channels = 4;
+  dsc->datatype = TYPE_FLOAT;
+  dsc->cst = _colorout_output_format_cst(self, pipe);
 }
 
 int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version,
@@ -260,7 +261,7 @@ void init_global(dt_iop_module_so_t *module)
   const int program = 2; // basic.cl, from programs.conf
   dt_iop_colorout_global_data_t *gd
       = (dt_iop_colorout_global_data_t *)calloc(1, sizeof(dt_iop_colorout_global_data_t));
-  if(!gd) return;
+  if(IS_NULL_PTR(gd)) return;
   module->data = gd;
   gd->kernel_colorout = dt_opencl_create_kernel(program, "colorout");
 }
@@ -272,6 +273,7 @@ void cleanup_global(dt_iop_module_so_t *module)
   dt_free(module->data);
 }
 
+__DT_CLONE_TARGETS__
 static void process_fastpath_apply_tonecurves(const dt_iop_colorout_data_t *const d,
                                               float *const restrict out, const size_t npixels)
 {
@@ -289,11 +291,7 @@ static void process_fastpath_apply_tonecurves(const dt_iop_colorout_data_t *cons
 
   if(run_lut0 && run_lut1 && run_lut2)
   {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(out, npixels, lut0, lut1, lut2, coeff0, coeff1, coeff2) \
-    schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(size_t k = 0; k < npixels; k++)
     {
       const size_t idx = 4 * k;
@@ -304,11 +302,7 @@ static void process_fastpath_apply_tonecurves(const dt_iop_colorout_data_t *cons
   }
   else
   {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(out, npixels, run_lut0, run_lut1, run_lut2, lut0, lut1, lut2, coeff0, coeff1, coeff2) \
-    schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(size_t k = 0; k < npixels; k++)
     {
       const size_t idx = 4 * k;
@@ -320,15 +314,15 @@ static void process_fastpath_apply_tonecurves(const dt_iop_colorout_data_t *cons
 }
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_colorout_data_t *d = (dt_iop_colorout_data_t *)piece->data;
   dt_iop_colorout_global_data_t *gd = (dt_iop_colorout_global_data_t *)self->global_data;
   cl_mem dev_m = NULL, dev_r = NULL, dev_g = NULL, dev_b = NULL, dev_coeffs = NULL;
 
   cl_int err = -999;
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   const int width = roi_in->width;
   const int height = roi_in->height;
 
@@ -346,16 +340,16 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   float cmatrix[12];
   pack_3xSSE_to_3x4(d->cmatrix, cmatrix);
   dev_m = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 12, cmatrix);
-  if(dev_m == NULL) goto error;
+  if(IS_NULL_PTR(dev_m)) goto error;
   dev_r = dt_opencl_copy_host_to_device(devid, d->lut[0], 256, 256, sizeof(float));
-  if(dev_r == NULL) goto error;
+  if(IS_NULL_PTR(dev_r)) goto error;
   dev_g = dt_opencl_copy_host_to_device(devid, d->lut[1], 256, 256, sizeof(float));
-  if(dev_g == NULL) goto error;
+  if(IS_NULL_PTR(dev_g)) goto error;
   dev_b = dt_opencl_copy_host_to_device(devid, d->lut[2], 256, 256, sizeof(float));
-  if(dev_b == NULL) goto error;
+  if(IS_NULL_PTR(dev_b)) goto error;
   dev_coeffs
       = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 3 * 3, (float *)d->unbounded_coeffs);
-  if(dev_coeffs == NULL) goto error;
+  if(IS_NULL_PTR(dev_coeffs)) goto error;
   dt_opencl_set_kernel_arg(devid, gd->kernel_colorout, 0, sizeof(cl_mem), (void *)&dev_in);
   dt_opencl_set_kernel_arg(devid, gd->kernel_colorout, 1, sizeof(cl_mem), (void *)&dev_out);
   dt_opencl_set_kernel_arg(devid, gd->kernel_colorout, 2, sizeof(int), (void *)&width);
@@ -394,11 +388,7 @@ static inline void process_fastpath_matrix(const float *const restrict in, float
                                            const dt_aligned_pixel_simd_t cm2,
                                            const int use_nontemporal)
 {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-    dt_omp_firstprivate(in, out, npixels, cm0, cm1, cm2, use_nontemporal) \
-    schedule(static) aligned(in, out:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(in, out:64))
   for(size_t k = 0; k < npixels; k++)
   {
     const size_t idx = 4 * k;
@@ -414,12 +404,11 @@ static inline void process_fastpath_matrix(const float *const restrict in, float
     dt_omploop_sfence();  // ensure that nontemporal writes complete before we attempt to read output
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+            void *const ovoid)
 {
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
-                                         ivoid, ovoid, roi_in, roi_out))
-    return 0;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const dt_iop_colorout_data_t *const d = (dt_iop_colorout_data_t *)piece->data;
   const int gamutcheck = (d->mode == DT_PROFILE_GAMUTCHECK);
   const size_t npixels = (size_t)roi_out->width * roi_out->height;
@@ -427,7 +416,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
   if(d->type == DT_COLORSPACE_LAB)
   {
-    dt_iop_image_copy_by_size(ovoid, ivoid, roi_out->width, roi_out->height, piece->colors);
+    dt_iop_image_copy_by_size(ovoid, ivoid, roi_out->width, roi_out->height, 4);
   }
   else if(!isnan(d->cmatrix[0][0]))
   {
@@ -450,12 +439,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     /* Alias the LCMS transform before the OpenMP region and share that alias
      * explicitly instead of reaching through `d->xform` inside the loop. */
     const cmsHTRANSFORM xform = d->xform;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(gamutcheck, ivoid, out, roi_out) \
-    shared(xform) \
-    schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(int k = 0; k < roi_out->height; k++)
     {
       const float *in = ((float *)ivoid) + (size_t)4 * k * roi_out->width;
@@ -478,7 +462,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     }
   }
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
     dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
   return 0;
 }
@@ -600,7 +584,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
     return;
 
   // Resolve the working profile currently carried by the pipe.
-  if(work_profile)
+  if(!IS_NULL_PTR(work_profile))
   {
     work_type = work_profile->type;
     work_filename = work_profile->filename;
@@ -623,7 +607,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
       = dt_colorspaces_get_profile(out_type, out_filename,
                                    DT_PROFILE_DIRECTION_OUT
                                    | DT_PROFILE_DIRECTION_DISPLAY);
-  if(out_profile)
+  if(!IS_NULL_PTR(out_profile))
   {
     // Path for internal profile or external ICC file
     output = out_profile->profile;
@@ -633,12 +617,12 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   {
     // Export with no explicit profile specified : use input file embedded profile
     gboolean new_profile;
-    output = dt_colorspaces_get_embedded_profile(pipe->image.id, &out_type, &new_profile);
+    output = dt_colorspaces_get_embedded_profile(pipe->dev->image_storage.id, &out_type, &new_profile);
   }
 
   // We don't have an internal, embedded or external file profile,
   // just fall back to sRGB
-  if(!output)
+  if(IS_NULL_PTR(output))
   {
     output = dt_colorspaces_get_profile(DT_COLORSPACE_SRGB, "",
                                         DT_PROFILE_DIRECTION_OUT
@@ -655,7 +639,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
         = dt_colorspaces_get_profile(work_type, work_filename ? work_filename : "", DT_PROFILE_DIRECTION_ANY);
     if(in_profile) input = in_profile->profile;
   }
-  if(!input)
+  if(IS_NULL_PTR(input))
   {
     input = output;
     dt_print(DT_DEBUG_DEV,
@@ -670,7 +654,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
        darktable.color_profiles->softproof_filename,
        DT_PROFILE_DIRECTION_OUT | DT_PROFILE_DIRECTION_DISPLAY);
 
-    if(prof)
+    if(!IS_NULL_PTR(prof))
       softproof = prof->profile;
     else
     {
@@ -733,7 +717,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   }
 
   // user selected a non-supported output profile, check that:
-  if(!d->xform && isnan(d->cmatrix[0][0]))
+  if(IS_NULL_PTR(d->xform) && isnan(d->cmatrix[0][0]))
   {
     const char *const unsupported_name
         = out_profile ? out_profile->name : dt_colorspaces_get_name(out_type, out_filename);
@@ -787,7 +771,16 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   // softproof is never the original but always a copy that went through _make_clipping_profile()
   dt_colorspaces_cleanup_profile(softproof);
 
-  dt_ioppr_set_pipe_output_profile_info(self->dev, piece->pipe, d->type, out_filename, p->intent);
+  dt_ioppr_set_pipe_output_profile_info(self->dev, pipe, d->type, out_filename, p->intent);
+}
+
+gboolean runtime_data_hash(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe,
+                           const dt_dev_pixelpipe_iop_t *piece)
+{
+  (void)self;
+  (void)pipe;
+  (void)piece;
+  return TRUE;
 }
 
 void init_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)

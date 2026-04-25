@@ -181,7 +181,7 @@ gboolean dt_tag_new(const char *name, guint *tagid)
   int rt;
   sqlite3_stmt *stmt;
 
-  if(!name || name[0] == '\0') return FALSE; // no tagid name.
+  if(IS_NULL_PTR(name) || name[0] == '\0') return FALSE; // no tagid name.
 
   DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), "SELECT id FROM data.tags WHERE name = ?1", -1, &stmt,
                               NULL);
@@ -190,7 +190,7 @@ gboolean dt_tag_new(const char *name, guint *tagid)
   if(rt == SQLITE_ROW)
   {
     // tagid already exists.
-    if(tagid != NULL) *tagid = sqlite3_column_int64(stmt, 0);
+    if(!IS_NULL_PTR(tagid)) *tagid = sqlite3_column_int64(stmt, 0);
     sqlite3_finalize(stmt);
     return TRUE;
   }
@@ -219,7 +219,7 @@ gboolean dt_tag_new(const char *name, guint *tagid)
     sqlite3_finalize(stmt);
   }
 
-  if(tagid != NULL)
+  if(!IS_NULL_PTR(tagid))
     *tagid = id;
 
   return TRUE;
@@ -341,7 +341,7 @@ void dt_tag_rename(const guint tagid, const gchar *new_tagname)
 {
   sqlite3_stmt *stmt;
 
-  if(!new_tagname || !new_tagname[0]) return;
+  if(IS_NULL_PTR(new_tagname) || !new_tagname[0]) return;
   if(dt_tag_exists(new_tagname, NULL)) return;
 
   DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
@@ -364,12 +364,12 @@ gboolean dt_tag_exists(const char *name, guint *tagid)
 
   if(rt == SQLITE_ROW)
   {
-    if(tagid != NULL) *tagid = sqlite3_column_int64(stmt, 0);
+    if(!IS_NULL_PTR(tagid)) *tagid = sqlite3_column_int64(stmt, 0);
     sqlite3_finalize(stmt);
     return TRUE;
   }
 
-  if(tagid != NULL) *tagid = -1;
+  if(!IS_NULL_PTR(tagid)) *tagid = -1;
   sqlite3_finalize(stmt);
   return FALSE;
 }
@@ -462,7 +462,7 @@ static gboolean _tag_execute(const GList *tags, const GList *imgs, GList **undo,
 
 gboolean dt_tag_attach_images(const guint tagid, const GList *img, const gboolean undo_on)
 {
-  if(!img) return FALSE;
+  if(IS_NULL_PTR(img)) return FALSE;
   GList *undo = NULL;
   GList *tags = NULL;
 
@@ -608,7 +608,7 @@ gboolean dt_tag_detach(const guint tagid, const int32_t imgid, const gboolean un
 gboolean dt_tag_detach_by_string(const char *name, const int32_t imgid, const gboolean undo_on,
                                  const gboolean group_on)
 {
-  if(!name || !name[0]) return FALSE;
+  if(IS_NULL_PTR(name) || !name[0]) return FALSE;
   guint tagid = 0;
   if(!dt_tag_exists(name, &tagid)) return FALSE;
 
@@ -669,7 +669,7 @@ uint32_t dt_tag_get_attached(const int32_t imgid, GList **result, const gboolean
       }
       else
       {
-        if(!_tag_get_attached_single_stmt)
+        if(IS_NULL_PTR(_tag_get_attached_single_stmt))
         {
           // clang-format off
           DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
@@ -712,7 +712,7 @@ uint32_t dt_tag_get_attached(const int32_t imgid, GList **result, const gboolean
       }
       else
       {
-        if(!_tag_get_attached_selected_stmt)
+        if(IS_NULL_PTR(_tag_get_attached_selected_stmt))
         {
           // clang-format off
           DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
@@ -865,7 +865,7 @@ GList *dt_tag_get_list(int32_t imgid)
 
     gchar **pch = g_strsplit(value, "|", -1);
 
-    if(pch != NULL)
+    if(!IS_NULL_PTR(pch))
     {
       if(omit_tag_hierarchy)
       {
@@ -876,7 +876,7 @@ GList *dt_tag_get_list(int32_t imgid)
       else
       {
         size_t j = 0;
-        while(pch[j] != NULL)
+        while(!IS_NULL_PTR(pch[j]))
         {
           tags = g_list_prepend(tags, g_strdup(pch[j]));
           j++;
@@ -1003,7 +1003,7 @@ GList *dt_tag_get_list_export(int32_t imgid, int32_t flags)
         {
           end[0] = '\0';
           end = g_strrstr(t->tag, "|");
-          if (!next ||
+          if (IS_NULL_PTR(next) ||
               !g_list_find_custom(next, t, (GCompareFunc)_is_not_exportable_tag))
           {
             const gchar *tag = end ? end + 1 : t->tag;
@@ -1257,7 +1257,7 @@ void dt_tag_count_tags_images(const gchar *keyword, int *tag_count, int *img_cou
   *tag_count = 0;
   *img_count = 0;
 
-  if(!keyword) return;
+  if(IS_NULL_PTR(keyword)) return;
   gchar *keyword_expr = g_strdup_printf("%s|", keyword);
 
   /* Only select tags that are equal or child to the one we are looking for once. */
@@ -1303,7 +1303,7 @@ void dt_tag_get_tags_images(const gchar *keyword, GList **tag_list, GList **img_
 {
   sqlite3_stmt *stmt;
 
-  if(!keyword) return;
+  if(IS_NULL_PTR(keyword)) return;
   gchar *keyword_expr = g_strdup_printf("%s|", keyword);
 
 /* Only select tags that are equal or child to the one we are looking for once. */
@@ -1578,15 +1578,15 @@ uint32_t dt_tag_get_recent_used(GList **result)
   there is also a ~ prefix for tags that indicate that the tag order has to be kept instead of sorting them. that's
   also not possible at the moment.
 */
-ssize_t dt_tag_import(const char *filename)
+uint32_t dt_tag_import(const char *filename)
 {
   FILE *fd = g_fopen(filename, "r");
-  if(!fd) return -1;
+  if(IS_NULL_PTR(fd)) return -1;
 
   GList * hierarchy = NULL;
   char *line = NULL;
   size_t len = 0;
-  ssize_t count = 0;
+  uint32_t count = 0;
   guint tagid = 0;
   guint previous_category_depth = 0;
   gboolean previous_category = FALSE;
@@ -1713,11 +1713,11 @@ ssize_t dt_tag_import(const char *filename)
   we are using the first (mostly because it was easier to implement ;)). if this poses problems with other programs
   supporting these files then we should fix that.
 */
-ssize_t dt_tag_export(const char *filename)
+uint32_t dt_tag_export(const char *filename)
 {
   FILE *fd = g_fopen(filename, "w");
 
-  if(!fd) return -1;
+  if(IS_NULL_PTR(fd)) return -1;
 
   GList *tags = NULL;
   gint count = 0;
@@ -1787,7 +1787,7 @@ ssize_t dt_tag_export(const char *filename)
 
 char *dt_tag_get_subtags(const int32_t imgid, const char *category, const int level)
 {
-  if (!category) return NULL;
+  if (IS_NULL_PTR(category)) return NULL;
   const guint rootnb = dt_util_string_count_char(category, '|');
   char *tags = NULL;
   sqlite3_stmt *stmt;
@@ -1831,7 +1831,7 @@ gboolean dt_tag_get_tag_order_by_id(const uint32_t tagid, uint32_t *sort,
                                           gboolean *descending)
 {
   gboolean res = FALSE;
-  if(!sort  || !descending) return res;
+  if(IS_NULL_PTR(sort)  || !descending) return res;
   sqlite3_stmt *stmt;
   // clang-format off
   DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
@@ -1857,7 +1857,7 @@ gboolean dt_tag_get_tag_order_by_id(const uint32_t tagid, uint32_t *sort,
 
 uint32_t dt_tag_get_tag_id_by_name(const char * const name)
 {
-  if(!name) return 0;
+  if(IS_NULL_PTR(name)) return 0;
   uint32_t tagid = 0;
   // clang-format off
   const char *query = "SELECT T.id, T.flags FROM data.tags AS T "

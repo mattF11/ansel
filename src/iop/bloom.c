@@ -114,24 +114,24 @@ int default_group()
   return IOP_GROUP_EFFECTS;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const dt_iop_bloom_data_t *const data = (dt_iop_bloom_data_t *)piece->data;
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
-                                         ivoid, ovoid, roi_in, roi_out))
-    return 0; // image has been copied through to output and module's trouble flag has been updated
 
   float *restrict blurlightness;
   if (dt_iop_alloc_image_buffers(self, roi_in, roi_out, 1, &blurlightness, 0))
   {
     // out of memory, so just copy image through to output
-    dt_iop_copy_image_roi(ovoid, ivoid, piece->colors, roi_in, roi_out, TRUE);
+    dt_iop_copy_image_roi(ovoid, ivoid, piece->dsc_in.channels, roi_in, roi_out, TRUE);
     return 1;
   }
 
@@ -148,13 +148,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
   const float threshold = data->threshold;
 /* get the thresholded lights into buffer */
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(npixels, scale, threshold) \
-  shared(blurlightness) \
-  dt_omp_sharedconst(in) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < npixels; k++)
   {
     const float L = in[4*k] * scale;
@@ -172,13 +166,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   }
 
 /* screen blend lightness with original */
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(npixels) \
-  shared(blurlightness) \
-  dt_omp_sharedconst(in, out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < npixels; k++)
   {
     out[4*k+0] = 100.0f - (((100.0f - in[4*k]) * (100.0f - blurlightness[k])) / 100.0f); // Screen blend
@@ -188,16 +176,17 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   }
   dt_pixelpipe_cache_free_align(blurlightness);
 
-//  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
+//  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
 //    dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
 
   return 0;
 }
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
+  (void)self;
+  (void)pipe;
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   const dt_iop_bloom_data_t *d = (dt_iop_bloom_data_t *)piece->data;
 
   const int rad = 256.0f * (fmin(100.0f, d->size + 1.0f) / 100.0f);

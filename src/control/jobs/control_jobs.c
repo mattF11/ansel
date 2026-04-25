@@ -222,7 +222,7 @@ static int32_t _generic_dt_control_fileop_images_job_run(dt_job_t *job,
 void *dt_control_image_enumerator_alloc()
 {
   dt_control_image_enumerator_t *params = calloc(1, sizeof(dt_control_image_enumerator_t));
-  if(!params) return NULL;
+  if(IS_NULL_PTR(params)) return NULL;
   return params;
 }
 
@@ -247,9 +247,9 @@ static dt_job_t *dt_control_generic_images_job_create(dt_job_execute_callback ex
                                                       gboolean only_visible)
 {
   dt_job_t *job = dt_control_job_create(execute, "%s", message);
-  if(!job) return NULL;
+  if(IS_NULL_PTR(job)) return NULL;
   dt_control_image_enumerator_t *params = dt_control_image_enumerator_alloc();
-  if(!params)
+  if(IS_NULL_PTR(params))
   {
     dt_control_job_dispose(job);
     return NULL;
@@ -270,9 +270,9 @@ static dt_job_t *dt_control_generic_image_job_create(dt_job_execute_callback exe
                                                      int32_t imgid)
 {
   dt_job_t *job = dt_control_job_create(execute, "%s", message);
-  if(!job) return NULL;
+  if(IS_NULL_PTR(job)) return NULL;
   dt_control_image_enumerator_t *params = dt_control_image_enumerator_alloc();
-  if(!params)
+  if(IS_NULL_PTR(params))
   {
     dt_control_job_dispose(job);
     return NULL;
@@ -310,7 +310,7 @@ static int32_t dt_control_save_xmps_job_run(dt_job_t *job)
 void dt_control_write_sidecar_files()
 {
   GList *imgs = dt_act_on_get_images();
-  if(!imgs) return;
+  if(IS_NULL_PTR(imgs)) return;
   dt_control_save_xmps(imgs, FALSE);
   g_list_free(imgs);
   imgs = NULL;
@@ -393,10 +393,10 @@ static int dt_control_merge_hdr_process(dt_imageio_module_data_t *datai, const c
   const dt_image_t image = *img;
   dt_image_cache_read_release(darktable.image_cache, img);
 
-  if(!d->pixels)
+  if(IS_NULL_PTR(d->pixels))
   {
     d->first_imgid = imgid;
-    d->first_filter = image.buf_dsc.filters;
+    d->first_filter = image.dsc.filters;
     // sensor layout is just passed on to be written to dng.
     // we offset it to the crop of the image here, so we don't
     // need to load in the FCxtrans dependency into the dng writer.
@@ -406,7 +406,7 @@ static int dt_control_merge_hdr_process(dt_imageio_module_data_t *datai, const c
     roi.x = image.crop_x;
     roi.y = image.crop_y;
     for(int j=0;j<6;j++)
-      for(int i = 0; i < 6; i++) d->first_xtrans[j][i] = FCxtrans(j, i, &roi, image.buf_dsc.xtrans);
+      for(int i = 0; i < 6; i++) d->first_xtrans[j][i] = FCxtrans(j, i, &roi, image.dsc.xtrans);
     d->pixels = calloc((size_t)datai->width * datai->height, sizeof(float));
     d->weight = calloc((size_t)datai->width * datai->height, sizeof(float));
     d->wd = datai->width;
@@ -419,13 +419,13 @@ static int dt_control_merge_hdr_process(dt_imageio_module_data_t *datai, const c
         d->adobe_XYZ_to_CAM[k][i] = image.adobe_XYZ_to_CAM[k][i];
   }
 
-  if(image.buf_dsc.filters == 0u || image.buf_dsc.channels != 1 || image.buf_dsc.datatype != TYPE_UINT16)
+  if(image.dsc.filters == 0u || image.dsc.channels != 1 || image.dsc.datatype != TYPE_UINT16)
   {
     dt_control_log(_("exposure bracketing only works on raw images."));
     d->abort = TRUE;
     return 1;
   }
-  else if(datai->width != d->wd || datai->height != d->ht || d->first_filter != image.buf_dsc.filters
+  else if(datai->width != d->wd || datai->height != d->ht || d->first_filter != image.dsc.filters
           || d->orientation != image.orientation)
   {
     dt_control_log(_("images have to be of same size and orientation!"));
@@ -446,12 +446,7 @@ static int dt_control_merge_hdr_process(dt_imageio_module_data_t *datai, const c
   const float photoncnt = 100.0f * aperture * exp / iso;
   float saturation = 1.0f;
   d->whitelevel = fmaxf(d->whitelevel, saturation * cal);
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ivoid, cal, photoncnt) \
-  shared(d, saturation) \
-  schedule(static) collapse(2)
-#endif
+  __OMP_PARALLEL_FOR__(collapse(2))
   for(int y = 0; y < d->ht; y++)
     for(int x = 0; x < d->wd; x++)
     {
@@ -548,7 +543,7 @@ static int32_t dt_control_merge_hdr_job_run(dt_job_t *job)
 
     dt_imageio_export_with_flags(imgid, "unused", &buf, (dt_imageio_module_data_t *)&dat, TRUE, FALSE, FALSE, is_scaling,
                                  FALSE, "pre:rawprepare", FALSE, FALSE, DT_COLORSPACE_NONE, NULL, DT_INTENT_LAST, NULL,
-                                 NULL, num, total, NULL);
+                                 NULL, num, total, NULL, NULL);
 
     t = g_list_next(t);
 
@@ -561,10 +556,7 @@ static int32_t dt_control_merge_hdr_job_run(dt_job_t *job)
   if(d.abort) goto end;
 
 // normalize by white level to make clipping at 1.0 work as expected
-
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static) default(none) shared(d)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < (size_t)d.wd * d.ht; k++)
   {
     if(d.weight[k] > 0.0) d.pixels[k] = fmaxf(0.0f, d.pixels[k] / (d.whitelevel * d.weight[k]));
@@ -888,8 +880,8 @@ static gboolean _dt_delete_dialog_main_thread(gpointer user_data)
         ? _("could not send %s to trash.%s%s")
         : _("could not physically delete %s.%s%s"),
       modal_dialog->filename,
-      modal_dialog->error_message != NULL ? "\n" : "",
-      modal_dialog->error_message != NULL ? modal_dialog->error_message : "");
+      !IS_NULL_PTR(modal_dialog->error_message) ? "\n" : "",
+      !IS_NULL_PTR(modal_dialog->error_message) ? modal_dialog->error_message : "");
 #ifdef GDK_WINDOWING_QUARTZ
   dt_osx_disallow_fullscreen(dialog);
 #endif
@@ -991,15 +983,15 @@ static enum _dt_delete_status delete_file_from_disk(const char *filename, gboole
           G_FILE_QUERY_INFO_NONE,
           NULL /*cancellable*/,
           NULL /*error*/);
-      if(gfileinfo != NULL)
+      if(!IS_NULL_PTR(gfileinfo))
         filename_display = g_file_info_get_attribute_string(
             gfileinfo,
             G_FILE_ATTRIBUTE_STANDARD_DISPLAY_NAME);
 
       gint res = _dt_delete_file_display_modal_dialog(
           send_to_trash,
-          filename_display == NULL ? filename : filename_display,
-          gerror == NULL ? NULL : gerror->message);
+          IS_NULL_PTR(filename_display) ? filename : filename_display,
+          IS_NULL_PTR(gerror) ? NULL : gerror->message);
       g_object_unref(gfileinfo);
       if(send_to_trash && res == _DT_DELETE_DIALOG_CHOICE_DELETE)
       {
@@ -1027,11 +1019,11 @@ static enum _dt_delete_status delete_file_from_disk(const char *filename, gboole
         delete_status = _DT_DELETE_STATUS_STOP_PROCESSING;
       }
     }
-    if(gerror != NULL)
+    if(!IS_NULL_PTR(gerror))
       g_error_free(gerror);
   }
 
-  if(gfile != NULL)
+  if(!IS_NULL_PTR(gfile))
     g_object_unref(gfile);
 
   return delete_status;
@@ -1173,18 +1165,18 @@ static int32_t dt_control_gpx_apply_job_run(dt_job_t *job)
   const gchar *filename = d->filename;
   const gchar *tz = d->tz;
   /* do we have any selected images */
-  if(!t) goto bail_out;
+  if(IS_NULL_PTR(t)) goto bail_out;
 
   /* try parse the gpx data */
   gpx = dt_gpx_new(filename);
-  if(!gpx)
+  if(IS_NULL_PTR(gpx))
   {
     dt_control_log(_("failed to parse GPX file"));
     goto bail_out;
   }
 
-  GTimeZone *tz_camera = (tz == NULL) ? g_time_zone_new_utc() : g_time_zone_new(tz);
-  if(!tz_camera) goto bail_out;
+  GTimeZone *tz_camera = (IS_NULL_PTR(tz)) ? g_time_zone_new_utc() : g_time_zone_new(tz);
+  if(IS_NULL_PTR(tz_camera)) goto bail_out;
 
   GList *imgs = NULL;
   GArray *gloc = g_array_new(FALSE, FALSE, sizeof(dt_image_geoloc_t));
@@ -1196,16 +1188,16 @@ static int32_t dt_control_gpx_apply_job_run(dt_job_t *job)
 
     /* get image */
     const dt_image_t *cimg = dt_image_cache_get(darktable.image_cache, imgid, 'r');
-    if(!cimg) continue;
+    if(IS_NULL_PTR(cimg)) continue;
 
     GDateTime *exif_time = dt_datetime_img_to_gdatetime(cimg, tz_camera);
 
     /* release the lock */
     dt_image_cache_read_release(darktable.image_cache, cimg);
-    if(!exif_time) continue;
+    if(IS_NULL_PTR(exif_time)) continue;
     GDateTime *utc_time = g_date_time_to_timezone(exif_time, darktable.utc_tz);
     g_date_time_unref(exif_time);
-    if(!utc_time) continue;
+    if(IS_NULL_PTR(utc_time)) continue;
 
     /* only update image location if time is within gpx tack range */
     if(dt_gpx_get_location(gpx, utc_time, &geoloc))
@@ -1237,7 +1229,7 @@ static int32_t dt_control_gpx_apply_job_run(dt_job_t *job)
   return 0;
 
 bail_out:
-  if(gpx) dt_gpx_destroy(gpx);
+  if(!IS_NULL_PTR(gpx)) dt_gpx_destroy(gpx);
 
   return 1;
 }
@@ -1327,7 +1319,7 @@ static int32_t dt_control_refresh_exif_run(dt_job_t *job)
       dt_image_full_path(imgid,  sourcefile,  sizeof(sourcefile),  &from_cache, __FUNCTION__);
 
       dt_image_t *img = dt_image_cache_get(darktable.image_cache, imgid, 'w');
-      if(img)
+      if(!IS_NULL_PTR(img))
       {
         // Overwrite EXIF flags with our own, to preserve user-defined star ratings over EXIF.
         // All the rest should be synced with EXIF.
@@ -1492,10 +1484,10 @@ end:
 static dt_control_image_enumerator_t *dt_control_gpx_apply_alloc()
 {
   dt_control_image_enumerator_t *params = dt_control_image_enumerator_alloc();
-  if(!params) return NULL;
+  if(IS_NULL_PTR(params)) return NULL;
 
   params->data = calloc(1, sizeof(dt_control_gpx_apply_t));
-  if(!params->data)
+  if(IS_NULL_PTR(params->data))
   {
     dt_control_image_enumerator_cleanup(params);
     return NULL;
@@ -1522,9 +1514,9 @@ static dt_job_t *_control_gpx_apply_job_create(const gchar *filename, int32_t fi
                                                const gchar *tz, GList *imgs)
 {
   dt_job_t *job = dt_control_job_create(&dt_control_gpx_apply_job_run, "gpx apply");
-  if(!job) return NULL;
+  if(IS_NULL_PTR(job)) return NULL;
   dt_control_image_enumerator_t *params = dt_control_gpx_apply_alloc();
-  if(!params)
+  if(IS_NULL_PTR(params))
   {
     dt_control_job_dispose(job);
     return NULL;
@@ -1549,19 +1541,19 @@ void dt_control_save_xmp(const int32_t imgid)
   dt_control_add_job(darktable.control, DT_JOB_QUEUE_USER_FG,
                      dt_control_generic_images_job_create(&dt_control_save_xmps_job_run,
                                                           N_("save history to XMP"),
-                                                          0, NULL, PROGRESS_SIMPLE, imgid));
+                                                          0, NULL, PROGRESS_NONE, imgid));
 }
 
 void dt_control_save_xmps(const GList *imgids, const gboolean check_history)
 {
   (void)check_history;
-  if(!imgids) return;
+  if(IS_NULL_PTR(imgids)) return;
 
   dt_job_t *job = dt_control_job_create(&dt_control_save_xmps_job_run, "save xmp");
-  if(!job) return;
+  if(IS_NULL_PTR(job)) return;
 
   dt_control_image_enumerator_t *params = dt_control_image_enumerator_alloc();
-  if(!params)
+  if(IS_NULL_PTR(params))
   {
     dt_control_job_dispose(job);
     return;
@@ -1772,7 +1764,7 @@ void dt_control_move_images()
   }
   g_object_unref(filechooser);
 
-  if(!dir || !g_file_test(dir, G_FILE_TEST_IS_DIR)) goto abort;
+  if(IS_NULL_PTR(dir) || !g_file_test(dir, G_FILE_TEST_IS_DIR)) goto abort;
 
   // ugly, but we need to set this after constructing the job:
   ((dt_control_image_enumerator_t *)dt_control_job_get_params(job))->data = dir;
@@ -1834,7 +1826,7 @@ void dt_control_copy_images()
   }
   g_object_unref(filechooser);
 
-  if(!dir || !g_file_test(dir, G_FILE_TEST_IS_DIR)) goto abort;
+  if(IS_NULL_PTR(dir) || !g_file_test(dir, G_FILE_TEST_IS_DIR)) goto abort;
 
   // ugly, but we need to set this after constructing the job:
   ((dt_control_image_enumerator_t *)dt_control_job_get_params(job))->data = dir;
@@ -1892,10 +1884,10 @@ void dt_control_refresh_exif()
 static dt_control_image_enumerator_t *dt_control_export_alloc()
 {
   dt_control_image_enumerator_t *params = dt_control_image_enumerator_alloc();
-  if(!params) return NULL;
+  if(IS_NULL_PTR(params)) return NULL;
 
   params->data = calloc(1, sizeof(dt_control_export_t));
-  if(!params->data)
+  if(IS_NULL_PTR(params->data))
   {
     dt_control_image_enumerator_cleanup(params);
     return NULL;
@@ -1927,9 +1919,9 @@ void dt_control_export(GList *imgid_list, int max_width, int max_height, int for
                        dt_iop_color_intent_t icc_intent, const gchar *metadata_export)
 {
   dt_job_t *job = dt_control_job_create(&dt_control_export_job_run, "export");
-  if(!job) return;
+  if(IS_NULL_PTR(job)) return;
   dt_control_image_enumerator_t *params = dt_control_export_alloc();
-  if(!params)
+  if(IS_NULL_PTR(params))
   {
     dt_control_job_dispose(job);
     return;
@@ -1947,7 +1939,7 @@ void dt_control_export(GList *imgid_list, int max_width, int max_height, int for
   g_assert(mstorage);
   // get shared storage param struct (global sequence counter, one picasa connection etc)
   dt_imageio_module_data_t *sdata = mstorage->get_params(mstorage);
-  if(sdata == NULL)
+  if(IS_NULL_PTR(sdata))
   {
     dt_control_log(_("failed to get parameters from storage module `%s', aborting export.."),
                    mstorage->name(mstorage));
@@ -1973,14 +1965,14 @@ static void _add_datetime_offset(const char *odt, const long int offset, char *n
 {
   // get the datetime_taken and calculate the new time
   GDateTime *datetime_original = dt_datetime_exif_to_gdatetime(odt, darktable.utc_tz);
-  if(!datetime_original)
+  if(IS_NULL_PTR(datetime_original))
     return;
 
   // let's add our offset
   GDateTime *datetime_new = g_date_time_add(datetime_original, offset);
   g_date_time_unref(datetime_original);
 
-  if(!datetime_new)
+  if(IS_NULL_PTR(datetime_new))
     return;
   gchar *datetime = g_date_time_format(datetime_new, "%Y:%m:%d %H:%M:%S,%f");
   datetime[DT_DATETIME_LENGTH - 1] = '\0';  // limit to milliseconds
@@ -2001,7 +1993,7 @@ static int32_t dt_control_datetime_job_run(dt_job_t *job)
   char message[512] = { 0 };
 
   /* do we have any selected images and is offset != 0 */
-  if(!t || (offset == 0 && !datetime[0]))
+  if(IS_NULL_PTR(t) || (offset == 0 && !datetime[0]))
   {
     return 1;
   }
@@ -2060,10 +2052,10 @@ static int32_t dt_control_datetime_job_run(dt_job_t *job)
 static void *dt_control_datetime_alloc()
 {
   dt_control_image_enumerator_t *params = dt_control_image_enumerator_alloc();
-  if(!params) return NULL;
+  if(IS_NULL_PTR(params)) return NULL;
 
   params->data = calloc(1, sizeof(dt_control_datetime_t));
-  if(!params->data)
+  if(IS_NULL_PTR(params->data))
   {
     dt_control_image_enumerator_cleanup(params);
     return NULL;
@@ -2084,9 +2076,9 @@ static void dt_control_datetime_job_cleanup(void *p)
 static dt_job_t *dt_control_datetime_job_create(const GTimeSpan offset, const char *datetime, GList *imgs)
 {
   dt_job_t *job = dt_control_job_create(&dt_control_datetime_job_run, "time offset");
-  if(!job) return NULL;
+  if(IS_NULL_PTR(job)) return NULL;
   dt_control_image_enumerator_t *params = dt_control_datetime_alloc();
-  if(!params)
+  if(IS_NULL_PTR(params))
   {
     dt_control_job_dispose(job);
     return NULL;
@@ -2101,7 +2093,7 @@ static dt_job_t *dt_control_datetime_job_create(const GTimeSpan offset, const ch
 
   dt_control_datetime_t *data = params->data;
   data->offset = offset;
-  if(datetime)
+  if(!IS_NULL_PTR(datetime))
     memcpy(data->datetime, datetime, sizeof(data->datetime));
   else
     data->datetime[0] = '\0';

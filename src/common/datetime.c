@@ -67,7 +67,7 @@ static GTimeSpan _gdatetime_to_gtimespan(GDateTime *gdt)
 
 gboolean dt_datetime_exif_to_numbers(dt_datetime_t *dt, const char *exif)
 {
-  if(!exif || !*exif || !dt) return FALSE;
+  if(IS_NULL_PTR(exif) || !*exif || IS_NULL_PTR(dt)) return FALSE;
 
   // fast-path for ISO-8601 (handles timezone offsets and 'T' separator)
   GDateTime *gdt = g_date_time_new_from_iso8601(exif, darktable.utc_tz);
@@ -125,7 +125,7 @@ gboolean dt_datetime_exif_to_numbers_raw(dt_datetime_t *dt, const char *exif)
 gboolean dt_datetime_gdatetime_to_local(char *local, const size_t local_size,
                                         GDateTime *gdt, const gboolean msec, const gboolean tz)
 {
-  if(!local || !local_size || !gdt) return FALSE;
+  if(IS_NULL_PTR(local) || !local_size || IS_NULL_PTR(gdt)) return FALSE;
   local[0] = '\0';
   if(gdt)
   {
@@ -158,7 +158,7 @@ gboolean dt_datetime_gtimespan_to_local(char *local, const size_t local_size,
                                         const GTimeSpan gts, const gboolean msec, const gboolean tz)
 {
   gboolean res = FALSE;
-  if(!local || !local_size) return FALSE;
+  if(IS_NULL_PTR(local) || !local_size) return FALSE;
   local[0] = '\0';
   GDateTime *gdt = g_date_time_add(darktable.origin_gdt, gts);
   if(gdt)
@@ -203,7 +203,7 @@ gboolean dt_datetime_unix_to_exif(char *exif, const size_t exif_size, const time
 
 void dt_datetime_now_to_exif(char *exif)
 {
-  if(!exif) return;
+  if(IS_NULL_PTR(exif)) return;
   exif[0] = '\0';
   GDateTime *gdt = g_date_time_new_now_local();
   if(gdt)
@@ -221,7 +221,7 @@ GTimeSpan dt_datetime_now_to_gtimespan()
 
 void dt_datetime_exif_to_img(dt_image_t *img, const char *exif)
 {
-  if(!exif) return;
+  if(IS_NULL_PTR(exif)) return;
   GDateTime *gdt = dt_datetime_exif_to_gdatetime(exif, darktable.utc_tz);
   if(gdt)
   {
@@ -259,7 +259,7 @@ GDateTime *dt_datetime_exif_to_gdatetime(const char *exif, const GTimeZone *tz)
 
 gboolean dt_datetime_gdatetime_to_exif(char *exif, const size_t exif_size, GDateTime *gdt)
 {
-  if(!exif || !exif_size || !gdt) return FALSE;
+  if(IS_NULL_PTR(exif) || !exif_size || IS_NULL_PTR(gdt)) return FALSE;
   exif[0] = '\0';
   char *sdt = g_date_time_format(gdt, DT_DATETIME_EXIF_FORMAT);
   if(sdt)
@@ -281,7 +281,7 @@ gboolean dt_datetime_gdatetime_to_exif(char *exif, const size_t exif_size, GDate
 GDateTime *dt_datetime_img_to_gdatetime(const dt_image_t *img, const GTimeZone *tz)
 {
   // GTimeSpan is UTC based. Therefore we have to cheat a little bit to get image datetime
-  if(!tz) return NULL;
+  if(IS_NULL_PTR(tz)) return NULL;
   GDateTime *gdt = g_date_time_add(darktable.origin_gdt, img->exif_datetime_taken);
   if(gdt)
   {
@@ -311,7 +311,7 @@ GDateTime *dt_string_to_datetime(const char *string)
 
 gboolean dt_datetime_entry_to_exif(char *exif, const size_t exif_size, const char *entry)
 {
-  if(!exif || !exif_size) return FALSE;
+  if(IS_NULL_PTR(exif) || !exif_size) return FALSE;
   exif[0] = '\0';
   GDateTime *gdt = dt_string_to_datetime(entry);
 
@@ -326,7 +326,7 @@ gboolean dt_datetime_entry_to_exif(char *exif, const size_t exif_size, const cha
 
 gboolean dt_datetime_entry_to_exif_upper_bound(char *exif, const size_t exif_size, const char *entry)
 {
-  if(!exif || !exif_size) return FALSE;
+  if(IS_NULL_PTR(exif) || !exif_size) return FALSE;
   exif[0] = '\0';
 
   const int len = strlen(entry);
@@ -373,7 +373,7 @@ gboolean dt_datetime_entry_to_exif_upper_bound(char *exif, const size_t exif_siz
 
 void dt_datetime_add_subsec_to_exif(char *exif, const size_t exif_size, const char*subsec)
 {
-  if(!exif || exif_size < DT_DATETIME_EXIF_LENGTH + 1) return;
+  if(IS_NULL_PTR(exif) || exif_size < DT_DATETIME_EXIF_LENGTH + 1) return;
 
   g_strlcpy(&exif[DT_DATETIME_EXIF_LENGTH - 1], ".000000", exif_size - DT_DATETIME_EXIF_LENGTH + 1);
   for(int i = 0; i < 6 && subsec[i] != '\0' && (DT_DATETIME_EXIF_LENGTH + i < exif_size - 1); i++)
@@ -383,7 +383,7 @@ void dt_datetime_add_subsec_to_exif(char *exif, const size_t exif_size, const ch
 
 gboolean dt_datetime_gtimespan_to_exif(char *sdt, const size_t sdt_size, const GTimeSpan gts)
 {
-  if(!sdt || !sdt_size) return FALSE;
+  if(IS_NULL_PTR(sdt) || !sdt_size) return FALSE;
   sdt[0] = '\0';
   if(!gts) return FALSE;
   GDateTime *gdt = g_date_time_add(darktable.origin_gdt, gts);
@@ -399,7 +399,7 @@ gboolean dt_datetime_gtimespan_to_exif(char *sdt, const size_t sdt_size, const G
 GTimeSpan dt_datetime_exif_to_gtimespan(const char *sdt)
 {
   GTimeSpan gts = 0;
-  if(!sdt) return gts;
+  if(IS_NULL_PTR(sdt)) return gts;
   GDateTime *gdt = dt_datetime_exif_to_gdatetime(sdt, darktable.utc_tz);
   if(gdt)
   {
@@ -428,7 +428,7 @@ GDateTime *dt_datetime_gtimespan_to_gdatetime(const GTimeSpan gts)
 
 GTimeSpan dt_datetime_numbers_to_gtimespan(const dt_datetime_t *dt)
 {
-  if(!dt) return 0;
+  if(IS_NULL_PTR(dt)) return 0;
   GDateTime *gdt = g_date_time_new(darktable.utc_tz,
                                    dt->year, dt->month, dt->day,
                                    dt->hour, dt->minute, (double)dt->second);
@@ -475,7 +475,7 @@ gboolean dt_datetime_exif_add_numbers(const gchar *exif, const dt_datetime_t num
                                       gchar **result)
 {
   GDateTime *dte = dt_datetime_exif_to_gdatetime(exif, darktable.utc_tz);
-  if(!dte) return FALSE;
+  if(IS_NULL_PTR(dte)) return FALSE;
   GDateTime *dt2 = dt_datetime_gdatetime_add_numbers(dte, numbers, add);
   char txt[DT_DATETIME_EXIF_LENGTH];
   dt_datetime_gdatetime_to_exif(txt, DT_DATETIME_EXIF_LENGTH, dt2);

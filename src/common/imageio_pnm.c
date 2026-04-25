@@ -205,7 +205,7 @@ dt_imageio_retval_t dt_imageio_open_pnm(dt_image_t *img, const char *filename, d
   while(*ext != '.' && ext > filename) ext--;
   if(strcasecmp(ext, ".pbm") && strcasecmp(ext, ".pgm") && strcasecmp(ext, ".ppm")) return DT_IMAGEIO_FILE_CORRUPTED;
   FILE *f = g_fopen(filename, "rb");
-  if(!f) return DT_IMAGEIO_FILE_CORRUPTED;
+  if(IS_NULL_PTR(f)) return DT_IMAGEIO_FILE_CORRUPTED;
   int ret = 0;
   dt_imageio_retval_t result = DT_IMAGEIO_FILE_CORRUPTED;
 
@@ -223,24 +223,25 @@ dt_imageio_retval_t dt_imageio_open_pnm(dt_image_t *img, const char *filename, d
   img->height = strtol(height_string, NULL, 0);
   if(errno != 0 || img->width <= 0 || img->height <= 0) goto end;
 
-  img->buf_dsc.channels = 4;
-  img->buf_dsc.datatype = TYPE_FLOAT;
-  img->buf_dsc.cst = IOP_CS_RGB; // pnm is always RGB
-  img->buf_dsc.filters = 0u;
+  img->dsc.channels = 4;
+  img->dsc.datatype = TYPE_FLOAT;
+  img->dsc.bpp = 4 * sizeof(float);
+  img->dsc.cst = IOP_CS_RGB; // pnm is always RGB
+  img->dsc.filters = 0u;
   img->flags &= ~DT_IMAGE_RAW;
   img->flags &= ~DT_IMAGE_S_RAW;
   img->flags &= ~DT_IMAGE_HDR;
   img->flags |= DT_IMAGE_LDR;
   img->loader = LOADER_PNM;
 
-  if(!mbuf)
+  if(IS_NULL_PTR(mbuf))
   {
     result = DT_IMAGEIO_OK;
     goto end;
   }
 
   float *buf = (float *)dt_mipmap_cache_alloc(mbuf, img);
-  if(!buf)
+  if(IS_NULL_PTR(buf))
   {
     result = DT_IMAGEIO_CACHE_FULL;
     goto end;

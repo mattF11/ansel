@@ -93,7 +93,7 @@ static gboolean _display_rgb_equal(const float a[3], const float b[3])
 /** @brief Update hue/chroma from current U/V components. */
 static void _picker_update_polar_from_uv(dt_drawlayer_widgets_t *widgets)
 {
-  if(!widgets) return;
+  if(IS_NULL_PTR(widgets)) return;
   widgets->picker_hue = atan2f(widgets->picker_v, widgets->picker_u);
   widgets->picker_chroma = hypotf(widgets->picker_u, widgets->picker_v);
 }
@@ -101,7 +101,7 @@ static void _picker_update_polar_from_uv(dt_drawlayer_widgets_t *widgets)
 /** @brief Update U/V from current hue/chroma components. */
 static void _picker_update_uv_from_polar(dt_drawlayer_widgets_t *widgets)
 {
-  if(!widgets) return;
+  if(IS_NULL_PTR(widgets)) return;
   widgets->picker_u = widgets->picker_chroma * cosf(widgets->picker_hue);
   widgets->picker_v = widgets->picker_chroma * sinf(widgets->picker_hue);
 }
@@ -151,7 +151,7 @@ static float _picker_max_chroma_for_m_hue(const float m, const float hue)
 /** @brief Clamp picker state so projected display RGB always remains valid. */
 static void _picker_clamp_state_to_gamut(dt_drawlayer_widgets_t *widgets)
 {
-  if(!widgets) return;
+  if(IS_NULL_PTR(widgets)) return;
 
   widgets->picker_m = CLAMP(widgets->picker_m, 0.0f, 1.0f);
   _picker_update_polar_from_uv(widgets);
@@ -166,7 +166,7 @@ static void _picker_clamp_state_to_gamut(dt_drawlayer_widgets_t *widgets)
 /** @brief Initialize picker opponent coordinates from display RGB color. */
 static void _sync_picker_from_display_rgb(dt_drawlayer_widgets_t *widgets, const float display_rgb[3])
 {
-  if(!widgets || !display_rgb) return;
+  if(IS_NULL_PTR(widgets) || !display_rgb) return;
 
   widgets->picker_m = (display_rgb[0] + display_rgb[1] + display_rgb[2]) / 3.0f;
   widgets->picker_u = (display_rgb[0] - display_rgb[1]) * 0.70710678f;
@@ -177,7 +177,7 @@ static void _sync_picker_from_display_rgb(dt_drawlayer_widgets_t *widgets, const
 /** @brief Destroy cached picker surface and reset cache metadata. */
 static void _clear_color_picker_surface(dt_drawlayer_widgets_t *widgets)
 {
-  if(!widgets) return;
+  if(IS_NULL_PTR(widgets)) return;
   if(widgets->color_surface)
   {
     cairo_surface_destroy(widgets->color_surface);
@@ -192,7 +192,7 @@ static void _clear_color_picker_surface(dt_drawlayer_widgets_t *widgets)
 /** @brief Destroy cached brush-profile preview surface and reset cache metadata. */
 static void _clear_profile_surface(dt_drawlayer_widgets_t *widgets)
 {
-  if(!widgets) return;
+  if(IS_NULL_PTR(widgets)) return;
   if(widgets->profile_surface)
   {
     cairo_surface_destroy(widgets->profile_surface);
@@ -213,12 +213,12 @@ static void _brush_profile_geometry(const GtkWidget *widget, float *x, float *y,
   const int count = 4;
   const float widget_w = gtk_widget_get_allocated_width((GtkWidget *)widget);
   const float widget_h = gtk_widget_get_allocated_height((GtkWidget *)widget);
-  if(x) *x = margin;
-  if(y) *y = margin;
-  if(width) *width = fmaxf(24.0f, widget_w - 2.0f * margin);
-  if(height) *height = fmaxf(24.0f, widget_h - 2.0f * margin);
-  if(gap) *gap = local_gap;
-  if(cell_count) *cell_count = count;
+  if(!IS_NULL_PTR(x)) *x = margin;
+  if(!IS_NULL_PTR(y)) *y = margin;
+  if(!IS_NULL_PTR(width)) *width = fmaxf(24.0f, widget_w - 2.0f * margin);
+  if(!IS_NULL_PTR(height)) *height = fmaxf(24.0f, widget_h - 2.0f * margin);
+  if(!IS_NULL_PTR(gap)) *gap = local_gap;
+  if(!IS_NULL_PTR(cell_count)) *cell_count = count;
 }
 
 /** @brief Compute one profile-cell rectangle. */
@@ -231,10 +231,10 @@ static gboolean _brush_profile_cell_rect(const GtkWidget *widget, const int inde
   if(index < 0 || index >= count) return FALSE;
 
   const float cell_w = fmaxf(8.0f, (row_w - gap * (count - 1)) / (float)count);
-  if(x) *x = row_x + index * (cell_w + gap);
-  if(y) *y = row_y;
-  if(width) *width = cell_w;
-  if(height) *height = row_h;
+  if(!IS_NULL_PTR(x)) *x = row_x + index * (cell_w + gap);
+  if(!IS_NULL_PTR(y)) *y = row_y;
+  if(!IS_NULL_PTR(width)) *width = cell_w;
+  if(!IS_NULL_PTR(height)) *height = row_h;
   return TRUE;
 }
 
@@ -251,7 +251,7 @@ static void _render_brush_profile_cell(unsigned char *dst, const int stride, con
                                        float *rgba_scratch,
                                        const dt_drawlayer_widgets_t *widgets, const int shape)
 {
-  if(!dst || !rgba_scratch || width <= 0 || height <= 0 || !widgets) return;
+  if(IS_NULL_PTR(dst) || IS_NULL_PTR(rgba_scratch) || width <= 0 || height <= 0 || IS_NULL_PTR(widgets)) return;
 
   memset(dst, 0, (size_t)stride * height);
   for(int py = 0; py < height; py++)
@@ -318,13 +318,13 @@ static void _color_picker_geometry(const GtkWidget *widget, float *uv_x, float *
   const float usable_w = fmaxf(40.0f, width - 2.0f * margin - gap);
   const float usable_h = fmaxf(40.0f, height - 2.0f * margin);
   const float size = fmaxf(40.0f, fminf(usable_h, 0.5f * usable_w));
-  if(uv_x) *uv_x = margin;
-  if(uv_y) *uv_y = margin + 0.5f * (usable_h - size);
-  if(uv_size) *uv_size = size;
-  if(plane_x) *plane_x = margin + size + gap;
-  if(plane_y) *plane_y = margin + 0.5f * (usable_h - size);
-  if(plane_w) *plane_w = size;
-  if(plane_h) *plane_h = size;
+  if(!IS_NULL_PTR(uv_x)) *uv_x = margin;
+  if(!IS_NULL_PTR(uv_y)) *uv_y = margin + 0.5f * (usable_h - size);
+  if(!IS_NULL_PTR(uv_size)) *uv_size = size;
+  if(!IS_NULL_PTR(plane_x)) *plane_x = margin + size + gap;
+  if(!IS_NULL_PTR(plane_y)) *plane_y = margin + 0.5f * (usable_h - size);
+  if(!IS_NULL_PTR(plane_w)) *plane_w = size;
+  if(!IS_NULL_PTR(plane_h)) *plane_h = size;
 }
 
 /** @brief Hit-margin in device-independent pixels for drag continuity. */
@@ -359,7 +359,7 @@ dt_drawlayer_widgets_t *dt_drawlayer_widgets_init(void)
 /** @brief Free widget runtime state and owned cairo resources. */
 void dt_drawlayer_widgets_cleanup(dt_drawlayer_widgets_t **widgets)
 {
-  if(!widgets || !*widgets) return;
+  if(IS_NULL_PTR(widgets) || !*widgets) return;
   _clear_color_picker_surface(*widgets);
   _clear_profile_surface(*widgets);
   dt_free(*widgets);
@@ -368,7 +368,7 @@ void dt_drawlayer_widgets_cleanup(dt_drawlayer_widgets_t **widgets)
 /** @brief Set current color and synchronize picker internals. */
 void dt_drawlayer_widgets_set_display_color(dt_drawlayer_widgets_t *widgets, const float display_rgb[3])
 {
-  if(!widgets || !display_rgb) return;
+  if(IS_NULL_PTR(widgets) || !display_rgb) return;
   _sync_picker_from_display_rgb(widgets, display_rgb);
   widgets->color_surface_dirty = TRUE;
 }
@@ -383,7 +383,7 @@ gboolean dt_drawlayer_widgets_get_display_color(const dt_drawlayer_widgets_t *wi
 /** @brief Mark picker surface dirty for regeneration on next draw. */
 void dt_drawlayer_widgets_mark_picker_dirty(dt_drawlayer_widgets_t *widgets)
 {
-  if(!widgets) return;
+  if(IS_NULL_PTR(widgets)) return;
   widgets->color_surface_dirty = TRUE;
 }
 
@@ -392,7 +392,7 @@ void dt_drawlayer_widgets_set_color_history(dt_drawlayer_widgets_t *widgets,
                                             const float history[DT_DRAWLAYER_COLOR_HISTORY_COUNT][3],
                                             const gboolean valid[DT_DRAWLAYER_COLOR_HISTORY_COUNT])
 {
-  if(!widgets || !history || !valid) return;
+  if(IS_NULL_PTR(widgets) || !history || !valid) return;
   for(int i = 0; i < DT_DRAWLAYER_COLOR_HISTORY_COUNT; i++)
   {
     widgets->color_history_valid[i] = valid[i];
@@ -407,7 +407,7 @@ void dt_drawlayer_widgets_get_color_history(const dt_drawlayer_widgets_t *widget
                                             float history[DT_DRAWLAYER_COLOR_HISTORY_COUNT][3],
                                             gboolean valid[DT_DRAWLAYER_COLOR_HISTORY_COUNT])
 {
-  if(!widgets || !history || !valid) return;
+  if(IS_NULL_PTR(widgets) || !history || !valid) return;
   for(int i = 0; i < DT_DRAWLAYER_COLOR_HISTORY_COUNT; i++)
   {
     valid[i] = widgets->color_history_valid[i];
@@ -501,9 +501,9 @@ gboolean dt_drawlayer_widgets_update_from_picker_position(dt_drawlayer_widgets_t
 /** @brief End picker drag mode and optionally output current color. */
 gboolean dt_drawlayer_widgets_finish_picker_drag(dt_drawlayer_widgets_t *widgets, float display_rgb[3])
 {
-  if(!widgets) return FALSE;
+  if(IS_NULL_PTR(widgets)) return FALSE;
   widgets->picker_drag_mode = DT_DRAWLAYER_COLOR_DRAG_NONE;
-  if(!display_rgb) return FALSE;
+  if(IS_NULL_PTR(display_rgb)) return FALSE;
   return !_picker_project_opponent_to_display_rgb(widgets->picker_m, widgets->picker_u, widgets->picker_v, display_rgb);
 }
 
@@ -540,7 +540,7 @@ gboolean dt_drawlayer_widgets_pick_history_color(const dt_drawlayer_widgets_t *w
 gboolean dt_drawlayer_widgets_draw_picker(dt_drawlayer_widgets_t *widgets, GtkWidget *widget, cairo_t *cr,
                                           double pixels_per_dip)
 {
-  if(!widgets || !widget || !cr) return FALSE;
+  if(!widgets || !widget || IS_NULL_PTR(cr)) return FALSE;
 
   const int width = gtk_widget_get_allocated_width(widget);
   const int height = gtk_widget_get_allocated_height(widget);
@@ -662,7 +662,7 @@ gboolean dt_drawlayer_widgets_draw_picker(dt_drawlayer_widgets_t *widgets, GtkWi
 /** @brief Draw compact color-history swatch grid. */
 gboolean dt_drawlayer_widgets_draw_swatch(const dt_drawlayer_widgets_t *widgets, GtkWidget *widget, cairo_t *cr)
 {
-  if(!widgets || !widget || !cr) return FALSE;
+  if(!widgets || !widget || IS_NULL_PTR(cr)) return FALSE;
 
   const int width = gtk_widget_get_allocated_width(widget);
   const int height = gtk_widget_get_allocated_height(widget);
@@ -702,7 +702,7 @@ void dt_drawlayer_widgets_set_brush_profile_preview(dt_drawlayer_widgets_t *widg
                                                     const float sprinkle_coarseness,
                                                     const int selected_shape)
 {
-  if(!widgets) return;
+  if(IS_NULL_PTR(widgets)) return;
 
   const float new_opacity = _clamp01(opacity);
   const float new_hardness = _clamp01(hardness);
@@ -735,7 +735,7 @@ int dt_drawlayer_widgets_get_brush_profile_selection(const dt_drawlayer_widgets_
 gboolean dt_drawlayer_widgets_draw_brush_profiles(dt_drawlayer_widgets_t *widgets, GtkWidget *widget,
                                                   cairo_t *cr, const double pixels_per_dip)
 {
-  if(!widgets || !widget || !cr) return FALSE;
+  if(!widgets || !widget || IS_NULL_PTR(cr)) return FALSE;
 
   const int width = gtk_widget_get_allocated_width(widget);
   const int height = gtk_widget_get_allocated_height(widget);

@@ -139,7 +139,7 @@ static char *_expand_source(dt_variables_params_t *params, char **source, char e
 
 gboolean dt_get_user_pictures_dir(const gchar *homedir, gchar *picdir, size_t picdir_size)
 {
-  if(!homedir || picdir_size == 0 || !picdir)
+  if(IS_NULL_PTR(homedir) || picdir_size == 0 || IS_NULL_PTR(picdir))
     return 0;
 
   gchar dir[PATH_MAX] = { 0 };
@@ -324,7 +324,7 @@ static char *_variables_get_iso_timestamp(const GTimeSpan gts)
   if(gts <= 0) return NULL;
 
   GDateTime *gdt = g_date_time_add(darktable.origin_gdt, gts);
-  if(!gdt) return NULL;
+  if(IS_NULL_PTR(gdt)) return NULL;
 
   char *result = g_date_time_format(gdt, "%Y-%m-%d %H:%M:%S");
   g_date_time_unref(gdt);
@@ -476,13 +476,13 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
     const dt_image_t *img = params->img ? (dt_image_t *)params->img
                                         : dt_image_cache_get(darktable.image_cache, params->imgid, 'r');
     dt_image_print_exif(img, buffer, sizeof(buffer));
-    if(params->img == NULL) dt_image_cache_read_release(darktable.image_cache, img);
+    if(IS_NULL_PTR(params->img)) dt_image_cache_read_release(darktable.image_cache, img);
     result = g_strdup(buffer);
   }
   else if(_has_prefix(variable, "VERSION.NAME") || _has_prefix(variable, "VERSION_NAME"))
   {
     GList *res = dt_metadata_get(params->imgid, "Xmp.darktable.version_name", NULL);
-    if(res != NULL)
+    if(!IS_NULL_PTR(res))
     {
       result = g_strdup((char *)res->data);
     }
@@ -658,7 +658,7 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
     // TODO: currently we concatenate all the color labels with a ',' as a separator. Maybe it's better to
     // only use the first/last label?
     GList *res = dt_metadata_get(params->imgid, "Xmp.darktable.colorlabels", NULL);
-    if(res != NULL)
+    if(!IS_NULL_PTR(res))
     {
       GList *labels = NULL;
       for(GList *res_iter = res; res_iter; res_iter = g_list_next(res_iter))
@@ -676,7 +676,7 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
   else if(_has_prefix(variable, "TITLE") || _has_prefix(variable, "Xmp.dc.title"))
   {
     GList *res = dt_metadata_get(params->imgid, "Xmp.dc.title", NULL);
-    if(res != NULL)
+    if(!IS_NULL_PTR(res))
     {
       result = g_strdup((char *)res->data);
     }
@@ -686,7 +686,7 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
   else if(_has_prefix(variable, "DESCRIPTION") || _has_prefix(variable, "Xmp.dc.description"))
   {
     GList *res = dt_metadata_get(params->imgid, "Xmp.dc.description", NULL);
-    if(res != NULL)
+    if(!IS_NULL_PTR(res))
     {
       result = g_strdup((char *)res->data);
     }
@@ -696,7 +696,7 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
   else if(_has_prefix(variable, "CREATOR") || _has_prefix(variable, "Xmp.dc.creator"))
   {
     GList *res = dt_metadata_get(params->imgid, "Xmp.dc.creator", NULL);
-    if(res != NULL)
+    if(!IS_NULL_PTR(res))
     {
       result = g_strdup((char *)res->data);
     }
@@ -706,7 +706,7 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
   else if(_has_prefix(variable, "PUBLISHER") || _has_prefix(variable, "Xmp.dc.publisher"))
   {
     GList *res = dt_metadata_get(params->imgid, "Xmp.dc.publisher", NULL);
-    if(res != NULL)
+    if(!IS_NULL_PTR(res))
     {
       result = g_strdup((char *)res->data);
     }
@@ -716,7 +716,7 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
   else if(_has_prefix(variable, "RIGHTS") || _has_prefix(variable, "Xmp.dc.rights"))
   {
     GList *res = dt_metadata_get(params->imgid, "Xmp.dc.rights", NULL);
-    if(res != NULL)
+    if(!IS_NULL_PTR(res))
     {
       result = g_strdup((char *)res->data);
     }
@@ -1103,7 +1103,7 @@ static void _grow_buffer(char **result, char **result_iter, size_t *result_lengt
 static char *_expand_source(dt_variables_params_t *params, char **source, char extra_stop)
 {
   char *result = g_strdup("");
-  if(!*source) return result;
+  if(IS_NULL_PTR(*source)) return result;
   char *result_iter = result;
   size_t result_length = 0;
   char *source_iter = *source;

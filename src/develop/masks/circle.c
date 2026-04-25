@@ -60,7 +60,7 @@ static void _circle_get_distance(float x, float y, float as, dt_masks_form_gui_t
   *dist = FLT_MAX;
 
   dt_masks_form_gui_points_t *gpt = (dt_masks_form_gui_points_t *)g_list_nth_data(gui->points, index);
-  if(!gpt) return;
+  if(IS_NULL_PTR(gpt)) return;
 
   // we first check if we are inside the source form
   const float pt[2] = { x, y };
@@ -79,7 +79,7 @@ static void _circle_get_distance(float x, float y, float as, dt_masks_form_gui_t
     return;
   }
 
-  if(!gpt->points || gpt->points_count <= 0 || !gpt->border || gpt->border_count <= 0) return;
+  if(IS_NULL_PTR(gpt->points) || gpt->points_count <= 0 || !gpt->border || gpt->border_count <= 0) return;
 
   // distance from center
   const float center_dx = x - gpt->points[0];
@@ -181,9 +181,9 @@ static int _init_opacity(dt_masks_form_t *form, const float amount, const dt_mas
 
 static float _circle_get_interaction_value(const dt_masks_form_t *form, dt_masks_interaction_t interaction)
 {
-  if(!form || !form->points) return NAN;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return NAN;
   const dt_masks_node_circle_t *circle = (const dt_masks_node_circle_t *)(form->points)->data;
-  if(!circle) return NAN;
+  if(IS_NULL_PTR(circle)) return NAN;
 
   switch(interaction)
   {
@@ -198,9 +198,9 @@ static float _circle_get_interaction_value(const dt_masks_form_t *form, dt_masks
 
 static gboolean _circle_get_gravity_center(const dt_masks_form_t *form, float center[2], float *area)
 {
-  if(!form || !form->points || !center || !area) return FALSE;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points) || IS_NULL_PTR(center) || IS_NULL_PTR(area)) return FALSE;
   const dt_masks_node_circle_t *circle = (const dt_masks_node_circle_t *)(form->points)->data;
-  if(!circle) return FALSE;
+  if(IS_NULL_PTR(circle)) return FALSE;
   center[0] = circle->center[0];
   center[1] = circle->center[1];
   *area = M_PI_F * sqf(circle->radius);
@@ -216,7 +216,7 @@ static float _circle_set_interaction_value(dt_masks_form_t *form, dt_masks_inter
                                            dt_masks_increment_t increment, int flow,
                                            dt_masks_form_gui_t *gui, struct dt_iop_module_t *module)
 {
-  if(!form) return NAN;
+  if(IS_NULL_PTR(form)) return NAN;
   const int index = 0;
 
   switch(interaction)
@@ -234,9 +234,9 @@ static float _circle_set_interaction_value(dt_masks_form_t *form, dt_masks_inter
 
 static int _change_hardness(dt_masks_form_t *form, dt_masks_form_gui_t *gui, struct dt_iop_module_t *module, int index, const float amount, const dt_masks_increment_t increment, const int flow)
 {
-  if(!form || !form->points) return 0;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 0;
   dt_masks_node_circle_t *circle = (dt_masks_node_circle_t *)(form->points)->data;
-  if(!circle) return 0;
+  if(IS_NULL_PTR(circle)) return 0;
 
   circle->border = CLAMPF(dt_masks_apply_increment(circle->border, amount, increment, flow),
                           HARDNESS_MIN, HARDNESS_MAX);
@@ -251,9 +251,9 @@ static int _change_hardness(dt_masks_form_t *form, dt_masks_form_gui_t *gui, str
 
 static int _change_size(dt_masks_form_t *form, dt_masks_form_gui_t *gui, struct dt_iop_module_t *module, int index, const float amount, const dt_masks_increment_t increment, const int flow)
 {
-  if(!form || !form->points) return 0;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 0;
   dt_masks_node_circle_t *circle = (dt_masks_node_circle_t *)(form->points)->data;
-  if(!circle) return 0;
+  if(IS_NULL_PTR(circle)) return 0;
 
   // Sanitize
   // do not exceed upper limit of 1.0 and lower limit of 0.004
@@ -326,7 +326,7 @@ static int _circle_events_button_pressed(struct dt_iop_module_t *module, double 
       dt_iop_module_t *crea_module = gui->creation_module;
       // we create the circle
       dt_masks_node_circle_t *circle = (dt_masks_node_circle_t *)(malloc(sizeof(dt_masks_node_circle_t)));
-      if(!circle) return 0;
+      if(IS_NULL_PTR(circle)) return 0;
 
       _circle_init_new(form, gui, circle);
       form->points = g_list_append(form->points, circle);
@@ -337,7 +337,7 @@ static int _circle_events_button_pressed(struct dt_iop_module_t *module, double 
     else // creation is FALSE
     {
       dt_masks_form_gui_points_t *gpt = (dt_masks_form_gui_points_t *)g_list_nth_data(gui->points, index);
-      if(!gpt) return 0;
+      if(IS_NULL_PTR(gpt)) return 0;
 
       if(gui->source_selected && gui->edit_mode == DT_MASKS_EDIT_FULL)
       {
@@ -402,7 +402,7 @@ static int _circle_events_mouse_moved(struct dt_iop_module_t *module, double x, 
     return 1;
   }
 
-  if(!form || !form->points) return 0;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 0;
 
   if(gui->form_dragging || gui->source_dragging)
   {
@@ -415,7 +415,7 @@ static int _circle_events_mouse_moved(struct dt_iop_module_t *module, double x, 
     if(gui->form_dragging)
     {
       dt_masks_node_circle_t *circle = (dt_masks_node_circle_t *)((form->points)->data);
-      if(!circle) return 0;
+      if(IS_NULL_PTR(circle)) return 0;
       circle->center[0] = pts[0];
       circle->center[1] = pts[1];
     }
@@ -448,7 +448,7 @@ static float *_points_to_transform(float x, float y, float radius, float wd, flo
   const size_t l = (size_t)(2.0f * M_PI * r);
   // allocate buffer
   float *const restrict points = dt_pixelpipe_cache_alloc_align_float_cache((l + 1) * 2, 0);
-  if(!points)
+  if(IS_NULL_PTR(points))
   {
     *points_count = 0;
     return NULL;
@@ -462,11 +462,7 @@ static float *_points_to_transform(float x, float y, float radius, float wd, flo
   const float center_y = center[1];
   points[0] = center_x;
   points[1] = center_y;
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-    dt_omp_firstprivate(l, points, center_x, center_y, r)      \
-    schedule(static) if(l > 100) aligned(points:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(if(l > 100) aligned(points:64))
   for(int i = 1; i < l + 1; i++)
   {
     const float alpha = (i - 1) * 2.0f * M_PI / (float)l;
@@ -488,11 +484,11 @@ static int _circle_get_points_source(dt_develop_t *dev, float x, float y, float 
   // compute the points of the target (center and circumference of circle)
   // we get the point in RAW image reference
   *points = _points_to_transform(x, y, radius, wd, ht, points_count);
-  if(!*points) return 1;
+  if(IS_NULL_PTR(*points)) return 1;
 
   // we transform with all distortion that happen *before* the module
   // so we have now the TARGET points in module input reference
-  if(!dt_dev_distort_transform_plus(dev, dev->virtual_pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_EXCL,
+  if(!dt_dev_distort_transform_plus(dev->virtual_pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_EXCL,
                                     *points, *points_count))
     goto error;
 
@@ -500,18 +496,14 @@ static int _circle_get_points_source(dt_develop_t *dev, float x, float y, float 
   // so we have now the SOURCE points in module input reference
   float pts[2] = { xs, ys };
   dt_dev_coordinates_raw_norm_to_raw_abs(dev, pts, 1);
-  if(!dt_dev_distort_transform_plus(dev, dev->virtual_pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_EXCL,
+  if(!dt_dev_distort_transform_plus(dev->virtual_pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_EXCL,
                                     pts, 1))
     goto error;
 
   {
     const float dx = pts[0] - (*points)[0];
     const float dy = pts[1] - (*points)[1];
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-    dt_omp_firstprivate(points_count, points, dx, dy)              \
-    schedule(static) if(*points_count > 100) aligned(points:64)
-#endif
+    __OMP_PARALLEL_FOR_SIMD__(if(*points_count > 100) aligned(points:64))
     for(int i = 0; i < *points_count; i++)
     {
       (*points)[i * 2] += dx;
@@ -521,7 +513,7 @@ static int _circle_get_points_source(dt_develop_t *dev, float x, float y, float 
 
   // we apply the rest of the distortions (those after the module)
   // so we have now the SOURCE points in final image reference
-  if(!dt_dev_distort_transform_plus(dev, dev->virtual_pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_FORW_INCL,
+  if(!dt_dev_distort_transform_plus(dev->virtual_pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_FORW_INCL,
                                     *points, *points_count))
     goto error;
 
@@ -545,7 +537,7 @@ static int _circle_get_points(dt_develop_t *dev, float x, float y, float radius,
 
   // compute the points we need to transform (center and circumference of circle)
   *points = _points_to_transform(x, y, radius, wd, ht, points_count);
-  if(!*points) return 1;
+  if(IS_NULL_PTR(*points)) return 1;
 
   // and transform them with all distorted modules
   if(!dt_dev_coordinates_raw_abs_to_image_abs(dev, *points, *points_count))
@@ -585,7 +577,7 @@ static void _circle_events_post_expose(cairo_t *cr, float zoom_scale, dt_masks_f
   } // creation
 
   dt_masks_form_gui_points_t *gpt = (dt_masks_form_gui_points_t *)g_list_nth_data(gui->points, index);
-  if(!gpt) return;
+  if(IS_NULL_PTR(gpt)) return;
   
   // we draw the main shape
   const gboolean selected = (gui->group_selected == index) && (gui->form_selected || gui->form_dragging);
@@ -632,9 +624,9 @@ static int _circle_get_points_border(dt_develop_t *dev, struct dt_masks_form_t *
                                      int *points_count, float **border, int *border_count, int source,
                                      const dt_iop_module_t *module)
 {
-  if(!form || !form->points) return 0;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 0;
   dt_masks_node_circle_t *circle = (dt_masks_node_circle_t *)((form->points)->data);
-  if(!circle) return 0;
+  if(IS_NULL_PTR(circle)) return 0;
   float x = circle->center[0];
   float y = circle->center[1];
   if(source)
@@ -647,7 +639,7 @@ static int _circle_get_points_border(dt_develop_t *dev, struct dt_masks_form_t *
   {
     if(form->functions->get_points(dev, x, y, circle->radius, circle->radius, 0, points, points_count) != 0)
       return 1;
-    if(border)
+    if(!IS_NULL_PTR(border))
     {
       float outer_radius = circle->radius + circle->border;
       return form->functions->get_points(dev, x, y, outer_radius, outer_radius, 0, border, border_count);
@@ -657,25 +649,26 @@ static int _circle_get_points_border(dt_develop_t *dev, struct dt_masks_form_t *
   return 1;
 }
 
-static int _circle_get_source_area(dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece,
+static int _circle_get_source_area(dt_iop_module_t *module, dt_dev_pixelpipe_t *pipe,
+                                   dt_dev_pixelpipe_iop_t *piece,
                                    dt_masks_form_t *form, int *width, int *height, int *posx, int *posy)
 {
   // we get the circle values
-  if(!form || !form->points) return 0;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 0;
   dt_masks_node_circle_t *circle = (dt_masks_node_circle_t *)((form->points)->data);
-  if(!circle) return 0;
-  float wd = piece->pipe->iwidth, ht = piece->pipe->iheight;
+  if(IS_NULL_PTR(circle)) return 0;
+  float wd = pipe->iwidth, ht = pipe->iheight;
 
   // compute the points we need to transform (center and circumference of circle)
   const float outer_radius = circle->radius + circle->border;
   int num_points;
   float *const restrict points =
     _points_to_transform(form->source[0], form->source[1], outer_radius, wd, ht, &num_points);
-  if(points == NULL)
+  if(IS_NULL_PTR(points))
     return 1;
 
   // and transform them with all distorted modules
-  if(!dt_dev_distort_transform_plus(darktable.develop, piece->pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points, num_points))
+  if(!dt_dev_distort_transform_plus(pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points, num_points))
   {
     dt_pixelpipe_cache_free_align(points);
     return 1;
@@ -686,27 +679,27 @@ static int _circle_get_source_area(dt_iop_module_t *module, dt_dev_pixelpipe_iop
   return 0;
 }
 
-static int _circle_get_area(const dt_iop_module_t *const restrict module,
+static int _circle_get_area(const dt_iop_module_t *const restrict module, dt_dev_pixelpipe_t *pipe,
                             const dt_dev_pixelpipe_iop_t *const restrict piece,
                             dt_masks_form_t *const restrict form,
                             int *width, int *height, int *posx, int *posy)
 {
-  if(!form || !form->points) return 0;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 0;
   // we get the circle values
   dt_masks_node_circle_t *circle = (dt_masks_node_circle_t *)((form->points)->data);
-  if(!circle) return 0;
-  float wd = piece->pipe->iwidth, ht = piece->pipe->iheight;
+  if(IS_NULL_PTR(circle)) return 0;
+  float wd = pipe->iwidth, ht = pipe->iheight;
 
   // compute the points we need to transform (center and circumference of circle)
   const float outer_radius = circle->radius + circle->border;
   int num_points;
   float *const restrict points =
     _points_to_transform(circle->center[0], circle->center[1], outer_radius, wd, ht, &num_points);
-  if(points == NULL)
+  if(IS_NULL_PTR(points))
     return 1;
 
   // and transform them with all distorted modules
-  if(!dt_dev_distort_transform_plus(module->dev, piece->pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points, num_points))
+  if(!dt_dev_distort_transform_plus(pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points, num_points))
   {
     dt_pixelpipe_cache_free_align(points);
     return 1;
@@ -717,7 +710,7 @@ static int _circle_get_area(const dt_iop_module_t *const restrict module,
   return 0;
 }
 
-static int _circle_get_mask(const dt_iop_module_t *const restrict module,
+static int _circle_get_mask(const dt_iop_module_t *const restrict module, dt_dev_pixelpipe_t *pipe,
                             const dt_dev_pixelpipe_iop_t *const restrict piece,
                             dt_masks_form_t *const restrict form,
                             float **buffer, int *width, int *height, int *posx, int *posy)
@@ -726,7 +719,7 @@ static int _circle_get_mask(const dt_iop_module_t *const restrict module,
   if(darktable.unmuted & DT_DEBUG_PERF) start2 = dt_get_wtime();
 
   // we get the area
-  if(_circle_get_area(module, piece, form, width, height, posx, posy) != 0) return 1;
+  if(_circle_get_area(module, pipe, piece, form, width, height, posx, posy) != 0) return 1;
 
   if(darktable.unmuted & DT_DEBUG_PERF)
   {
@@ -740,23 +733,17 @@ static int _circle_get_mask(const dt_iop_module_t *const restrict module,
   // we create a buffer of points with all points in the area
   const int w = *width, h = *height;
   float *const restrict points = dt_pixelpipe_cache_alloc_align_float_cache((size_t)w * h * 2, 0);
-  if(points == NULL)
+  if(IS_NULL_PTR(points))
     return 1;
 
   const float pos_x = *posx;
   const float pos_y = *posy;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(h, w, points, pos_x, pos_y) \
-  schedule(static) if(h*w > 50000) num_threads(MIN(darktable.num_openmp_threads,(h*w)/20000))
-#endif
+  __OMP_PARALLEL_FOR__(if(h*w > 50000) num_threads(MIN(darktable.num_openmp_threads,(h*w)/20000)))
   for(int i = 0; i < h; i++)
   {
     float *const restrict p = points + 2 * i * w;
     const float y = i + pos_y;
-#ifdef _OPENMP
-#pragma omp simd aligned(points : 64)
-#endif
+    __OMP_SIMD__(aligned(points : 64))
     for(int j = 0; j < w; j++)
     {
       p[2*j] = pos_x + j;
@@ -770,7 +757,7 @@ static int _circle_get_mask(const dt_iop_module_t *const restrict module,
     start2 = dt_get_wtime();
   }
   // we back transform all this points
-  if(!dt_dev_distort_backtransform_plus(module->dev, piece->pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points, (size_t)w * h))
+  if(!dt_dev_distort_backtransform_plus(pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points, (size_t)w * h))
   {
     dt_pixelpipe_cache_free_align(points);
     return 1;
@@ -785,7 +772,7 @@ static int _circle_get_mask(const dt_iop_module_t *const restrict module,
 
   // we allocate the buffer
   *buffer = dt_pixelpipe_cache_alloc_align_float_cache((size_t)w * h, 0);
-  if(*buffer == NULL)
+  if(IS_NULL_PTR(*buffer))
   {
     dt_pixelpipe_cache_free_align(points);
     return 1;
@@ -793,19 +780,14 @@ static int _circle_get_mask(const dt_iop_module_t *const restrict module,
 
   // we populate the buffer
   float *const restrict ptbuffer = *buffer;
-  const int wi = piece->pipe->iwidth, hi = piece->pipe->iheight;
+  const int wi = pipe->iwidth, hi = pipe->iheight;
   const int mindim = MIN(wi, hi);
   const float centerx = circle->center[0] * wi;
   const float centery = circle->center[1] * hi;
   const float radius2 = circle->radius * mindim * circle->radius * mindim;
   const float total2 = (circle->radius + circle->border) * mindim * (circle->radius + circle->border) * mindim;
   const float border2 = total2 - radius2;
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none)  \
-  dt_omp_firstprivate(h, w, border2, total2, centerx, centery, points, ptbuffer) \
-  schedule(simd:static) if(h*w > 50000) num_threads(MIN(darktable.num_openmp_threads,(h*w)/20000)) \
-  aligned(points, ptbuffer : 64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(if(h*w > 50000) num_threads(MIN(darktable.num_openmp_threads,(h*w)/20000))  aligned(points, ptbuffer : 64))
   for(int i = 0 ; i < h*w; i++)
   {
     // find the square of the distance from the center
@@ -826,13 +808,13 @@ static int _circle_get_mask(const dt_iop_module_t *const restrict module,
 }
 
 
-static int _circle_get_mask_roi(const dt_iop_module_t *const restrict module,
+static int _circle_get_mask_roi(const dt_iop_module_t *const restrict module, dt_dev_pixelpipe_t *pipe,
                                 const dt_dev_pixelpipe_iop_t *const restrict piece,
                                 dt_masks_form_t *const form, const dt_iop_roi_t *const roi,
                                 float *const restrict buffer)
 {
-  if(!form || !form->points) return 1;
-  if(!module) return 1;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 1;
+  if(IS_NULL_PTR(module)) return 1;
   double start1 = 0.0;
   double start2 = start1;
   
@@ -840,8 +822,8 @@ static int _circle_get_mask_roi(const dt_iop_module_t *const restrict module,
 
   // we get the circle parameters
   dt_masks_node_circle_t *circle = (dt_masks_node_circle_t *)((form->points)->data);
-  if(!circle) return 1;
-  const int wi = piece->pipe->iwidth, hi = piece->pipe->iheight;
+  if(IS_NULL_PTR(circle)) return 1;
+  const int wi = pipe->iwidth, hi = pipe->iheight;
   const float centerx = circle->center[0] * wi;
   const float centery = circle->center[1] * hi;
   const int min_dimention = MIN(wi, hi);
@@ -876,13 +858,8 @@ static int _circle_get_mask_roi(const dt_iop_module_t *const restrict module,
   // we need many points as we do not know how the circle might get distorted in the pixelpipe
   const size_t circpts = dt_masks_roundup(MIN(360, 2 * M_PI * sqr_total), 8);
   float *const restrict circ = dt_pixelpipe_cache_alloc_align_float_cache(circpts * 2, 0);
-  if(circ == NULL) return 1;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(circpts, centerx, centery, total_radius, circ) \
-  schedule(static) if(circpts/8 > 1000)
-#endif
+  if(IS_NULL_PTR(circ)) return 1;
+  __OMP_PARALLEL_FOR__(if(circpts/8 > 1000))
   for(int n = 0; n < circpts / 8; n++)
   {
     const float phi = (2.0f * M_PI * n) / circpts;
@@ -912,7 +889,7 @@ static int _circle_get_mask_roi(const dt_iop_module_t *const restrict module,
   }
 
   // we transform the outer circle from input image coordinates to current point in pixelpipe
-  if(!dt_dev_distort_transform_plus(module->dev, piece->pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, circ,
+  if(!dt_dev_distort_transform_plus(pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, circ,
                                         circpts))
   {
     dt_pixelpipe_cache_free_align(circ);
@@ -971,15 +948,10 @@ static int _circle_get_mask_roi(const dt_iop_module_t *const restrict module,
     return 0;
 
   float *const restrict points = dt_pixelpipe_cache_alloc_align_float_cache((size_t)bbw * bbh * 2, 0);
-  if(points == NULL) return 1;
+  if(IS_NULL_PTR(points)) return 1;
 
   // we populate the grid points in module coordinates
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(iscale, bbxm, bbym, bbXM, bbYM, bbw, px, py, grid, points) \
-  schedule(static) collapse(2) if(bbw*bbh > 50000)
-
-#endif
+  __OMP_PARALLEL_FOR__(collapse(2) if(bbw*bbh > 50000))
   for(int j = bbym; j <= bbYM; j++)
     for(int i = bbxm; i <= bbXM; i++)
     {
@@ -995,7 +967,7 @@ static int _circle_get_mask_roi(const dt_iop_module_t *const restrict module,
   }
 
   // we back transform all these points to the input image coordinates
-  if(!dt_dev_distort_backtransform_plus(module->dev, piece->pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points,
+  if(!dt_dev_distort_backtransform_plus(pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points,
                                         (size_t)bbw * bbh))
   {
     dt_pixelpipe_cache_free_align(points);
@@ -1011,11 +983,7 @@ static int _circle_get_mask_roi(const dt_iop_module_t *const restrict module,
 
   // we calculate the mask values at the transformed points;
   // for results: re-use the points array
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(bbh, bbw, centerx, centery, sqr_border, sqr_total, points) \
-  schedule(static) collapse(2) if(bbh*bbw > 50000) num_threads(MIN(darktable.num_openmp_threads,(height*width)/20000))
-#endif
+  __OMP_PARALLEL_FOR__(collapse(2) if(bbh*bbw > 50000) num_threads(MIN(darktable.num_openmp_threads,(height*width)/20000)))
   for(int j = 0; j < bbh; j++)
     for(int i = 0; i < bbw; i++)
     {
@@ -1047,12 +1015,7 @@ static int _circle_get_mask_roi(const dt_iop_module_t *const restrict module,
     w0[i] = (float)(grid - i);
     w1[i] = (float)i;
   }
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(grid, bbxm, bbym, bbw, endx, endy, width, buffer, points, w0, w1, inv_grid2) \
-  schedule(static) if((size_t)(endy - bbym * grid) * (size_t)(endx - bbxm * grid) > 50000)
-
-#endif
+  __OMP_PARALLEL_FOR__(if((size_t)(endy - bbym * grid) * (size_t)(endx - bbxm * grid) > 50000))
   for(int j = bbym * grid; j < endy; j++)
   {
     const int jj = j % grid;

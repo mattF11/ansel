@@ -39,16 +39,6 @@
 // needs to be defined before any system header includes for control/conf.h to work in C++ code
 #define __STDC_FORMAT_MACROS
 
-#include <cstdio>
-#include <cstdlib>
-#include <memory>
-
-#include <OpenEXR/ImfChannelList.h>
-#include <OpenEXR/ImfFrameBuffer.h>
-#include <OpenEXR/ImfStandardAttributes.h>
-#include <OpenEXR/ImfThreading.h>
-#include <OpenEXR/ImfOutputFile.h>
-
 #include "glib.h"
 
 #include "bauhaus/bauhaus.h"
@@ -63,6 +53,12 @@
 #include "imageio/format/imageio_format_api.h"
 
 #include "common/imageio_exr.hh"
+
+#include <OpenEXR/ImfChannelList.h>
+#include <OpenEXR/ImfFrameBuffer.h>
+#include <OpenEXR/ImfStandardAttributes.h>
+#include <OpenEXR/ImfThreading.h>
+#include <OpenEXR/ImfOutputFile.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -112,29 +108,6 @@ typedef struct dt_imageio_exr_gui_t
 
 void init(dt_imageio_module_format_t *self)
 {
-#ifdef USE_LUA
-  luaA_enum(darktable.lua_state.state, dt_imageio_exr_compression_t);
-  luaA_enum_value_name(darktable.lua_state.state, dt_imageio_exr_compression_t, NO_COMPRESSION, "off");
-  luaA_enum_value_name(darktable.lua_state.state, dt_imageio_exr_compression_t, RLE_COMPRESSION, "rle");
-  luaA_enum_value_name(darktable.lua_state.state, dt_imageio_exr_compression_t, ZIPS_COMPRESSION, "zips");
-  luaA_enum_value_name(darktable.lua_state.state, dt_imageio_exr_compression_t, ZIP_COMPRESSION, "zip");
-  luaA_enum_value_name(darktable.lua_state.state, dt_imageio_exr_compression_t, PIZ_COMPRESSION, "piz");
-  luaA_enum_value_name(darktable.lua_state.state, dt_imageio_exr_compression_t, PXR24_COMPRESSION, "pxr24");
-  luaA_enum_value_name(darktable.lua_state.state, dt_imageio_exr_compression_t, B44_COMPRESSION, "b44");
-  luaA_enum_value_name(darktable.lua_state.state, dt_imageio_exr_compression_t, B44A_COMPRESSION, "b44a");
-  luaA_enum_value_name(darktable.lua_state.state, dt_imageio_exr_compression_t, DWAA_COMPRESSION, "dwaa");
-  luaA_enum_value_name(darktable.lua_state.state, dt_imageio_exr_compression_t, DWAB_COMPRESSION, "dwab");
-
-  dt_lua_register_module_member(darktable.lua_state.state, self, dt_imageio_exr_t, compression,
-                                dt_imageio_exr_compression_t);
-
-  luaA_enum(darktable.lua_state.state, dt_imageio_exr_pixeltype_t);
-  luaA_enum_value_name(darktable.lua_state.state, dt_imageio_exr_pixeltype_t, EXR_PT_HALF, "half");
-  luaA_enum_value_name(darktable.lua_state.state, dt_imageio_exr_pixeltype_t, EXR_PT_FLOAT, "float");
-
-  dt_lua_register_module_member(darktable.lua_state.state, self, dt_imageio_exr_t, pixel_type,
-                                dt_imageio_exr_pixeltype_t);
-#endif
   Imf::BlobAttribute::registerAttributeType();
 }
 
@@ -196,7 +169,7 @@ int write_image(dt_imageio_module_data_t *tmp, const char *filename, const void 
     green_color = (cmsCIEXYZ *)cmsReadTag(out_profile, cmsSigGreenColorantTag);
     blue_color = (cmsCIEXYZ *)cmsReadTag(out_profile, cmsSigBlueColorantTag);
 
-    if(!red_curve || !green_curve || !blue_curve || !red_color || !green_color || !blue_color)
+    if(IS_NULL_PTR(red_curve) || IS_NULL_PTR(green_curve) || IS_NULL_PTR(blue_curve) || IS_NULL_PTR(red_color) || IS_NULL_PTR(green_color) || IS_NULL_PTR(blue_color))
       goto icc_error;
 
     if(!cmsIsToneCurveLinear(red_curve) || !cmsIsToneCurveLinear(green_curve) || !cmsIsToneCurveLinear(blue_curve))
@@ -272,14 +245,11 @@ icc_end:
     const size_t height = exr->global.height;
     stride = 3 * sizeof(unsigned short);
     unsigned short *out = (unsigned short *)malloc(stride * width * height);
-    if(out == NULL)
+    if(IS_NULL_PTR(out))
       return 1;
 
 #ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(in_tmp, out, width, height) \
-  schedule(simd:static) \
-  collapse(2)
+#pragma omp parallel for simd default(none)  collapse(2) firstprivate(height, width, in_tmp, out)
 #endif
     for(size_t y = 0; y < height; y++)
     {

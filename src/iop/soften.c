@@ -67,9 +67,6 @@
 #include <gtk/gtk.h>
 #include <inttypes.h>
 
-#if defined(__SSE__)
-#include <xmmintrin.h>
-#endif
 
 #define MAX_RADIUS 32
 
@@ -111,7 +108,7 @@ int default_group()
   return IOP_GROUP_EFFECTS;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -125,14 +122,15 @@ const char **description(struct dt_iop_module_t *self)
                                       _("linear, RGB, display-referred"));
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  (void)self;
+  (void)pipe;
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const dt_iop_soften_data_t *const d = (const dt_iop_soften_data_t *const)piece->data;
-
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
-                                         ivoid, ovoid, roi_in, roi_out))
-    return 0; // image has been copied through to output and module's trouble flag has been updated
 
   const float brightness = 1.0 / exp2f(-d->brightness);
   const float saturation = d->saturation / 100.0;
@@ -142,12 +140,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
   const size_t npixels = (size_t)roi_out->width * roi_out->height;
 /* create overexpose image and then blur */
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(brightness, npixels, saturation) \
-  dt_omp_sharedconst(in, out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < 4 * npixels; k += 4)
   {
     float h, s, l;
@@ -174,10 +167,11 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   return 0;
 }
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
+  (void)self;
+  (void)pipe;
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_soften_data_t *d = (dt_iop_soften_data_t *)piece->data;
 
   const float w = piece->iwidth;

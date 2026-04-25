@@ -83,10 +83,10 @@ char *get_profile_description(unsigned char *data, long data_size)
   gchar *utf8 = NULL;
   char *result = NULL;
 
-  if(!data || data_size == 0) return NULL;
+  if(IS_NULL_PTR(data) || data_size == 0) return NULL;
 
   cmsHPROFILE p = cmsOpenProfileFromMem(data, data_size);
-  if(!p) return NULL;
+  if(IS_NULL_PTR(p)) return NULL;
 
   size = cmsGetProfileInfoASCII(p, cmsInfoDescription, "en", "US", NULL, 0);
   if(size == 0) goto error;
@@ -104,7 +104,7 @@ char *get_profile_description(unsigned char *data, long data_size)
     size = cmsGetProfileInfo(p, cmsInfoDescription, "en", "US", wbuf, sizeof(wchar_t) * size);
     if(size == 0) goto error;
     utf8 = g_ucs4_to_utf8((gunichar *)wbuf, -1, NULL, NULL, NULL);
-    if(!utf8) goto error;
+    if(IS_NULL_PTR(utf8)) goto error;
     result = g_strdup(utf8);
   }
 
@@ -191,7 +191,7 @@ int main(int argc __attribute__((unused)), char *arg[] __attribute__((unused)))
     g_strlcpy(disp_name, ":0.0", sizeof(disp_name));
 
   Display *display = XOpenDisplay(disp_name);
-  if(display == NULL)
+  if(IS_NULL_PTR(display))
   {
     fprintf(stderr, "can't open display `%s'\n", XDisplayName(disp_name));
     return EXIT_FAILURE;
@@ -214,7 +214,7 @@ int main(int argc __attribute__((unused)), char *arg[] __attribute__((unused)))
       for(int crtc = 0; crtc < rsrc->ncrtc; crtc++)
       {
         XRRCrtcInfo *crtc_info = XRRGetCrtcInfo(display, rsrc, rsrc->crtcs[crtc]);
-        if(!crtc_info)
+        if(IS_NULL_PTR(crtc_info))
           continue;
 
         if(crtc_info->mode != None && crtc_info->noutput > 0)
@@ -247,7 +247,7 @@ int main(int argc __attribute__((unused)), char *arg[] __attribute__((unused)))
       {
         XRROutputInfo *output_info = NULL;
         XRRCrtcInfo *crtc_info = XRRGetCrtcInfo(display, rsrc, rsrc->crtcs[crtc]);
-        if(!crtc_info)
+        if(IS_NULL_PTR(crtc_info))
         {
           printf("can't get CRTC info for screen %d CRTC %d\n", screen, crtc);
           goto end;
@@ -277,7 +277,7 @@ int main(int argc __attribute__((unused)), char *arg[] __attribute__((unused)))
         }
 
         output_info = XRRGetOutputInfo(display, rsrc, crtc_info->outputs[output]);
-        if(!output_info)
+        if(IS_NULL_PTR(output_info))
         {
           printf("can't get output info for screen %d CRTC %d output %d\n", screen, crtc, output);
           goto end;
@@ -365,7 +365,7 @@ end:
 #ifdef HAVE_COLORD
   // and also the profile from colord
   CdClient *client = cd_client_new();
-  if(!client || !cd_client_connect_sync(client, NULL, NULL))
+  if(IS_NULL_PTR(client) || !cd_client_connect_sync(client, NULL, NULL))
   {
     fprintf(stderr, "error connecting to colord\n");
   }
@@ -420,7 +420,7 @@ end:
 #else // HAVE_COLORD
     char *colord_filename = monitor->colord_filename ? monitor->colord_filename : "(none)",
          *colord_description;
-    if(monitor->colord_filename == NULL
+    if(IS_NULL_PTR(monitor->colord_filename)
        || g_file_test(monitor->colord_filename, G_FILE_TEST_IS_REGULAR) == FALSE)
     {
       colord_description = g_strdup("(file not found)");
@@ -456,7 +456,7 @@ end:
     // print it
     printf("\n%s", monitor_name);
     if(message) printf("\t%s", message);
-    printf("\n\tX atom:\t%s (%zu bytes)\n\t\tdescription: %s\n", x_atom_name, monitor->x_atom_length,
+    printf("\n\tX atom:\t%s (%" G_GSIZE_FORMAT " bytes)\n\t\tdescription: %s\n", x_atom_name, monitor->x_atom_length,
            x_atom_description);
 #ifdef HAVE_COLORD
     printf("\tcolord:\t\"%s\"\n\t\tdescription: %s\n", colord_filename, colord_description);

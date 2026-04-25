@@ -99,7 +99,7 @@ int default_group()
   return IOP_GROUP_COLOR;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
 }
@@ -114,12 +114,11 @@ const char **description(struct dt_iop_module_t *self)
                                       _("non-linear, Lab, display-referred"));
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
-                                         ivoid, ovoid, roi_in, roi_out))
-    return 0; // image has been copied through to output and module's trouble flag has been updated
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
 
   const dt_iop_vibrance_data_t *const d = (dt_iop_vibrance_data_t *)piece->data;
   const float *const restrict in = (float *)ivoid;
@@ -127,13 +126,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
   const float amount = (d->amount * 0.01);
   const int npixels = roi_out->height * roi_out->width;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(amount, npixels) \
-  dt_omp_sharedconst(in, out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int k = 0; k < 4 * npixels; k += 4)
   {
     /* saturation weight 0 - 1 */
@@ -141,9 +134,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     const float ls = 1.0f - ((amount * sw) * .25f);
     const float ss = 1.0f + (amount * sw);
     const dt_aligned_pixel_t weights = { ls, ss, ss, 1.0f };
-#ifdef _OPENMP
-#pragma omp simd aligned(in, out : 16)
-#endif
+    __OMP_SIMD__(aligned(in, out : 16))
     for (int c = 0; c < 4; c++)
     {
       out[k + c] = in[k + c] * weights[c];

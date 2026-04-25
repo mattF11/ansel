@@ -70,8 +70,6 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "common/extra_optimizations.h"
-
 #include "views/view.h"
 #include "bauhaus/bauhaus.h"
 #include "common/collection.h"
@@ -109,6 +107,7 @@
 static void dt_view_manager_load_modules(dt_view_manager_t *vm);
 static int dt_view_load_module(void *v, const char *libname, const char *module_name);
 static void dt_view_unload_module(dt_view_t *view);
+static int32_t _view_surface_fetch_job_run(dt_job_t *job);
 
 void dt_view_manager_init(dt_view_manager_t *vm)
 {
@@ -192,10 +191,6 @@ static int dt_view_load_module(void *v, const char *libname, const char *module_
   module->vscroll_pos = module->hscroll_pos = 0.0;
   module->height = module->width = 100; // set to non-insane defaults before first expose/configure.
 
-#ifdef USE_LUA
-  dt_lua_register_view(darktable.lua_state.state, module);
-#endif
-
   if(module->init) module->init(module);
 
   return 0;
@@ -251,7 +246,7 @@ int dt_view_manager_switch(dt_view_manager_t *vm, const char *view_name)
         break;
       }
     }
-    if(!new_view) return 1; // the requested view doesn't exist
+    if(IS_NULL_PTR(new_view)) return 1; // the requested view doesn't exist
   }
 
   return dt_view_manager_switch_by_view(vm, new_view);
@@ -281,7 +276,7 @@ int dt_view_manager_switch_by_view(dt_view_manager_t *vm, const dt_view_t *nv)
   dt_undo_clear(darktable.undo, DT_UNDO_ALL);
 
   /* Special case when entering nothing (just before leaving dt) */
-  if(!new_view)
+  if(IS_NULL_PTR(new_view))
   {
     if(old_view)
     {
@@ -313,8 +308,8 @@ int dt_view_manager_switch_by_view(dt_view_manager_t *vm, const dt_view_t *nv)
     return 0;
   }
 
-  // invariant: new_view != NULL after this point
-  assert(new_view != NULL);
+  // invariant: !IS_NULL_PTR(new_view) after this point
+  assert(!IS_NULL_PTR(new_view));
 
   if(new_view->try_enter)
   {
@@ -367,7 +362,7 @@ int dt_view_manager_switch_by_view(dt_view_manager_t *vm, const dt_view_t *nv)
       GtkWidget *w = dt_lib_gui_get_expander(plugin);
 
       /* if we didn't get an expander let's add the widget */
-      if(!w) w = plugin->widget;
+      if(IS_NULL_PTR(w)) w = plugin->widget;
 
       dt_gui_add_help_link(w, dt_get_help_url(plugin->plugin_name));
       // some plugins help links depend on the view
@@ -434,7 +429,7 @@ int dt_view_manager_switch_by_view(dt_view_manager_t *vm, const dt_view_t *nv)
 
 const char *dt_view_manager_name(dt_view_manager_t *vm)
 {
-  if(!vm->current_view) return "";
+  if(IS_NULL_PTR(vm->current_view)) return "";
   if(vm->current_view->name)
     return vm->current_view->name(vm->current_view);
   else
@@ -444,7 +439,7 @@ const char *dt_view_manager_name(dt_view_manager_t *vm)
 void dt_view_manager_expose(dt_view_manager_t *vm, cairo_t *cr, int32_t width, int32_t height,
                             int32_t pointerx, int32_t pointery)
 {
-  if(!vm->current_view)
+  if(IS_NULL_PTR(vm->current_view))
   {
     dt_gui_gtk_set_source_rgb(cr, DT_GUI_COLOR_BG);
     cairo_paint(cr);
@@ -484,13 +479,13 @@ void dt_view_manager_expose(dt_view_manager_t *vm, cairo_t *cr, int32_t width, i
 
 void dt_view_manager_reset(dt_view_manager_t *vm)
 {
-  if(!vm->current_view) return;
+  if(IS_NULL_PTR(vm->current_view)) return;
   if(vm->current_view->reset) vm->current_view->reset(vm->current_view);
 }
 
 void dt_view_manager_mouse_leave(dt_view_manager_t *vm)
 {
-  if(!vm->current_view) return;
+  if(IS_NULL_PTR(vm->current_view)) return;
   dt_view_t *v = vm->current_view;
 
   /* lets check if any plugins want to handle mouse move */
@@ -512,13 +507,13 @@ void dt_view_manager_mouse_leave(dt_view_manager_t *vm)
 
 void dt_view_manager_mouse_enter(dt_view_manager_t *vm)
 {
-  if(!vm->current_view) return;
+  if(IS_NULL_PTR(vm->current_view)) return;
   if(vm->current_view->mouse_enter) vm->current_view->mouse_enter(vm->current_view);
 }
 
 void dt_view_manager_mouse_moved(dt_view_manager_t *vm, double x, double y, double pressure, int which)
 {
-  if(!vm->current_view) return;
+  if(IS_NULL_PTR(vm->current_view)) return;
   dt_view_t *v = vm->current_view;
 
   /* lets check if any plugins want to handle mouse move */
@@ -540,7 +535,7 @@ void dt_view_manager_mouse_moved(dt_view_manager_t *vm, double x, double y, doub
 
 int dt_view_manager_key_pressed(dt_view_manager_t *vm, GdkEventKey *event)
 {
-  if(!vm->current_view) return 0;
+  if(IS_NULL_PTR(vm->current_view)) return 0;
   dt_view_t *v = vm->current_view;
 
   /* lets check if any plugins want to handle button press */
@@ -567,7 +562,7 @@ int dt_view_manager_key_pressed(dt_view_manager_t *vm, GdkEventKey *event)
 
 int dt_view_manager_button_released(dt_view_manager_t *vm, double x, double y, int which, uint32_t state)
 {
-  if(!vm->current_view) return 0;
+  if(IS_NULL_PTR(vm->current_view)) return 0;
   dt_view_t *v = vm->current_view;
 
   /* lets check if any plugins want to handle button press */
@@ -595,7 +590,7 @@ int dt_view_manager_button_released(dt_view_manager_t *vm, double x, double y, i
 int dt_view_manager_button_pressed(dt_view_manager_t *vm, double x, double y, double pressure, int which,
                                    int type, uint32_t state)
 {
-  if(!vm->current_view) return 0;
+  if(IS_NULL_PTR(vm->current_view)) return 0;
   dt_view_t *v = vm->current_view;
 
   /* Reset Gtk focus */
@@ -638,14 +633,401 @@ void dt_view_manager_configure(dt_view_manager_t *vm, int width, int height)
 
 int dt_view_manager_scrolled(dt_view_manager_t *vm, double x, double y, int up, int state, int delta_y)
 {
-  if(!vm->current_view) return FALSE;
+  if(IS_NULL_PTR(vm->current_view)) return FALSE;
   if(vm->current_view->scrolled)
     return vm->current_view->scrolled(vm->current_view, x, y, up, state, delta_y);
   return 0;
 }
 
-dt_view_surface_value_t dt_view_image_get_surface(int32_t imgid, int width, int height, cairo_surface_t **surface,
-                                                  int zoom)
+typedef struct dt_view_surface_fetch_job_t
+{
+  dt_view_image_surface_fetcher_t *fetcher;
+  guint request_id;
+  int32_t imgid;
+  int width;
+  int height;
+  int zoom;
+} dt_view_surface_fetch_job_t;
+
+typedef struct dt_view_surface_fetch_commit_t
+{
+  dt_view_image_surface_fetcher_t *fetcher;
+  guint request_id;
+  int32_t imgid;
+  int width;
+  int height;
+  int zoom;
+  cairo_surface_t *surface;
+  dt_view_surface_value_t result;
+} dt_view_surface_fetch_commit_t;
+
+static dt_view_surface_value_t _view_image_get_surface_internal(int32_t imgid, int width, int height,
+                                                                cairo_surface_t **surface, int zoom,
+                                                                dt_atomic_int *shutdown);
+
+static void _destroy_surface(cairo_surface_t **surface)
+{
+  if(surface && *surface && cairo_surface_get_reference_count(*surface) > 0)
+    cairo_surface_destroy(*surface);
+  if(surface) *surface = NULL;
+}
+
+static gboolean _view_surface_matches(const dt_view_image_surface_fetcher_t *fetcher, cairo_surface_t **target,
+                                      const int32_t imgid, const int width, const int height, const int zoom)
+{
+  return target && *target && fetcher->cached_imgid == imgid && fetcher->cached_width == width
+         && fetcher->cached_height == height && fetcher->cached_zoom == zoom;
+}
+
+static void _enqueue_surface_fetch(dt_view_image_surface_fetcher_t *fetcher)
+{
+  dt_view_surface_fetch_job_t *params = g_malloc0(sizeof(dt_view_surface_fetch_job_t));
+  params->fetcher = fetcher;
+  params->request_id = fetcher->request_id;
+  params->imgid = fetcher->imgid;
+  params->width = fetcher->width;
+  params->height = fetcher->height;
+  params->zoom = fetcher->zoom;
+
+  dt_job_t *job = dt_control_job_create(&_view_surface_fetch_job_run, "fetch image surface %i", params->imgid);
+  if(IS_NULL_PTR(job))
+  {
+    g_free(params);
+    return;
+  }
+
+  dt_atomic_set_int(&fetcher->shutdown, FALSE);
+  dt_control_job_set_params_with_size(job, params, sizeof(dt_view_surface_fetch_job_t), g_free);
+  fetcher->job_queued = TRUE;
+  fetcher->queued_request_id = fetcher->request_id;
+  dt_control_add_job(darktable.control, DT_JOB_QUEUE_SYSTEM_FG, job);
+}
+
+static gboolean _view_surface_commit_main(gpointer user_data)
+{
+  dt_view_surface_fetch_commit_t *commit = (dt_view_surface_fetch_commit_t *)user_data;
+  dt_view_image_surface_fetcher_t *fetcher = commit->fetcher;
+
+  gboolean queue_redraw = FALSE;
+  gboolean enqueue_next = FALSE;
+
+  dt_pthread_mutex_lock(&fetcher->lock);
+  fetcher->commit_pending = FALSE;
+  pthread_cond_broadcast(&fetcher->cond);
+
+  if(!fetcher->destroying && commit->request_id == fetcher->request_id && commit->result == DT_VIEW_SURFACE_OK)
+  {
+    _destroy_surface(fetcher->target);
+    if(fetcher->target) *fetcher->target = commit->surface;
+    commit->surface = NULL;
+    fetcher->cached_imgid = commit->imgid;
+    fetcher->cached_width = commit->width;
+    fetcher->cached_height = commit->height;
+    fetcher->cached_zoom = commit->zoom;
+    queue_redraw = TRUE;
+  }
+
+  if(!fetcher->destroying && !fetcher->job_queued && fetcher->request_id != commit->request_id)
+    enqueue_next = TRUE;
+  dt_pthread_mutex_unlock(&fetcher->lock);
+
+  if(commit->surface) cairo_surface_destroy(commit->surface);
+
+  if(queue_redraw)
+  {
+    GtkWidget *widget = g_weak_ref_get(&fetcher->widget_ref);
+    if(widget)
+    {
+      if(widget == dt_ui_center(darktable.gui->ui))
+      {
+        dt_control_queue_redraw_center();
+      }
+      else
+      {
+        gtk_widget_queue_draw(widget);
+        GdkWindow *window = gtk_widget_get_window(widget);
+        if(window)
+        {
+          G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+          gdk_window_process_updates(window, TRUE);
+          G_GNUC_END_IGNORE_DEPRECATIONS
+        }
+      }
+      g_object_unref(widget);
+    }
+  }
+
+  if(enqueue_next)
+  {
+    dt_pthread_mutex_lock(&fetcher->lock);
+    if(!fetcher->destroying && !fetcher->job_queued && !fetcher->commit_pending)
+      _enqueue_surface_fetch(fetcher);
+    dt_pthread_mutex_unlock(&fetcher->lock);
+  }
+
+  g_free(commit);
+  return G_SOURCE_REMOVE;
+}
+
+static int32_t _view_surface_fetch_job_run(dt_job_t *job)
+{
+  dt_view_surface_fetch_job_t *params = dt_control_job_get_params(job);
+  dt_view_image_surface_fetcher_t *fetcher = params->fetcher;
+
+  dt_pthread_mutex_lock(&fetcher->lock);
+  const gboolean stale = fetcher->destroying || params->request_id != fetcher->request_id;
+  const gboolean cancelled = dt_control_job_get_state(job) == DT_JOB_STATE_CANCELLED;
+  if(stale || cancelled)
+  {
+    if(fetcher->job_queued && fetcher->queued_request_id == params->request_id) fetcher->job_queued = FALSE;
+
+    // A stale request means the widget parameters changed while the current
+    // job was queued or running. If no newer request is already tracked
+    // locally, start the latest one immediately from the current fetcher
+    // state instead of trying to reason about queue-owned job objects.
+    if(!fetcher->destroying && params->request_id != fetcher->request_id && !fetcher->job_queued
+       && !fetcher->commit_pending)
+      _enqueue_surface_fetch(fetcher);
+
+    pthread_cond_broadcast(&fetcher->cond);
+    dt_pthread_mutex_unlock(&fetcher->lock);
+    return 0;
+  }
+  dt_pthread_mutex_unlock(&fetcher->lock);
+
+  cairo_surface_t *surface = NULL;
+  const dt_view_surface_value_t result =
+      _view_image_get_surface_internal(params->imgid, params->width, params->height, &surface, params->zoom,
+                                       &fetcher->shutdown);
+
+  dt_view_surface_fetch_commit_t *commit = g_malloc0(sizeof(dt_view_surface_fetch_commit_t));
+  commit->fetcher = fetcher;
+  commit->request_id = params->request_id;
+  commit->imgid = params->imgid;
+  commit->width = params->width;
+  commit->height = params->height;
+  commit->zoom = params->zoom;
+  commit->surface = surface;
+  commit->result = result;
+
+  dt_pthread_mutex_lock(&fetcher->lock);
+  if(fetcher->job_queued && fetcher->queued_request_id == params->request_id) fetcher->job_queued = FALSE;
+  fetcher->commit_pending = TRUE;
+  pthread_cond_broadcast(&fetcher->cond);
+  dt_pthread_mutex_unlock(&fetcher->lock);
+
+  g_main_context_invoke_full(g_main_context_default(), G_PRIORITY_DEFAULT, _view_surface_commit_main,
+                             commit, NULL);
+  g_main_context_wakeup(g_main_context_default());
+  return 0;
+}
+
+void dt_view_image_surface_fetcher_init(dt_view_image_surface_fetcher_t *fetcher)
+{
+  memset(fetcher, 0, sizeof(dt_view_image_surface_fetcher_t));
+  dt_pthread_mutex_init(&fetcher->lock, NULL);
+  pthread_cond_init(&fetcher->cond, NULL);
+  g_weak_ref_init(&fetcher->widget_ref, NULL);
+  fetcher->cached_imgid = UNKNOWN_IMAGE;
+  fetcher->imgid = UNKNOWN_IMAGE;
+  dt_atomic_set_int(&fetcher->shutdown, FALSE);
+}
+
+void dt_view_image_surface_fetcher_cleanup(dt_view_image_surface_fetcher_t *fetcher)
+{
+  dt_pthread_mutex_lock(&fetcher->lock);
+  fetcher->destroying = TRUE;
+  dt_atomic_set_int(&fetcher->shutdown, TRUE);
+  while(fetcher->job_queued)
+    dt_pthread_cond_wait(&fetcher->cond, &fetcher->lock);
+  dt_pthread_mutex_unlock(&fetcher->lock);
+
+  for(;;)
+  {
+    dt_pthread_mutex_lock(&fetcher->lock);
+    const gboolean pending = fetcher->commit_pending;
+    dt_pthread_mutex_unlock(&fetcher->lock);
+    if(!pending) break;
+    g_main_context_iteration(g_main_context_default(), TRUE);
+  }
+
+  _destroy_surface(fetcher->target);
+  g_weak_ref_clear(&fetcher->widget_ref);
+  pthread_cond_destroy(&fetcher->cond);
+  dt_pthread_mutex_destroy(&fetcher->lock);
+}
+
+void dt_view_image_surface_fetcher_invalidate(dt_view_image_surface_fetcher_t *fetcher, cairo_surface_t **target)
+{
+  dt_pthread_mutex_lock(&fetcher->lock);
+  fetcher->target = target;
+  fetcher->request_id++;
+  dt_atomic_set_int(&fetcher->shutdown, TRUE);
+  fetcher->cached_imgid = UNKNOWN_IMAGE;
+  fetcher->cached_width = 0;
+  fetcher->cached_height = 0;
+  fetcher->cached_zoom = 0;
+  dt_pthread_mutex_unlock(&fetcher->lock);
+
+  _destroy_surface(target);
+}
+
+dt_view_surface_value_t dt_view_image_get_surface_async(dt_view_image_surface_fetcher_t *fetcher, int32_t imgid,
+                                                        int width, int height, cairo_surface_t **target,
+                                                        GtkWidget *widget, int zoom)
+{
+  if(IS_NULL_PTR(fetcher) || !target || !widget || width < 2 || height < 2 || imgid <= UNKNOWN_IMAGE)
+    return DT_VIEW_SURFACE_KO;
+
+  dt_view_surface_value_t ret = DT_VIEW_SURFACE_KO;
+
+  dt_pthread_mutex_lock(&fetcher->lock);
+  const gboolean changed = fetcher->target != target || fetcher->imgid != imgid || fetcher->width != width
+                           || fetcher->height != height || fetcher->zoom != zoom;
+  const gboolean exact_match = _view_surface_matches(fetcher, target, imgid, width, height, zoom);
+  const gboolean fallback_match = target && *target && fetcher->cached_imgid == imgid
+                                  && fetcher->cached_zoom == zoom;
+  fetcher->target = target;
+  fetcher->imgid = imgid;
+  fetcher->width = width;
+  fetcher->height = height;
+  fetcher->zoom = zoom;
+  g_weak_ref_set(&fetcher->widget_ref, widget);
+
+  if(exact_match || fallback_match)
+    ret = DT_VIEW_SURFACE_OK;
+
+  if(changed && !exact_match && !fetcher->destroying && !fetcher->job_queued
+     && !fetcher->commit_pending)
+  {
+    fetcher->request_id++;
+    _enqueue_surface_fetch(fetcher);
+  }
+  else if(changed && !exact_match && !fetcher->destroying)
+  {
+    fetcher->request_id++;
+    dt_atomic_set_int(&fetcher->shutdown, TRUE);
+  }
+  dt_pthread_mutex_unlock(&fetcher->lock);
+
+  return ret;
+}
+
+cairo_surface_t *dt_cairo_rescale_surface(cairo_surface_t *src, int dst_w, int dst_h)
+{
+  if(!src || dst_w <= 0 || dst_h <= 0)
+      return NULL;
+
+  const int src_w = cairo_image_surface_get_width(src);
+  const int src_h = cairo_image_surface_get_height(src);
+
+  cairo_surface_t *dst =
+      cairo_image_surface_create(CAIRO_FORMAT_RGB24, dst_w, dst_h);
+
+  cairo_t *cr = cairo_create(dst);
+
+  // clear (important if aspect ratio leaves borders)
+  cairo_set_source_rgba(cr, 0, 0, 0, 0);
+  cairo_paint(cr);
+
+  double scale_x = (double)dst_w / src_w;
+  double scale_y = (double)dst_h / src_h;
+
+  double sx = scale_x;
+  double sy = scale_y;
+  double tx = 0.0;
+  double ty = 0.0;
+
+
+  double s = MIN(scale_x, scale_y);
+  sx = sy = s;
+
+  tx = (dst_w - src_w * s) * 0.5;
+  ty = (dst_h - src_h * s) * 0.5;
+  
+
+  cairo_translate(cr, tx, ty);
+  cairo_scale(cr, sx, sy);
+
+  cairo_set_source_surface(cr, src, 0, 0);
+
+  cairo_pattern_t *pat = cairo_get_source(cr);
+  cairo_pattern_set_filter(pat, CAIRO_FILTER_BEST);
+  cairo_pattern_set_extend(pat, CAIRO_EXTEND_PAD);
+
+  cairo_paint(cr);
+
+  cairo_destroy(cr);
+
+  return dst;
+}
+
+void dt_cairo_sharpen_surface_rgb24(cairo_surface_t *surface)
+{
+  if(!surface) return;
+
+  cairo_surface_flush(surface);
+
+  unsigned char *data = cairo_image_surface_get_data(surface);
+  int width  = cairo_image_surface_get_width(surface);
+  int height = cairo_image_surface_get_height(surface);
+  int stride = cairo_image_surface_get_stride(surface);
+
+  // Copy original buffer
+  unsigned char *copy = dt_alloc_align(stride * height);
+  memcpy(copy, data, stride * height);
+
+  // Kernel weights
+  const float k_center =  4.0f;
+  const float k_edge   = -0.5f;
+  const float k_corner = -0.25f;
+
+  // Unsharp mask coeffs
+  const float amount = 0.05f;
+  const float amount_inv = 1.f - amount;
+
+  __OMP_PARALLEL_FOR__(collapse(2))
+  for(int y = 1; y < height - 1; y++)
+    for(int x = 1; x < width - 1; x++)
+    {
+      int idx = y * stride + x * 4;
+
+      for(int c = 0; c < 3; c++) // B, G, R
+      {
+        int i = idx + c;
+
+        float v =
+          k_center * copy[i]
+
+          + k_edge * (
+              copy[i - 4] +                 // left
+              copy[i + 4] +                 // right
+              copy[i - stride] +            // top
+              copy[i + stride]              // bottom
+          )
+
+          + k_corner * (
+              copy[i - stride - 4] +        // top-left
+              copy[i - stride + 4] +        // top-right
+              copy[i + stride - 4] +        // bottom-left
+              copy[i + stride + 4]          // bottom-right
+          );
+
+        // Unsharp-style recombination
+        const float out = amount_inv * copy[i] + amount * v;
+        data[i] = (unsigned char)(CLAMP(roundf(out), 0.f, 255.f));
+      }
+
+      data[idx + 3] = copy[idx + 3];
+    }
+
+  dt_free(copy);
+  cairo_surface_mark_dirty(surface);
+}
+
+static dt_view_surface_value_t _view_image_get_surface_internal(int32_t imgid, int width, int height,
+                                                                cairo_surface_t **surface, int zoom,
+                                                                dt_atomic_int *shutdown)
 {
   double tt = 0;
   if((darktable.unmuted & (DT_DEBUG_LIGHTTABLE | DT_DEBUG_PERF)) == (DT_DEBUG_LIGHTTABLE | DT_DEBUG_PERF))
@@ -664,7 +1046,7 @@ dt_view_surface_value_t dt_view_image_get_surface(int32_t imgid, int width, int 
 
   if(zoom == DT_THUMBTABLE_ZOOM_FIT)
   {
-    mip = dt_mipmap_cache_get_matching_size(cache, ceilf(width * darktable.gui->ppd), ceilf(height * darktable.gui->ppd));
+    mip = dt_mipmap_cache_get_matching_size(cache, ceilf(width * darktable.gui->ppd), ceilf(height * darktable.gui->ppd), imgid);
   }
   else
   {
@@ -674,9 +1056,9 @@ dt_view_surface_value_t dt_view_image_get_surface(int32_t imgid, int width, int 
     dt_image_cache_read_release(darktable.image_cache, image);
 
     if(zoom == DT_THUMBTABLE_ZOOM_HALF)
-      mip = dt_mipmap_cache_get_matching_size(cache, ceilf(full_width / 2.f ), ceilf(full_height / 2.f));
+      mip = dt_mipmap_cache_get_matching_size(cache, ceilf(full_width / 2.f ), ceilf(full_height / 2.f), imgid);
     else if(zoom >= DT_THUMBTABLE_ZOOM_FULL)
-      mip = dt_mipmap_cache_get_matching_size(cache, full_width, full_height);
+      mip = dt_mipmap_cache_get_matching_size(cache, full_width, full_height, imgid);
   }
 
   // Can't have float32 types here
@@ -684,12 +1066,12 @@ dt_view_surface_value_t dt_view_image_get_surface(int32_t imgid, int width, int 
 
   // if needed, we load the mimap buffer
   dt_mipmap_buffer_t buf;
-  dt_mipmap_cache_get(cache, &buf, imgid, mip, DT_MIPMAP_BLOCKING, 'r');
+  dt_mipmap_cache_get_with_shutdown(cache, &buf, imgid, mip, DT_MIPMAP_BLOCKING, 'r', shutdown);
   const int buf_wd = buf.width;
   const int buf_ht = buf.height;
 
   // if we don't get buffer, no image is available at the moment
-  if(!buf.buf)
+  if(IS_NULL_PTR(buf.buf))
   {
     dt_mipmap_cache_release(darktable.mipmap_cache, &buf);
     return DT_VIEW_SURFACE_KO;
@@ -722,7 +1104,7 @@ dt_view_surface_value_t dt_view_image_get_surface(int32_t imgid, int width, int 
 
   // we transfer cached image on a cairo_surface (with colorspace transform if needed)
   uint8_t *rgbbuf = (uint8_t *)calloc((size_t)buf_wd * buf_ht * 4, sizeof(uint8_t));
-  if(!rgbbuf)
+  if(IS_NULL_PTR(rgbbuf))
   {
     dt_mipmap_cache_release(darktable.mipmap_cache, &buf);
     return ret;
@@ -730,34 +1112,40 @@ dt_view_surface_value_t dt_view_image_get_surface(int32_t imgid, int width, int 
 
   cmsHTRANSFORM transform = NULL;
   pthread_rwlock_rdlock(&darktable.color_profiles->xprofile_lock);
+  gboolean alloc = FALSE;
 
   // we only color manage when a thumbnail is sRGB or AdobeRGB. everything else just gets dumped to the
   // screen
-  if(buf.color_space == DT_COLORSPACE_SRGB
-      && darktable.color_profiles->transform_srgb_to_display)
+  if(buf.color_space == DT_COLORSPACE_SRGB)
   {
     transform = darktable.color_profiles->transform_srgb_to_display;
   }
-  else if(buf.color_space == DT_COLORSPACE_ADOBERGB
-          && darktable.color_profiles->transform_adobe_rgb_to_display)
+  else if(buf.color_space == DT_COLORSPACE_ADOBERGB)
   {
     transform = darktable.color_profiles->transform_adobe_rgb_to_display;
   }
-  // else if(buf.color_space == DT_COLORSPACE_DISPLAY)
-  // no-op, buffer is already in display space, pass pixels through
-  // which happens because transform = NULL
+  else if(buf.color_space == DT_COLORSPACE_DISPLAY)
+  {
+    // no-op, buffer is already in display space, pass pixels through
+    // and simply swap R <-> B, which happens because transform = NULL
+  }
   else
   {
-    assert(buf.color_space == DT_COLORSPACE_DISPLAY);
+    alloc = TRUE;
+    transform = cmsCreateTransform(
+        dt_colorspaces_get_profile(buf.color_space, "", DT_PROFILE_DIRECTION_DISPLAY)->profile, TYPE_RGBA_8, 
+        dt_colorspaces_get_profile(DT_COLORSPACE_DISPLAY, "", DT_PROFILE_DIRECTION_DISPLAY)->profile, TYPE_BGRA_8,
+        INTENT_PERCEPTUAL, 0);
   }
 
   dt_colorspaces_transform_rgba8_to_bgra8(transform, buf.buf, rgbbuf, buf.width, buf.height);
+  if(alloc) cmsDeleteTransform(transform);
   pthread_rwlock_unlock(&darktable.color_profiles->xprofile_lock);
   dt_mipmap_cache_release(darktable.mipmap_cache, &buf);
 
   const int32_t stride = cairo_format_stride_for_width(CAIRO_FORMAT_RGB24, buf_wd);
   cairo_surface_t *tmp_surface = cairo_image_surface_create_for_data(rgbbuf, CAIRO_FORMAT_RGB24, buf_wd, buf_ht, stride);
-  if(!tmp_surface)
+  if(IS_NULL_PTR(tmp_surface))
   {
     dt_free(rgbbuf);
     return ret;
@@ -777,17 +1165,27 @@ dt_view_surface_value_t dt_view_image_get_surface(int32_t imgid, int width, int 
       || zoom == DT_THUMBTABLE_ZOOM_TWICE)
     cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_NEAREST);
   else
-    cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_GOOD);
+    cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BEST);
 
   cairo_paint(cr);
   cairo_surface_destroy(tmp_surface);
   cairo_destroy(cr);
 
+  /* The async/shared surface path returns pixel-sized Cairo image surfaces.
+   * Publish the widget PPD on the finished surface so GUI callers can place it
+   * in logical coordinates without re-deriving HiDPI scaling on every draw. */
+  cairo_surface_set_device_scale(*surface, darktable.gui->ppd, darktable.gui->ppd);
+
   // we consider skull as ok as the image hasn't to be reloaded
   if(buf_wd <= 8 && buf_ht <= 8)
+  {
     ret = DT_VIEW_SURFACE_OK;
+  }
   else
+  {
     ret = DT_VIEW_SURFACE_OK;
+    //dt_cairo_sharpen_surface_rgb24(*surface);
+  }
 
   dt_free(rgbbuf);
 
@@ -806,6 +1204,12 @@ dt_view_surface_value_t dt_view_image_get_surface(int32_t imgid, int width, int 
 
   // we consider skull as ok as the image hasn't to be reload
   return ret;
+}
+
+dt_view_surface_value_t dt_view_image_get_surface(int32_t imgid, int width, int height, cairo_surface_t **surface,
+                                                  int zoom)
+{
+  return _view_image_get_surface_internal(imgid, width, height, surface, zoom, NULL);
 }
 
 char* dt_view_extend_modes_str(const char * name, const gboolean is_hdr, const gboolean is_bw, const gboolean is_bw_flow)
@@ -856,7 +1260,7 @@ char* dt_view_extend_modes_str(const char * name, const gboolean is_hdr, const g
 
 void dt_view_active_images_reset(gboolean raise)
 {
-  if(!darktable.view_manager->active_images) return;
+  if(IS_NULL_PTR(darktable.view_manager->active_images)) return;
   g_list_free(darktable.view_manager->active_images);
   darktable.view_manager->active_images = NULL;
 
@@ -895,7 +1299,7 @@ GList *dt_view_active_images_get_all()
 
 int32_t dt_view_active_images_get_first()
 {
-  if(!darktable.view_manager->active_images) return -1;
+  if(IS_NULL_PTR(darktable.view_manager->active_images)) return -1;
   return GPOINTER_TO_INT(darktable.view_manager->active_images->data);
 }
 
@@ -971,10 +1375,10 @@ void dt_view_map_location_action(const dt_view_manager_t *vm, const int action)
     vm->proxy.map.location_action(vm->proxy.map.view, action);
 }
 
-void dt_view_map_drag_set_icon(const dt_view_manager_t *vm, GdkDragContext *context, const int32_t imgid, const int count)
+void dt_view_map_redraw(const dt_view_manager_t *vm)
 {
   if(vm->proxy.map.view)
-    vm->proxy.map.drag_set_icon(vm->proxy.map.view, context, imgid, count);
+    vm->proxy.map.redraw(vm->proxy.map.view);
 }
 
 #endif

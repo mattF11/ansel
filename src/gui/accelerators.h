@@ -89,8 +89,8 @@
  * shortcut handler, which is mostly a thin wrapper over Gtk native features.
  *
  * This allows us to decide in which order we process the several sets of shortcuts we maintain
- * (global, lighttable, darkroom). Global shortcuts are processed last, for all views.
- * Lighttable and darkroom shortcuts are processed first, for the relevant view.
+ * (global, lighttable, darkroom, map, print, slideshow). Global shortcuts are processed last,
+ * for all views. View-specific shortcuts are processed first, for the relevant view.
  * This lets user have different actions mapped to the same shortcuts, depending on view
  * but also have the view-centric shortcuts overwrite global ones if needed.
  *
@@ -107,11 +107,11 @@
  *   - The accel path of the parent is the root of the accel pathes of all children. We don't check if children widgets are children of the parent widget, because we attach actions to any callback/data pointer, not just widgets, so all that is abstracted and we only look at pathes.
  *   - The shortcut of the parent is declared with an `user_data` pointer reference (non NULL), that can be anything really as long as it is unique, belongs to the parent widget/module, and is constant over the lifetime of the parent and children.
  *
- * At any given time, we only pass the first-recorded `(GClosure *)` to the
- * shortcut handler/GtkAccelMap/GtkAccelGroup. It is only when an instance
- * is removed that we remove the corresponding parent and children, wherever
- * the are in the stack, and then rewire the shortcut with the first item,
- * because it's typically the global instance.
+ * At any given time, we only pass the last-recorded `(GClosure *)` to the
+ * shortcut handler/GtkAccelMap/GtkAccelGroup, so the most recently built GUI
+ * instance owns the shortcut. It is only when an instance is removed that we
+ * remove the corresponding parent and children, wherever they are in the
+ * stack, and then rewire the shortcut with the new last item.
  **/
 
 #pragma once
@@ -122,6 +122,9 @@ typedef struct dt_accels_t
   GtkAccelGroup *global_accels;     // used, aka init it and free it
   GtkAccelGroup *darkroom_accels;   // darkroom-specific accels
   GtkAccelGroup *lighttable_accels; // lighttable-specific accels
+  GtkAccelGroup *map_accels;        // map-specific accels
+  GtkAccelGroup *print_accels;      // print-specific accels
+  GtkAccelGroup *slideshow_accels;  // slideshow-specific accels
 
   // reference to the above group currently loaded in the main window. don't init,
   // don't free, only update
@@ -207,7 +210,7 @@ void dt_accels_connect_accels(dt_accels_t *accels);
  * override the global accels, in case they use the same keys.
  *
  * @param accels
- * @param group any of the following: "darkroom", "lighttable".
+ * @param group any of the following: "darkroom", "lighttable", "map", "print", "slideshow".
  */
 void dt_accels_connect_active_group(dt_accels_t *accels, const gchar *group);
 

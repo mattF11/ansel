@@ -163,18 +163,18 @@ gboolean dt_dev_history_item_update_from_params(dt_develop_t *dev, dt_dev_histor
                                                const gboolean enabled, const void *params, const int32_t params_size,
                                                const dt_develop_blend_params_t *blend_params, GList *forms)
 {
-  if(!hist || !module) return FALSE;
+  if(!hist || IS_NULL_PTR(module)) return FALSE;
 
   if(!hist->params)
   {
     hist->params = g_malloc0(module->params_size);
-    if(!hist->params) return FALSE;
+    if(IS_NULL_PTR(hist->params)) return FALSE;
   }
 
   if(!hist->blend_params)
   {
     hist->blend_params = g_malloc0(sizeof(dt_develop_blend_params_t));
-    if(!hist->blend_params) return FALSE;
+    if(IS_NULL_PTR(hist->blend_params)) return FALSE;
   }
 
   if(hist->forms)
@@ -187,6 +187,10 @@ gboolean dt_dev_history_item_update_from_params(dt_develop_t *dev, dt_dev_histor
   module->enabled = enabled;
   hist->enabled = enabled;
   hist->module = module;
+  hist->params_size = module->params_size;
+  hist->module_version = module->version();
+  hist->blendop_params_size = sizeof(dt_develop_blend_params_t);
+  hist->blendop_version = dt_develop_blend_version();
   hist->iop_order = module->iop_order;
   hist->multi_priority = module->multi_priority;
   g_strlcpy(hist->op_name, module->op, sizeof(hist->op_name));
@@ -195,7 +199,7 @@ gboolean dt_dev_history_item_update_from_params(dt_develop_t *dev, dt_dev_histor
   const void *src_params = params ? params : module->params;
   const int32_t src_size = params ? params_size : module->params_size;
   const int32_t sz = MIN(module->params_size, src_size);
-  if(src_params && hist->params && sz > 0) memcpy(hist->params, src_params, sz);
+  if(!IS_NULL_PTR(src_params) && hist->params && sz > 0) memcpy(hist->params, src_params, sz);
 
   const dt_develop_blend_params_t *src_blend = blend_params ? blend_params : module->blend_params;
   if(src_blend && hist->blend_params) memcpy(hist->blend_params, src_blend, sizeof(dt_develop_blend_params_t));
@@ -228,9 +232,9 @@ dt_iop_module_t *dt_dev_get_module_instance(dt_develop_t *dev, const char *op, c
 {
   const char *name = (multi_name && *multi_name) ? multi_name : NULL;
   dt_iop_module_t *module = dt_iop_get_module_by_instance_name(dev->iop, op, name);
-  if(!module && (!name || *name == '\0'))
+  if(IS_NULL_PTR(module) && (IS_NULL_PTR(name) || *name == '\0'))
     module = dt_iop_get_module_by_op_priority(dev->iop, op, multi_priority);
-  if(!module && (!name || *name == '\0'))
+  if(IS_NULL_PTR(module) && (IS_NULL_PTR(name) || *name == '\0'))
     module = dt_iop_get_module_by_op_priority(dev->iop, op, 0);
   return module;
 }
@@ -239,14 +243,14 @@ dt_iop_module_t *dt_dev_create_module_instance(dt_develop_t *dev, const char *op
                                                const int multi_priority, gboolean use_next_priority)
 {
   dt_iop_module_t *base = dt_iop_get_module_by_op_priority(dev->iop, op, 0);
-  if(!base) base = dt_iop_get_module_by_op_priority(dev->iop, op, -1);
-  if(!base) return NULL;
+  if(IS_NULL_PTR(base)) base = dt_iop_get_module_by_op_priority(dev->iop, op, -1);
+  if(IS_NULL_PTR(base)) return NULL;
 
   if((base->flags() & IOP_FLAGS_ONE_INSTANCE) == IOP_FLAGS_ONE_INSTANCE)
     return base;
 
   dt_iop_module_t *module = (dt_iop_module_t *)calloc(1, sizeof(dt_iop_module_t));
-  if(!module) return NULL;
+  if(IS_NULL_PTR(module)) return NULL;
 
   if(dt_iop_load_module(module, base->so, dev))
   {
@@ -289,8 +293,10 @@ int dt_dev_history_item_from_source_history_item(dt_develop_t *dev_dest, dt_deve
                                                  const dt_dev_history_item_t *hist_src, dt_iop_module_t *mod_dest,
                                                  dt_dev_history_item_t **out_hist)
 {
+  if(IS_NULL_PTR(hist_src) || IS_NULL_PTR(hist_src->module) || IS_NULL_PTR(mod_dest) || IS_NULL_PTR(out_hist)) return 1;
+
   dt_dev_history_item_t *hist = (dt_dev_history_item_t *)calloc(1, sizeof(dt_dev_history_item_t));
-  if(!hist) return 1;
+  if(IS_NULL_PTR(hist)) return 1;
 
   if(dt_masks_copy_used_forms_for_module(dev_dest, dev_src, hist_src->module))
   {
@@ -301,7 +307,7 @@ int dt_dev_history_item_from_source_history_item(dt_develop_t *dev_dest, dt_deve
   if(dt_iop_module_needs_mask_history(hist_src->module))
   {
     forms_snapshot = dt_masks_snapshot_current_forms(dev_dest, FALSE);
-    if(!forms_snapshot)
+    if(IS_NULL_PTR(forms_snapshot))
     {
       dt_dev_free_history_item(hist);
       return 1;
@@ -324,7 +330,7 @@ int dt_dev_merge_history_into_image(dt_develop_t *dev_src, int32_t dest_imgid, c
                                     const gboolean paste_instances)
 {
   if(dest_imgid <= 0) return 1;
-  if(!mod_list) return 0;
+  if(IS_NULL_PTR(mod_list)) return 0;
 
   dt_develop_t dev_dest = { 0 };
   dt_dev_init(&dev_dest, FALSE);
@@ -335,7 +341,7 @@ int dt_dev_merge_history_into_image(dt_develop_t *dev_src, int32_t dest_imgid, c
   if(ret_val == 0)
   {
     dt_dev_pop_history_items_ext(&dev_dest);
-    dt_dev_write_history(&dev_dest);
+    dt_dev_write_history(&dev_dest, FALSE);
   }
 
   dt_dev_cleanup(&dev_dest);
@@ -355,6 +361,7 @@ static dt_dev_history_item_t *_search_history_by_op(dt_develop_t *dev, const dt_
   for(GList *history = g_list_first(dev->history); history; history = g_list_next(history))
   {
     dt_dev_history_item_t *hist = (dt_dev_history_item_t *)(history->data);
+    if(!hist || !hist->module) continue;
 
     if(strcmp(hist->module->op, module->op) == 0)
     {
@@ -394,7 +401,7 @@ static dt_iop_module_t *_history_merge_resolve_dest_instance(dt_develop_t *dev_d
   if(_search_history_by_op(dev_dest, mod_src) == NULL)
   {
     module = dt_iop_get_module_by_op_priority(dev_dest->iop, mod_src->op, -1);
-    if(module)
+    if(!IS_NULL_PTR(module))
     {
       *reused_base = TRUE;
       return module;
@@ -413,7 +420,7 @@ int dt_history_merge_module_into_history(dt_develop_t *dev_dest, dt_develop_t *d
   gboolean created = FALSE;
   gboolean reused_base = FALSE;
   dt_iop_module_t *module = _history_merge_resolve_dest_instance(dev_dest, mod_src, &created, &reused_base);
-  if(!module) return 0;
+  if(IS_NULL_PTR(module)) return 0;
 
   if(mod_src->flags() & IOP_FLAGS_ONE_INSTANCE)
   {
@@ -459,17 +466,20 @@ GList *dt_history_duplicate(GList *hist)
 
     dt_iop_module_t *module = (old->module) ? old->module : dt_iop_get_module(old->op_name);
 
-    if(module && module->params_size > 0)
+    if(old->params && old->params_size > 0)
     {
-      new->params = malloc(module->params_size);
-      memcpy(new->params, old->params, module->params_size);
+      new->params = malloc(old->params_size);
+      memcpy(new->params, old->params, old->params_size);
     }
 
-    if(!module)
+    if(IS_NULL_PTR(module))
       fprintf(stderr, "[_duplicate_history] can't find base module for %s\n", old->op_name);
 
-    new->blend_params = malloc(sizeof(dt_develop_blend_params_t));
-    memcpy(new->blend_params, old->blend_params, sizeof(dt_develop_blend_params_t));
+    if(old->blend_params && old->blendop_params_size > 0)
+    {
+      new->blend_params = malloc(old->blendop_params_size);
+      memcpy(new->blend_params, old->blend_params, old->blendop_params_size);
+    }
 
     if(old->forms) new->forms = dt_masks_dup_forms_deep(old->forms, NULL);
 
@@ -511,7 +521,7 @@ static void _history_invalidate_cb(gpointer user_data, dt_undo_type_t type, dt_u
 
 void dt_dev_history_undo_invalidate_module(dt_iop_module_t *module)
 {
-  if(!module) return;
+  if(IS_NULL_PTR(module)) return;
   dt_undo_iterate_internal(darktable.undo, DT_UNDO_HISTORY, module, &_history_invalidate_cb);
 }
 
@@ -523,7 +533,7 @@ void dt_dev_history_undo_invalidate_module(dt_iop_module_t *module)
 static void _history_undo_data_free(gpointer data)
 {
   dt_undo_history_t *hist = (dt_undo_history_t *)data;
-  if(!hist) return;
+  if(IS_NULL_PTR(hist)) return;
   g_list_free_full(hist->before_snapshot, dt_dev_free_history_item);
   hist->before_snapshot = NULL;
   g_list_free_full(hist->after_snapshot, dt_dev_free_history_item);
@@ -552,7 +562,7 @@ static void _pop_undo(gpointer user_data, dt_undo_type_t type, dt_undo_data_t da
 
   dt_develop_t *dev = (dt_develop_t *)user_data;
   dt_undo_history_t *hist = (dt_undo_history_t *)data;
-  if(!dev || !hist) return;
+  if(IS_NULL_PTR(dev) || IS_NULL_PTR(hist)) return;
 
   GList *snapshot = (action == DT_ACTION_UNDO) ? hist->before_snapshot : hist->after_snapshot;
   const int history_end = (action == DT_ACTION_UNDO) ? hist->before_end : hist->after_end;
@@ -575,7 +585,6 @@ static void _pop_undo(gpointer user_data, dt_undo_type_t type, dt_undo_data_t da
   dt_dev_history_gui_update(dev);
   // TODO: check if we need to rebuild the full pipeline and do it only if needed
   dt_dev_history_pixelpipe_update(dev, TRUE);
-  dt_dev_history_notify_change(dev, dev->image_storage.id);
 
   if(dev->gui_module)
   {
@@ -596,7 +605,7 @@ static void _pop_undo(gpointer user_data, dt_undo_type_t type, dt_undo_data_t da
 
 void dt_dev_history_undo_start_record(dt_develop_t *dev)
 {
-  if(!dev) return;
+  if(IS_NULL_PTR(dev)) return;
   dt_pthread_rwlock_rdlock(&dev->history_mutex);
   dt_dev_history_undo_start_record_locked(dev);
   dt_pthread_rwlock_unlock(&dev->history_mutex);
@@ -604,7 +613,7 @@ void dt_dev_history_undo_start_record(dt_develop_t *dev)
 
 void dt_dev_history_undo_start_record_locked(dt_develop_t *dev)
 {
-  if(!dev) return;
+  if(IS_NULL_PTR(dev)) return;
 
   if(dev->undo_history_depth == 0)
   {
@@ -624,7 +633,7 @@ void dt_dev_history_undo_start_record_locked(dt_develop_t *dev)
 
 void dt_dev_history_undo_end_record(dt_develop_t *dev)
 {
-  if(!dev) return;
+  if(IS_NULL_PTR(dev)) return;
   dt_pthread_rwlock_rdlock(&dev->history_mutex);
   dt_dev_history_undo_end_record_locked(dev);
   dt_pthread_rwlock_unlock(&dev->history_mutex);
@@ -632,12 +641,12 @@ void dt_dev_history_undo_end_record(dt_develop_t *dev)
 
 void dt_dev_history_undo_end_record_locked(dt_develop_t *dev)
 {
-  if(!dev || dev->undo_history_depth <= 0) return;
+  if(IS_NULL_PTR(dev) || dev->undo_history_depth <= 0) return;
 
   dev->undo_history_depth--;
   if(dev->undo_history_depth != 0) return;
 
-  if(!dev->undo_history_before_snapshot) return;
+  if(IS_NULL_PTR(dev->undo_history_before_snapshot)) return;
 
   dt_undo_history_t *hist = malloc(sizeof(dt_undo_history_t));
   hist->before_snapshot = dev->undo_history_before_snapshot;
@@ -681,7 +690,17 @@ static void _remove_history_leaks(dt_develop_t *dev)
     // We need to use a while because we are going to dynamically remove entries at the end
     // of the list, so we can't know the number of iterations
     dt_dev_history_item_t *hist = (dt_dev_history_item_t *)(history->data);
-    dt_print(DT_DEBUG_HISTORY, "[dt_dev_add_history_item_ext] history item %s at %i is past history limit (%i)\n", hist->module->op, g_list_index(dev->history, hist), dt_dev_get_history_end_ext(dev) - 1);
+    if(IS_NULL_PTR(hist) || IS_NULL_PTR(hist->module))
+    {
+      dt_print(DT_DEBUG_HISTORY,
+               "[dt_dev_add_history_item_ext] archival history item %s at %i is past history limit (%i) and will be kept\n",
+               hist ? hist->op_name : "(null)", g_list_index(dev->history, hist), dt_dev_get_history_end_ext(dev) - 1);
+      history = g_list_next(history);
+      continue;
+    }
+
+    dt_print(DT_DEBUG_HISTORY, "[dt_dev_add_history_item_ext] history item %s at %i is past history limit (%i)\n",
+             hist->module->op, g_list_index(dev->history, hist), dt_dev_get_history_end_ext(dev) - 1);
 
     // In case user wants to insert new history items before auto-enabled or mandatory modules,
     // we forbid it, unless we already have at least one lower history entry.
@@ -694,6 +713,7 @@ static void _remove_history_leaks(dt_develop_t *dev)
           prior_history = g_list_previous(prior_history))
       {
         dt_dev_history_item_t *prior_hist = (dt_dev_history_item_t *)(prior_history->data);
+        if(!prior_hist || !prior_hist->module) continue;
         if(prior_hist->module->so == hist->module->so)
         {
           earlier_entry = TRUE;
@@ -730,12 +750,12 @@ gboolean dt_dev_add_history_item_ext(dt_develop_t *dev, struct dt_iop_module_t *
   // Since changing topology is expensive, we want to do it only when needed.
   gboolean add_new_pipe_node = FALSE;
 
-  if(!module)
+  if(IS_NULL_PTR(module))
   {
     // module = NULL means a mask was changed from the mask manager and that's where this function is called.
     // Find it now, even though it is not enabled and won't be.
     module = dt_masks_get_mask_manager(dev);
-    if(module)
+    if(!IS_NULL_PTR(module))
     {
       // Mask manager is an IOP that never processes pixel aka it's an ugly hack to record mask history
       force_new_item = FALSE;
@@ -758,7 +778,7 @@ gboolean dt_dev_add_history_item_ext(dt_develop_t *dev, struct dt_iop_module_t *
     dt_dev_history_item_t *last_item = (dt_dev_history_item_t *)last->data;
     dt_iop_module_t *last_module = last_item->module;
     new_is_old = dt_iop_check_modules_equal(module, last_module);
-    // add_new_pipe_node = FALSE
+    add_new_pipe_node = FALSE;
   }
   else
   {
@@ -766,7 +786,7 @@ gboolean dt_dev_add_history_item_ext(dt_develop_t *dev, struct dt_iop_module_t *
       dt_dev_history_get_last_item_by_module(dev->history, module, g_list_length(dev->history));
     // check if NULL first or prevous_item->module will segfault
     // We need to add a new pipeline node if:
-    add_new_pipe_node = (previous_item == NULL)                         // it's the first history entry for this module
+    add_new_pipe_node = (IS_NULL_PTR(previous_item))                         // it's the first history entry for this module
                         || (previous_item->enabled != module->enabled); // the previous history entry is disabled
     // if previous history entry is disabled and we don't have any other entry,
     // it is possible the pipeline will not have this node.
@@ -777,11 +797,8 @@ gboolean dt_dev_add_history_item_ext(dt_develop_t *dev, struct dt_iop_module_t *
   {
     // Create a new history entry
     hist = (dt_dev_history_item_t *)calloc(1, sizeof(dt_dev_history_item_t));
-
     dev->history = g_list_append(dev->history, hist);
-
     hist->num = g_list_index(dev->history, hist);
-
     dt_print(DT_DEBUG_HISTORY, "[dt_dev_add_history_item_ext] new history entry added for %s at position %i\n",
             module->name(), hist->num);
   }
@@ -849,18 +866,19 @@ uint64_t dt_dev_history_compute_hash(dt_develop_t *dev)
 
 void dt_dev_add_history_item_real(dt_develop_t *dev, dt_iop_module_t *module, gboolean enable, gboolean redraw)
 {
+  gboolean add_new_pipe_node = FALSE;
+
   dt_atomic_set_int(&dev->pipe->shutdown, TRUE);
   dt_atomic_set_int(&dev->preview_pipe->shutdown, TRUE);
-  if(dev->virtual_pipe) dt_atomic_set_int(&dev->virtual_pipe->shutdown, TRUE);
 
   dt_dev_undo_start_record(dev);
   dt_pthread_rwlock_wrlock(&dev->history_mutex);
-  dt_dev_add_history_item_ext(dev, module, enable, FALSE);
+  add_new_pipe_node = dt_dev_add_history_item_ext(dev, module, enable, FALSE);
   dt_pthread_rwlock_unlock(&dev->history_mutex);
   dt_dev_undo_end_record(dev);
 
   // Run the delayed post-commit actions if implemented
-  if(module && module->post_history_commit) module->post_history_commit(module);
+  if(!IS_NULL_PTR(module) && !IS_NULL_PTR(module->post_history_commit)) module->post_history_commit(module);
 
   // Figure out if the current history item includes masks/forms
   GList *last_history = g_list_nth(dev->history, dt_dev_get_history_end_ext(dev) - 1);
@@ -869,16 +887,25 @@ void dt_dev_add_history_item_real(dt_develop_t *dev, dt_iop_module_t *module, gb
   if(last_history)
   {
     hist = (dt_dev_history_item_t *)last_history->data;
-    has_forms = (hist->forms != NULL);
+    has_forms = (!IS_NULL_PTR(hist->forms));
   }
 
   // We don't update history hash in dt_dev_add_history_item_ext
   // because it can be called within loops, so that can be expensive.
   dt_dev_set_history_hash(dev, dt_dev_history_compute_hash(dev));
+  if(dev->image_storage.id > 0)
+  {
+    dt_image_t *cache_img = dt_image_cache_get(darktable.image_cache, dev->image_storage.id, 'w');
+    if(cache_img)
+    {
+      cache_img->history_hash = dt_dev_get_history_hash(dev);
+      dt_image_cache_write_release(darktable.image_cache, cache_img, DT_IMAGE_CACHE_RELAXED);
+    }
+  }
 
   // Recompute pipeline last
   const gboolean has_raster = module && dt_iop_module_has_raster_mask(module);
-  if(module && !(has_forms || has_raster))
+  if(!IS_NULL_PTR(module) && !(has_forms || has_raster) && !add_new_pipe_node)
   {
     // If we have a module and it doesn't use drawn or raster masks,
     // we only need to resync the top-most history item with pipeline
@@ -887,7 +914,12 @@ void dt_dev_add_history_item_real(dt_develop_t *dev, dt_iop_module_t *module, gb
   else
   {
     // We either don't have a module, meaning we have the mask manager, or
-    // we have a module and it uses masks (drawn or raster).
+    // we have a module and it uses masks (drawn or raster), or the current
+    // history commit changes the pipeline topology. The latter happens for
+    // example when enabling/disabling a module or when a module gets its first
+    // history entry. In all these cases, updating only the top-most synced
+    // history tail is insufficient because the set of active pipe nodes itself
+    // may differ from the previous run.
     // Because masks can affect several modules anywhere, not necessarily sequentially,
     // we need a full resync of all pipeline with history.
     // Note that the blendop params (thus their hash) references the raster mask provider
@@ -898,28 +930,31 @@ void dt_dev_add_history_item_real(dt_develop_t *dev, dt_iop_module_t *module, gb
 
   dt_dev_masks_list_update(dev);
 
-  if(darktable.gui && dev->gui_attached)
+  if(!IS_NULL_PTR(darktable.gui) && dev->gui_attached && !IS_NULL_PTR(module))
   {
-    if(module && (module->modify_roi_in || module->modify_roi_out))
+    // If module params change the geometry of the ROI,
+    // update immediately so we avoid drawing glitches.
+    if(module->modify_roi_in || module->modify_roi_out)
       dt_dev_get_thumbnail_size(dev);
     
-    if(module) 
-    { 
-      ++darktable.gui->reset; // don't run GUI callbacks when setting GUI state
-      dt_iop_gui_set_enable_button(module);
-      --darktable.gui->reset;
-    }
+
+    // Changing a parameter of a disabled module enables it,
+    // so update the GUI toggle state to reflect it.
+    ++darktable.gui->reset; // don't run GUI callbacks when setting GUI state
+    dt_iop_gui_set_enable_button(module);
+    --darktable.gui->reset;
   }
   
-  // Save history straight away
-  dt_dev_write_history(dev);
-  dt_dev_history_notify_change(dev, dev->image_storage.id);
+  // Save history straight away. Regular GUI edits are the only place where
+  // we accept an asynchronous write because `dev` is the long-lived darkroom
+  // context and there is no immediate DB read on the same control path.
+  dt_dev_write_history(dev, TRUE);
 }
 
 void dt_dev_free_history_item(gpointer data)
 {
   dt_dev_history_item_t *item = (dt_dev_history_item_t *)data;
-  if(!item) return; // nothing to free
+  if(IS_NULL_PTR(item)) return; // nothing to free
 
   dt_free(item->params);
   dt_free(item->blend_params);
@@ -930,7 +965,7 @@ void dt_dev_free_history_item(gpointer data)
 
 void dt_dev_history_free_history(dt_develop_t *dev)
 {
-  if(!dev->history) return;
+  if(IS_NULL_PTR(dev->history)) return;
   g_list_free_full(g_steal_pointer(&dev->history), dt_dev_free_history_item);
   dev->history = NULL;
 }
@@ -1036,13 +1071,18 @@ void dt_dev_pop_history_items_ext(dt_develop_t *dev)
   {
     dt_dev_history_item_t *hist = (dt_dev_history_item_t *)(history->data);
     dt_iop_module_t *module = hist->module;
-    _history_to_module(hist, module);
+    if(module) _history_to_module(hist, module);
+
+    // Update the reference to the form snapshot that doesn't belong
+    // conceptually to history items
     if(hist->forms) forms = hist->forms;
 
     history = g_list_next(history);
   }
 
+  // Nuke dev->forms and replace it with the last hist->forms in history.
   dt_masks_replace_current_forms(dev, forms);
+
   dt_ioppr_resync_pipeline(dev, 0, "dt_dev_pop_history_items_ext end", TRUE);
 
   // Reloading defaults might have changed the global history hash
@@ -1071,7 +1111,7 @@ void dt_dev_history_gui_update(dt_develop_t *dev)
   // hide/remove instances that are no longer referenced by any history item.
   // Note: this may also reorder modules in the GUI if needed.
   dt_pthread_rwlock_wrlock(&dev->history_mutex);
-  dt_dev_history_refresh_nodes_ext(dev, dev->iop, dev->history);
+  dt_dev_history_refresh_nodes_ext(dev, &dev->iop, dev->history);
   dt_pthread_rwlock_unlock(&dev->history_mutex);
 
   ++darktable.gui->reset;
@@ -1082,12 +1122,10 @@ void dt_dev_history_gui_update(dt_develop_t *dev)
     dt_iop_gui_update(mod);
   }
 
-  dt_dev_reorder_gui_module_list(dev);
-  dt_dev_modules_update_multishow(dev);
-  dt_dev_modulegroups_update_visibility(dev);
   dt_dev_masks_list_change(dev);
-
   --darktable.gui->reset;
+
+  dt_dev_signal_modules_moved(dev);
 }
 
 void dt_dev_history_pixelpipe_update(dt_develop_t *dev, gboolean rebuild)
@@ -1126,7 +1164,7 @@ guint dt_dev_mask_history_overload(GList *dev_history, guint threshold)
 
 void dt_dev_history_notify_change(dt_develop_t *dev, const int32_t imgid)
 {
-  if(!dev || imgid <= 0) return;
+  if(IS_NULL_PTR(dev) || imgid <= 0) return;
 
   if(darktable.gui && dev->gui_attached)
   {
@@ -1137,9 +1175,12 @@ void dt_dev_history_notify_change(dt_develop_t *dev, const int32_t imgid)
                      imgid, states);
   }
 
+  // Remove all old images
+  dt_mipmap_cache_remove(darktable.mipmap_cache, imgid, TRUE);
+
   // Don't refresh the thumbnail if we are in darkroom
   // Spawning another export thread will likely slow-down the current one.
-  if(darktable.gui && dev != darktable.develop)
+  if(darktable.gui)
     dt_thumbtable_refresh_thumbnail(darktable.gui->ui->thumbtable_lighttable, imgid, TRUE);
 }
 
@@ -1147,11 +1188,21 @@ void dt_dev_history_notify_change(dt_develop_t *dev, const int32_t imgid)
 // helper used to synch a single history item with db
 int dt_dev_write_history_item(const int32_t imgid, dt_dev_history_item_t *h, int32_t num)
 {
-  dt_print(DT_DEBUG_HISTORY, "[dt_dev_write_history_item] writing history for module %s (%s) at pipe position %i for image %i...\n", h->op_name, h->multi_name, h->iop_order, imgid);
+  if(IS_NULL_PTR(h)) return 1;
 
-  dt_history_db_write_history_item(imgid, num, h->module->op, h->params, h->module->params_size, h->module->version(),
-                                   h->enabled != 0, h->blend_params, sizeof(dt_develop_blend_params_t),
-                                   dt_develop_blend_version(), h->multi_priority, h->multi_name);
+  dt_print(DT_DEBUG_HISTORY, "[dt_dev_write_history_item] writing history for module %s (%s) (enabled %i) at pipe position %i for image %i\n", 
+                                                    h->op_name, h->multi_name, h->enabled, h->iop_order, imgid);
+
+  const char *operation = h->module ? h->module->op : h->op_name;
+  const int params_size = h->module ? h->module->params_size : h->params_size;
+  const int module_version = h->module ? h->module->version() : h->module_version;
+  const int blendop_params_size
+      = h->blend_params ? (h->blendop_params_size > 0 ? h->blendop_params_size : (int)sizeof(dt_develop_blend_params_t)) : 0;
+  const int blendop_version
+      = h->blend_params ? (h->blendop_version > 0 ? h->blendop_version : dt_develop_blend_version()) : 0;
+
+  dt_history_db_write_history_item(imgid, num, operation, h->params, params_size, module_version, h->enabled != 0,
+                                   h->blend_params, blendop_params_size, blendop_version, h->multi_priority, h->multi_name);
 
   // write masks (if any)
   if(h->forms)
@@ -1177,7 +1228,7 @@ void dt_dev_history_cleanup(void)
 void dt_dev_write_history_ext(dt_develop_t *dev, const int32_t imgid)
 {
   dt_image_t *cache_img = dt_image_cache_get(darktable.image_cache, imgid, 'w');
-  if(!cache_img) return;
+  if(IS_NULL_PTR(cache_img)) return;
 
   dt_print(DT_DEBUG_HISTORY, "[dt_dev_write_history_ext] writing history for image %i...\n", imgid);
 
@@ -1202,16 +1253,43 @@ void dt_dev_write_history_ext(dt_develop_t *dev, const int32_t imgid)
   cache_img->history_hash = dt_dev_get_history_hash(dev);
 
   dt_image_cache_write_release(darktable.image_cache, cache_img, DT_IMAGE_CACHE_SAFE);
-  
-  dt_mipmap_cache_remove(darktable.mipmap_cache, dev->image_storage.id, TRUE);
+}
+
+// Schedule history write as a background job to avoid blocking the GUI.
+// If scheduling fails, fall back to synchronous write to preserve behaviour.
+static int _dt_dev_write_history_job_run(dt_job_t *job)
+{
+  dt_develop_t *d = dt_control_job_get_params(job);
+  if(IS_NULL_PTR(d)) return 1;
+  dt_pthread_rwlock_rdlock(&d->history_mutex);
+  dt_dev_write_history_ext(d, d->image_storage.id);
+  dt_pthread_rwlock_unlock(&d->history_mutex);
+  dt_dev_history_notify_change(d, d->image_storage.id);
+  return 0;
 }
 
 // Write TO XMP, so from the dev perspective, it's a read
-void dt_dev_write_history(dt_develop_t *dev)
+void dt_dev_write_history(dt_develop_t *dev, gboolean async)
 {
-  dt_pthread_rwlock_rdlock(&dev->history_mutex);
-  dt_dev_write_history_ext(dev, dev->image_storage.id);
-  dt_pthread_rwlock_unlock(&dev->history_mutex);
+  if(!async)
+  {
+    dt_pthread_rwlock_rdlock(&dev->history_mutex);
+    dt_dev_write_history_ext(dev, dev->image_storage.id);
+    dt_pthread_rwlock_unlock(&dev->history_mutex);
+    dt_dev_history_notify_change(dev, dev->image_storage.id);
+    return;
+  }
+
+  dt_job_t *job = dt_control_job_create(&_dt_dev_write_history_job_run, "write history %d",
+                                        dev->image_storage.id);
+  dt_control_job_set_params(job, dev, NULL);
+
+  if(dt_control_add_job(darktable.control, DT_JOB_QUEUE_USER_BG, job) != 0)
+  {
+    // scheduling failed: dispose job and run synchronously
+    dt_control_job_dispose(job);
+    dt_dev_write_history(dev, FALSE);
+  }
 }
 
 /**
@@ -1266,7 +1344,7 @@ static gboolean _dev_auto_apply_presets(dt_develop_t *dev, int32_t imgid)
     else
     {
       // we have no auto-apply order, so apply iop order, depending of the workflow
-      GList *iop_list = dt_ioppr_get_iop_order_list_version(DT_IOP_ORDER_V30);
+      GList *iop_list = dt_ioppr_get_iop_order_list_version(DT_IOP_ORDER_ANSEL_RAW);
       dt_ioppr_write_iop_order_list(iop_list, imgid);
       g_list_free_full(iop_list, dt_free_gpointer);
       iop_list = NULL;
@@ -1305,8 +1383,6 @@ static void _insert_default_modules(dt_develop_t *dev, dt_iop_module_t *module, 
   }
 
   dt_image_t *image = &dev->image_storage;
-  const gboolean has_matrix = dt_image_is_matrix_correction_supported(image);
-  const gboolean is_raw = dt_image_is_raw(image);
 
   // Prior to Darktable 3.0, modules enabled by default which still had
   // default params (no user change) were not inserted into history/DB.
@@ -1316,6 +1392,9 @@ static void _insert_default_modules(dt_develop_t *dev, dt_iop_module_t *module, 
   if(module->default_enabled || (module->force_enable && module->force_enable(module, FALSE)))
   {
     module->enabled = TRUE;
+    const gboolean has_matrix = dt_image_is_matrix_correction_supported(image);
+    const gboolean is_raw = dt_image_is_raw(image);
+
     if(!strcmp(module->op, "temperature")
        && (image->change_timestamp == -1) // change_timestamp is not defined for old pics
        && is_raw && is_inited && has_matrix)
@@ -1342,6 +1421,9 @@ static void _insert_default_modules(dt_develop_t *dev, dt_iop_module_t *module, 
     module->enabled = TRUE;
     dt_dev_add_history_item_ext(dev, module, TRUE, TRUE);
   }
+
+  if(module->enabled)
+    dt_print(DT_DEBUG_HISTORY, "[history] %s was inserted into history by default (enabled %i)\n", module->op, module->enabled);
 }
 
 // Returns TRUE if this is a freshly-inited history on which we just applied auto presets and defaults,
@@ -1382,7 +1464,7 @@ int dt_dev_replace_history_on_image(dt_develop_t *dev_src, const int32_t dest_im
   }
 
   dt_dev_pop_history_items_ext(dev_src);
-  dt_dev_write_history(dev_src);
+  dt_dev_write_history(dev_src, FALSE);
 
   return 0;
 }
@@ -1457,8 +1539,10 @@ static void _sync_blendop_params(dt_dev_history_item_t *hist, const void *blendo
   const gboolean is_valid_blendop_size = (bl_length == sizeof(dt_develop_blend_params_t));
 
   hist->blend_params = malloc(sizeof(dt_develop_blend_params_t));
+  hist->blendop_params_size = sizeof(dt_develop_blend_params_t);
+  hist->blendop_version = dt_develop_blend_version();
 
-  if(blendop_params && is_valid_blendop_version && is_valid_blendop_size)
+  if(!IS_NULL_PTR(blendop_params) && is_valid_blendop_version && is_valid_blendop_size)
   {
     memcpy(hist->blend_params, blendop_params, sizeof(dt_develop_blend_params_t));
   }
@@ -1491,6 +1575,8 @@ static void _sync_blendop_params(dt_dev_history_item_t *hist, const void *blendo
 static int _sync_params(dt_dev_history_item_t *hist, const void *module_params, const int param_length,
                         const int modversion, int *legacy_params, const char *preset_name)
 {
+  hist->params_size = hist->module->params_size;
+  hist->module_version = hist->module->version();
   const gboolean is_valid_module_version = (modversion == hist->module->version());
   const gboolean is_valid_params_size = (param_length == hist->module->params_size);
 
@@ -1583,7 +1669,7 @@ static void _process_history_db_entry(dt_develop_t *dev, const int32_t imgid, co
 {
   // Sanity checks
   const gboolean is_valid_id = (id == imgid);
-  const gboolean has_operation = (operation != NULL);
+  const gboolean has_operation = (!IS_NULL_PTR(operation));
 
   if(!(has_operation && is_valid_id))
   {
@@ -1591,6 +1677,13 @@ static void _process_history_db_entry(dt_develop_t *dev, const int32_t imgid, co
             dev->image_storage.filename);
     return;
   }
+
+  /**
+   * History rows may outlive modules that were removed or renamed between
+   * releases. If the operation no longer exists in the current module list,
+   * drop that row quietly instead of treating it as a broken install.
+   */
+  if(!dt_iop_get_module_from_list(dev->iop, operation)) return;
 
   const int iop_order = dt_ioppr_get_iop_order(dev->iop_order_list, operation, multi_priority);
 
@@ -1609,12 +1702,27 @@ static void _process_history_db_entry(dt_develop_t *dev, const int32_t imgid, co
 
   if(!hist->module)
   {
-    // History will be lost forever for this module
+    // Keep the serialized history entry even though no live module can consume it.
+    hist->params_size = MAX(param_length, 0);
+    hist->module_version = modversion;
+    hist->blendop_params_size = MAX(bl_length, 0);
+    hist->blendop_version = blendop_version;
+    if(!IS_NULL_PTR(module_params) && param_length > 0)
+    {
+      hist->params = malloc(param_length);
+      memcpy(hist->params, module_params, param_length);
+    }
+    if(!IS_NULL_PTR(blendop_params) && bl_length > 0)
+    {
+      hist->blend_params = malloc(bl_length);
+      memcpy(hist->blend_params, blendop_params, bl_length);
+    }
+
     fprintf(
         stderr,
         "[dev_read_history] the module `%s' requested by image `%s' is not installed on this computer!\n",
         operation, dev->image_storage.filename);
-    dt_free(hist);
+    dev->history = g_list_append(dev->history, hist);
     return;
   }
 
@@ -1667,7 +1775,9 @@ gboolean dt_dev_read_history_ext(dt_develop_t *dev, const int32_t imgid)
 {
   if(imgid == UNKNOWN_IMAGE) return FALSE;
 
-  if(!dev->iop)
+  // This should be inited already when creating a pipeline or entering darkroom
+  // but some pathes don't handle it, so make sure we have modules loaded.
+  if(IS_NULL_PTR(dev->iop))
     dev->iop = dt_dev_load_modules(dev);
 
   // Ensure raw metadata (WB coeffs, matrices, etc.) is available for modules that
@@ -1679,9 +1789,7 @@ gboolean dt_dev_read_history_ext(dt_develop_t *dev, const int32_t imgid)
 
   // Start fresh
   dt_dev_history_free_history(dev);
-
   int legacy_params = 0;
-
   dt_ioppr_set_default_iop_order(dev, imgid);
 
   // Find the new history end from DB now, if defined.
@@ -1699,7 +1807,7 @@ gboolean dt_dev_read_history_ext(dt_develop_t *dev, const int32_t imgid)
   // Protect history DB reads with a cache read lock.
   // Release it before applying history to modules to avoid deadlocks.
   dt_image_t *read_lock_img = dt_image_cache_get(darktable.image_cache, imgid, 'r');
-  if(!read_lock_img) return FALSE;
+  if(IS_NULL_PTR(read_lock_img)) return FALSE;
 
   // Load DB history into dev->history
   dt_dev_history_db_ctx_t ctx = { .dev = dev, .imgid = imgid, .legacy_params = &legacy_params, .presets = FALSE };
@@ -1722,9 +1830,13 @@ gboolean dt_dev_read_history_ext(dt_develop_t *dev, const int32_t imgid)
   // Sanitize and flatten module order
   dt_ioppr_resync_pipeline(dev, imgid, "dt_dev_read_history_no_image end", FALSE);
 
-  // Update masks history
-  // Note: until there, we had only blendops. No masks
-  // writes hist->forms for each history entry, from DB
+  // Update "masks history"
+  // This design is stupid because `dt_dev_history_item_t *hist->forms` is not read
+  // from the DB history items (`main.history`), but from the `main.masks_history`,
+  // and later on, `dev->forms` is restored at the `history_end` index from dumping
+  // the content of the `dt_dev_history_item_t *hist->forms` snapshot.
+  // This only means that `hist->forms` doesn't belong to the `dt_dev_history_item_t *`
+  // but should live in its own branch. See `dt_dev_pop_history_items_ext()`
   dt_masks_read_masks_history(dev, imgid);
 
   dt_image_cache_read_release(darktable.image_cache, read_lock_img);
@@ -1742,7 +1854,8 @@ gboolean dt_dev_read_history_ext(dt_develop_t *dev, const int32_t imgid)
     }
     else if(!hist->module)
     {
-      fprintf(stderr, "[dt_dev_read_history_ext] we have no module for history item %s. This is not normal.\n", hist->op_name);
+      dt_print(DT_DEBUG_HISTORY, "[history] keeping archival history item %s (%s) without live module binding\n",
+               hist->op_name, hist->multi_name);
       continue;
     }
 
@@ -1889,7 +2002,7 @@ static gboolean _compress_enabled_user_nondefault_params(dt_iop_module_t *module
 static gboolean _compress_disabled_with_history(dt_iop_module_t *module)
 {
   return !module->enabled
-         && (module->default_enabled || _module_has_nondefault_internal_params(module));
+         && (module->default_enabled || module->workflow_enabled || _module_has_nondefault_internal_params(module));
 }
 
 /**
@@ -1903,6 +2016,8 @@ static gboolean _compress_disabled_with_history(dt_iop_module_t *module)
 static void _dt_dev_history_compress_internal(dt_develop_t *dev, const gboolean write_history)
 {
   const int32_t imgid = dev->image_storage.id;
+
+  dt_pthread_rwlock_wrlock(&dev->history_mutex);
 
   // Cleanup old history
   dt_dev_history_free_history(dev);
@@ -1928,6 +2043,8 @@ static void _dt_dev_history_compress_internal(dt_develop_t *dev, const gboolean 
   dt_dev_set_history_end_ext(dev, g_list_length(dev->history));
   dt_dev_pop_history_items_ext(dev);
   if(write_history) dt_dev_write_history_ext(dev, imgid);
+
+  dt_pthread_rwlock_unlock(&dev->history_mutex);
 }
 
 void dt_dev_history_compress_ext(dt_develop_t *dev, gboolean write_history)
@@ -1987,7 +2104,7 @@ static int _check_deleted_instances(dt_develop_t *dev, GList **_iop_list, GList 
   while(modules)
   {
     dt_iop_module_t *mod = (dt_iop_module_t *)modules->data;
-    if(mod == NULL) continue;
+    if(IS_NULL_PTR(mod)) continue;
 
     int delete_module = 0;
 
@@ -2091,27 +2208,6 @@ static int _check_deleted_instances(dt_develop_t *dev, GList **_iop_list, GList 
 }
 
 /**
- * @brief Reorder GUI module expanders to match dev->iop order.
- *
- * @param dev Develop context.
- */
-static void _reorder_gui_module_list(dt_develop_t *dev)
-{
-  int pos_module = 0;
-  for(const GList *modules = g_list_last(dev->iop); modules; modules = g_list_previous(modules))
-  {
-    dt_iop_module_t *module = (dt_iop_module_t *)(modules->data);
-
-    GtkWidget *expander = module->expander;
-    if(expander)
-    {
-      gtk_box_reorder_child(dt_ui_get_container(darktable.gui->ui, DT_UI_CONTAINER_PANEL_RIGHT_CENTER), expander,
-                            pos_module++);
-    }
-  }
-}
-
-/**
  * @brief Resync module multi_priority values from history.
  *
  * @param history_list History list.
@@ -2148,7 +2244,7 @@ static void _reset_module_instance(GList *hist, dt_iop_module_t *module, int mul
   {
     dt_dev_history_item_t *hit = (dt_dev_history_item_t *)hist->data;
 
-    if(!hit->module && strcmp(hit->op_name, module->op) == 0 && hit->multi_priority == multi_priority)
+    if(IS_NULL_PTR(hit->module) && strcmp(hit->op_name, module->op) == 0 && hit->multi_priority == multi_priority)
     {
       hit->module = module;
     }
@@ -2192,12 +2288,12 @@ static int _create_deleted_modules(GList **_iop_list, GList *history_list)
     dt_dev_history_item_t *hitem = (dt_dev_history_item_t *)l->data;
 
     // this fixes the duplicate module when undo: hitem->multi_priority = 0;
-    if(hitem->module == NULL)
+    if(IS_NULL_PTR(hitem->module))
     {
       changed = 1;
 
       const dt_iop_module_t *base_module = dt_iop_get_module_from_list(iop_list, hitem->op_name);
-      if(base_module == NULL)
+      if(IS_NULL_PTR(base_module))
       {
         fprintf(stderr, "[_create_deleted_modules] can't find base module for %s\n", hitem->op_name);
         return changed;
@@ -2252,8 +2348,10 @@ static int _create_deleted_modules(GList **_iop_list, GList *history_list)
 
 // returns 1 if the topology of the pipe has changed, aka it needs a full rebuild
 // 0 means only internal parameters of pipe nodes have change, so it's a mere resync
-int dt_dev_history_refresh_nodes_ext(dt_develop_t *dev, GList *iop, GList *history)
+int dt_dev_history_refresh_nodes_ext(dt_develop_t *dev, GList **iop, GList *history)
 {
+  GList *iop_list = *iop;
+
   // topology has changed?
   int pipe_remove = 0;
 
@@ -2262,19 +2360,21 @@ int dt_dev_history_refresh_nodes_ext(dt_develop_t *dev, GList *iop, GList *histo
   if(_rebuild_multi_priority(history))
   {
     pipe_remove = 1;
-    iop = g_list_sort(iop, dt_sort_iop_by_order);
+    iop_list = g_list_sort(iop_list, dt_sort_iop_by_order);
   }
 
   // check if this undo a delete module and re-create it
-  if(_create_deleted_modules(&iop, history))
+  if(_create_deleted_modules(&iop_list, history))
     pipe_remove = 1;
 
   // check if this is a redo of a delete module or an undo of an add module
-  if(_check_deleted_instances(dev, &iop, history))
+  if(_check_deleted_instances(dev, &iop_list, history))
     pipe_remove = 1;
 
+  *iop = iop_list;
+
   // if topology has changed, we need to reorder modules in GUI
-  if(pipe_remove) _reorder_gui_module_list(dev);
+  if(pipe_remove) dt_dev_signal_modules_moved(dev);
 
   return pipe_remove;
 }

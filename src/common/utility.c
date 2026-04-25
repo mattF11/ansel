@@ -103,7 +103,7 @@ gchar *dt_util_dstrcat(gchar *str, const gchar *format, ...)
 
   /* realloc for new string */
   ns = g_realloc(str, nsize);
-  if(str == NULL) ns[0] = '\0';
+  if(IS_NULL_PTR(str)) ns[0] = '\0';
   va_end(args);
 
   /* append string */
@@ -165,14 +165,14 @@ gchar *dt_util_str_replace(const gchar *string, const gchar *pattern, const gcha
 
 gchar *dt_util_glist_to_str(const gchar *separator, GList *items)
 {
-  if(items == NULL) return NULL;
+  if(IS_NULL_PTR(items)) return NULL;
 
   const unsigned int count = g_list_length(items);
   gchar *result = NULL;
 
   // add the entries to an char* array
   gchar **strings = g_malloc0_n(count + 1, sizeof(gchar *));
-  if(items != NULL)
+  if(!IS_NULL_PTR(items))
   {
     int i = 0;
     for(; items; items = g_list_next(items))
@@ -192,7 +192,7 @@ gchar *dt_util_glist_to_str(const gchar *separator, GList *items)
 
 GList *dt_util_glist_uniq(GList *items)
 {
-  if(!items) return NULL;
+  if(IS_NULL_PTR(items)) return NULL;
 
   gchar *last = NULL;
   GList *last_item = NULL;
@@ -221,7 +221,7 @@ GList *dt_util_glist_uniq(GList *items)
 
 gchar *dt_util_fix_path(const gchar *path)
 {
-  if(path == NULL || *path == '\0')
+  if(IS_NULL_PTR(path) || *path == '\0')
   {
     return NULL;
   }
@@ -255,7 +255,7 @@ gchar *dt_util_fix_path(const gchar *path)
     gchar *home_path = dt_loc_get_home_dir(user);
     dt_free(user);
 
-    if(home_path == NULL)
+    if(IS_NULL_PTR(home_path))
     {
       return g_strdup(path);
     }
@@ -343,7 +343,7 @@ gboolean dt_util_test_image_file(const char *filename)
 
 gboolean dt_util_test_writable_dir(const char *path)
 {
-  if(path == NULL) return FALSE;
+  if(IS_NULL_PTR(path)) return FALSE;
 #ifdef _WIN32
   struct _stati64 stats;
 
@@ -366,7 +366,7 @@ gboolean dt_util_test_writable_dir(const char *path)
 
 gboolean dt_util_dir_exist(const char *dir)
 {
-  if(!dir)
+  if(IS_NULL_PTR(dir))
     return 1;
 
   return g_file_test(dir, G_FILE_TEST_IS_DIR);
@@ -376,7 +376,7 @@ gboolean dt_util_is_dir_empty(const char *dirname)
 {
   int n = 0;
   GDir *dir = g_dir_open(dirname, 0, NULL);
-  if(dir == NULL) // Not a directory or doesn't exist
+  if(IS_NULL_PTR(dir)) // Not a directory or doesn't exist
     return TRUE;
   while(g_dir_read_name(dir) != NULL)
   {
@@ -398,7 +398,7 @@ gchar *dt_util_foo_to_utf8(const char *string)
   else
     tag = g_convert(string, -1, "UTF-8", "LATIN1", NULL, NULL, NULL); // let's try latin1
 
-  if(!tag) // hmm, neither utf8 nor latin1, let's fall back to ascii and just remove everything that isn't
+  if(IS_NULL_PTR(tag)) // hmm, neither utf8 nor latin1, let's fall back to ascii and just remove everything that isn't
   {
     tag = g_strdup(string);
     char *c = tag;
@@ -625,7 +625,7 @@ gboolean dt_util_gps_rationale_to_number(const double r0_1, const double r0_2, c
                                          const double r1_2, const double r2_1, const double r2_2, char sign,
                                          double *result)
 {
-  if(!result) return FALSE;
+  if(IS_NULL_PTR(result)) return FALSE;
   double res = 0.0;
   // Latitude decoding from Exif.
   double num, den, min, sec;
@@ -661,7 +661,7 @@ gboolean dt_util_gps_rationale_to_number(const double r0_1, const double r0_2, c
 
 gboolean dt_util_gps_elevation_to_number(const double r_1, const double r_2, char sign, double *result)
 {
-  if(!result) return FALSE;
+  if(IS_NULL_PTR(result)) return FALSE;
   double res = 0.0;
   // Altitude decoding from Exif.
   const double num = r_1;
@@ -686,7 +686,7 @@ gchar *dt_util_normalize_path(const gchar *_input)
   else
   {
     input = g_locale_to_utf8(_input, -1, NULL, NULL, NULL);
-    if(!input) return NULL;
+    if(IS_NULL_PTR(input)) return NULL;
   }
 #else
   const gchar *input = _input;
@@ -716,7 +716,7 @@ gchar *dt_util_normalize_path(const gchar *_input)
     char *tmp_filename = g_build_filename(current_dir, filename, NULL);
     dt_free(filename);
     filename = g_realpath(tmp_filename);
-    if(filename == NULL)
+    if(IS_NULL_PTR(filename))
     {
       dt_free(current_dir);
       dt_free(tmp_filename);
@@ -737,7 +737,7 @@ gchar *dt_util_normalize_path(const gchar *_input)
 
   GFile *gfile = g_file_new_for_path(filename);
   dt_free(filename);
-  if(!gfile)
+  if(IS_NULL_PTR(gfile))
     return NULL;
   filename = g_file_get_path(gfile);
   g_object_unref(gfile);
@@ -788,13 +788,13 @@ gchar *dt_util_path_get_dirname(const gchar *filename)
 
 GDateTime *dt_util_get_file_datetime(const char *const path)
 {
-  if(path == NULL) return NULL;
+  if(IS_NULL_PTR(path)) return NULL;
 
   GFile *file = g_file_new_for_path(path);
   GError *error = NULL;
   GFileInfo *info = g_file_query_info(file, G_FILE_ATTRIBUTE_STANDARD_NAME "," G_FILE_ATTRIBUTE_TIME_MODIFIED,
                                       G_FILE_QUERY_INFO_NONE, NULL, &error);
-  if(!info)
+  if(IS_NULL_PTR(info))
   {
     if(error) g_error_free(error);
     g_object_unref(file);
@@ -829,7 +829,7 @@ void dt_util_str_to_loc_numbers_format(char *data)
 
 GList *dt_util_str_to_glist(const gchar *separator, const gchar *text)
 {
-  if(text == NULL) return NULL;
+  if(IS_NULL_PTR(text)) return NULL;
   GList *list = NULL;
   gchar *item = NULL;
   gchar *entry = g_strdup(text);
@@ -894,14 +894,14 @@ char *dt_read_file(const char *const filename, size_t *filesize)
 {
   if (filesize) *filesize = 0;
   FILE *fd = g_fopen(filename, "rb");
-  if(!fd) return NULL;
+  if(IS_NULL_PTR(fd)) return NULL;
 
   fseek(fd, 0, SEEK_END);
   const size_t end = ftell(fd);
   rewind(fd);
 
   char *content = (char *)malloc(sizeof(char) * end);
-  if(!content) return NULL;
+  if(IS_NULL_PTR(content)) return NULL;
 
   const size_t count = fread(content, sizeof(char), end, fd);
   fclose(fd);
@@ -926,14 +926,14 @@ void dt_copy_file(const char *const sourcefile, const char *dst)
     const size_t end = ftell(fin);
     rewind(fin);
     content = (char *)g_malloc_n(end, sizeof(char));
-    if(content == NULL) goto END;
+    if(IS_NULL_PTR(content)) goto END;
     if(fread(content, sizeof(char), end, fin) != end) goto END;
     if(fwrite(content, sizeof(char), end, fout) != end) goto END;
   }
 
 END:
-  if(fout != NULL) fclose(fout);
-  if(fin != NULL) fclose(fin);
+  if(!IS_NULL_PTR(fout)) fclose(fout);
+  if(!IS_NULL_PTR(fin)) fclose(fin);
 
   dt_free(content);
 }
@@ -1002,9 +1002,9 @@ gboolean dt_has_same_path_basename(const char *filename1, const char *filename2)
   // assume both filenames have an extension
   if(!filename1 || !filename2) return FALSE;
   const char *dot1 = strrchr(filename1, '.');
-  if(!dot1) return FALSE;
+  if(IS_NULL_PTR(dot1)) return FALSE;
   const char *dot2 = strrchr(filename2, '.');
-  if(!dot2) return FALSE;
+  if(IS_NULL_PTR(dot2)) return FALSE;
   const int length1 = dot1 - filename1;
   const int length2 = dot2 - filename2;
   if(length1 != length2)
@@ -1021,9 +1021,9 @@ char *dt_copy_filename_extension(const char *filename1, const char *filename2)
   // assume both filenames have an extension
   if(!filename1 || !filename2) return NULL;
   const char *dot1 = strrchr(filename1, '.');
-  if(!dot1) return NULL;
+  if(IS_NULL_PTR(dot1)) return NULL;
   const char *dot2 = strrchr(filename2, '.');
-  if(!dot2) return NULL;
+  if(IS_NULL_PTR(dot2)) return NULL;
   const int name_lgth = dot1 - filename1;
   const int ext_lgth = strlen(dot2);
   char *output = g_malloc(name_lgth + ext_lgth + 1);

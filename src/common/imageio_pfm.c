@@ -47,7 +47,7 @@ dt_imageio_retval_t dt_imageio_open_pfm(dt_image_t *img, const char *filename, d
   while(*ext != '.' && ext > filename) ext--;
   if(strcasecmp(ext, ".pfm")) return DT_IMAGEIO_FILE_CORRUPTED;
   FILE *f = g_fopen(filename, "rb");
-  if(!f) return DT_IMAGEIO_FILE_CORRUPTED;
+  if(IS_NULL_PTR(f)) return DT_IMAGEIO_FILE_CORRUPTED;
   int ret = 0;
   int cols = 3;
   float scale_factor;
@@ -77,24 +77,25 @@ dt_imageio_retval_t dt_imageio_open_pfm(dt_image_t *img, const char *filename, d
 
   int swap_byte_order = (scale_factor >= 0.0) ^ (G_BYTE_ORDER == G_BIG_ENDIAN);
 
-  img->buf_dsc.channels = 4;
-  img->buf_dsc.datatype = TYPE_FLOAT;
-  img->buf_dsc.cst = IOP_CS_RGB;
-  img->buf_dsc.filters = 0u;
+  img->dsc.channels = 4;
+  img->dsc.datatype = TYPE_FLOAT;
+  img->dsc.bpp = 4 * sizeof(float);
+  img->dsc.cst = IOP_CS_RGB;
+  img->dsc.filters = 0u;
   img->flags &= ~DT_IMAGE_LDR;
   img->flags &= ~DT_IMAGE_RAW;
   img->flags &= ~DT_IMAGE_S_RAW;
   img->flags |= DT_IMAGE_HDR;
   img->loader = LOADER_PFM;
 
-  if(!mbuf)
+  if(IS_NULL_PTR(mbuf))
   {
     fclose(f);
     return DT_IMAGEIO_OK;
   }
 
   float *buf = (float *)dt_mipmap_cache_alloc(mbuf, img);
-  if(!buf) goto error_cache_full;
+  if(IS_NULL_PTR(buf)) goto error_cache_full;
 
   if(cols == 3)
   {
@@ -119,7 +120,7 @@ dt_imageio_retval_t dt_imageio_open_pfm(dt_image_t *img, const char *filename, d
             = buf[4 * (img->width * j + i) + 0] = v.f;
       }
   float *line = (float *)calloc(4 * img->width, sizeof(float));
-  if(line == NULL) goto error_cache_full;
+  if(IS_NULL_PTR(line)) goto error_cache_full;
   for(size_t j = 0; j < img->height / 2; j++)
   {
     memcpy(line, buf + img->width * j * 4, sizeof(float) * 4 * img->width);

@@ -143,7 +143,7 @@ int default_group()
   return IOP_GROUP_BASIC | IOP_GROUP_TECHNICAL;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -235,10 +235,10 @@ commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_t *pi
 /** optional, always needed if tiling is permitted by setting IOP_FLAGS_ALLOW_TILING
     Also define this if the module uses more memory on the OpenCl device than the in& output buffers.
 */
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   tiling->factor = 2.0f;    // input buffer + output buffer; increase if additional memory allocated
   tiling->factor_cl = 2.0f; // same, but for OpenCL code path running on GPU
   tiling->maxbuf = 1.0f;    // largest buffer needed regardless of how tiling splits up the processing
@@ -258,7 +258,8 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
 
 #if 0
 /** modify pixel coordinates according to the pixel shifts the module applies (optional, per-pixel ops don't need) */
-int distort_transform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, float *points, size_t points_count)
+int distort_transform(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+                      float *points, size_t points_count)
 {
   const dt_iop_useless_params_t *d = (dt_iop_useless_params_t *)piece->data;
 
@@ -281,7 +282,8 @@ int distort_transform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, floa
 
 #if 0
 /** undo pixel shifts the module applies (optional, per-pixel ops don't need this) */
-int distort_backtransform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, float *points, size_t points_count)
+int distort_backtransform(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+                          float *points, size_t points_count)
 {
   const dt_iop_useless_params_t *d = (dt_iop_useless_params_t *)piece->data;
 
@@ -313,28 +315,27 @@ int distort_backtransform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, 
           a signal should be used (raise a signal here) and a corresponding callback
           must be connected to this signal.
 */
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
-             const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   // this is called for preview and full pipe separately, each with its own pixelpipe piece.
   // get our data struct:
   dt_iop_useless_params_t *d = (dt_iop_useless_params_t *)piece->data;
   // the total scale is composed of scale before input to the pipeline (iscale),
   // and the scale of the roi.
-  const float scale = 1.f / roi_in->scale;
+  const float scale = dt_dev_get_module_scale(pipe, roi_in);
   // how many colors in our buffer?
-  const size_t ch = piece->colors;
+  const size_t ch = piece->dsc_in.channels;
 
   // most modules only support a single type of input data, so we can check whether that format has been supplied
   // and simply pass along the data if not (setting a trouble flag to inform the user)
   dt_iop_useless_gui_data_t *g = (dt_iop_useless_gui_data_t *)self->gui_data;
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
-                                         ivoid, ovoid, roi_in, roi_out))
-    return 0;
 
   // we create a raster mask as an example
   float *mask = NULL;
-  if(piece->pipe->store_all_raster_masks || dt_iop_is_raster_mask_used(piece->module, mask_id))
+  if(pipe->store_all_raster_masks || dt_iop_is_raster_mask_used(piece->module, mask_id))
   {
     // Attempt to allocate all of the buffers we need.  For this example, we need one buffer that is equal in
     // dimensions to the output buffer, has one color channel, and has been zero'd.  (See common/imagebuf.h for
@@ -357,7 +358,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 // iterate over all output pixels (same coordinates as input)
 #ifdef _OPENMP
 // optional: parallelize it!
-#pragma omp parallel for default(none) schedule(static) shared(d) dt_omp_firstprivate(scale, ivoid, ovoid, roi_in, roi_out, ch, mask)
+#pragma omp parallel for default(firstprivate)  
 #endif
   for(int j = 0; j < roi_out->height; j++)
   {
@@ -374,7 +375,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
       {
         for_each_channel(c, aligned(in,out))  // vectorize if possible
           out[c] = in[c] * (1.0 - d->factor); // does this for c=0..2 or c=0..3, whichever is faster
-        if(out_mask) out_mask[i] = 1.0;
+        if(!IS_NULL_PTR(out_mask)) out_mask[i] = 1.0;
       }
       else
       {
@@ -386,7 +387,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   }
 
   // now that the mask is generated we can publish it
-  if(mask)
+  if(!IS_NULL_PTR(mask))
     g_hash_table_replace(piece->raster_masks, GINT_TO_POINTER(mask_id), mask);
 }
 
@@ -463,9 +464,9 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
   dt_iop_useless_gui_data_t *g = (dt_iop_useless_gui_data_t *)self->gui_data;
 
   // Test which widget was changed.
-  // If allowing w == NULL, this can be called from gui_update, so that
+  // If allowing IS_NULL_PTR(w), this can be called from gui_update, so that
   // gui configuration adjustments only need to be dealt with once, here.
-  if(!w || w == g->method)
+  if(IS_NULL_PTR(w) || w == g->method)
   {
     gtk_widget_set_visible(g->check, p->method == DT_USELESS_SECOND);
   }
@@ -474,7 +475,7 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
   // go in reload_defaults (if they depend on the image) or gui_init.
 }
 
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_useless_params_t *p = (dt_iop_useless_params_t *)self->params;
   dt_iop_useless_gui_data_t *g = (dt_iop_useless_gui_data_t *)self->gui_data;
@@ -521,7 +522,7 @@ void gui_update(dt_iop_module_t *self)
   dt_bauhaus_combobox_set_from_value(g->method, p->method);
 
   // Any configuration changes to the gui that depend on field values should be done here,
-  // or can be done in gui_changed which can then be called from here with widget == NULL.
+  // or can be done in gui_changed which can then be called from here with IS_NULL_PTR(widget).
   gui_changed(self, NULL, NULL);
 }
 
@@ -552,7 +553,7 @@ void reload_defaults(dt_iop_module_t *module)
   // default values in widgets. Resetting the individual widgets will then have the same
   // effect as resetting the whole module at once.
   dt_iop_useless_gui_data_t *g = (dt_iop_useless_gui_data_t *)module->gui_data;
-  if(g)
+  if(!IS_NULL_PTR(g))
   {
     dt_bauhaus_slider_set_default(g->scale, d->checker_scale);
   }

@@ -112,20 +112,8 @@ const char *get_error_str(int err)
 
 void init(dt_imageio_module_format_t *self)
 {
-#ifdef USE_LUA
-  luaA_enum(darktable.lua_state.state, comp_type_t);
-  luaA_enum_value(darktable.lua_state.state, comp_type_t, webp_lossy);
-  luaA_enum_value(darktable.lua_state.state, comp_type_t, webp_lossless);
-  dt_lua_register_module_member(darktable.lua_state.state, self, dt_imageio_webp_t, comp_type, comp_type_t);
-  dt_lua_register_module_member(darktable.lua_state.state, self, dt_imageio_webp_t, quality, int);
-  luaA_enum(darktable.lua_state.state, hint_t);
-  luaA_enum_value(darktable.lua_state.state, hint_t, hint_default);
-  luaA_enum_value(darktable.lua_state.state, hint_t, hint_picture);
-  luaA_enum_value(darktable.lua_state.state, hint_t, hint_photo);
-  luaA_enum_value(darktable.lua_state.state, hint_t, hint_graphic);
-  dt_lua_register_module_member(darktable.lua_state.state, self, dt_imageio_webp_t, hint, hint_t);
-#endif
 }
+
 void cleanup(dt_imageio_module_format_t *self)
 {
 }
@@ -241,14 +229,14 @@ int write_image(dt_imageio_module_data_t *webp, const char *filename, const void
   }
 
   out = g_fopen(filename, "w+b");
-  if(!out)
+  if(IS_NULL_PTR(out))
   {
     fprintf(stderr, "[webp export] error creating file %s\n", filename);
     goto out;
   }
   if(fwrite(assembled_data.bytes, assembled_data.size, 1, out) != 1)
   {
-    fprintf(stderr, "[webp export] error writing %zu bytes to file %s\n", assembled_data.size, filename);
+    fprintf(stderr, "[webp export] error writing %" G_GSIZE_FORMAT " bytes to file %s\n", assembled_data.size, filename);
     goto out;
   }
 

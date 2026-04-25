@@ -111,7 +111,7 @@ gchar *dt_build_filename_from_pattern(const char *const filename, const int inde
  */
 gboolean _file_exist(const char *dest_file_path)
 {
-  return dest_file_path != NULL && dest_file_path[0] && g_file_test(dest_file_path, G_FILE_TEST_EXISTS);
+  return !IS_NULL_PTR(dest_file_path) && dest_file_path[0] && g_file_test(dest_file_path, G_FILE_TEST_EXISTS);
 }
 
 /**
@@ -218,12 +218,12 @@ int _import_copy_xmp(const char *const filename, gchar *dest_file_path)
 int _import_copy_txt(const char *const filename, const char *dest_file_path)
 {
   char *txt_source = dt_image_get_text_path_from_path(filename);
-  if(!txt_source) return 0;
+  if(IS_NULL_PTR(txt_source)) return 0;
 
   char *txt_dest = dt_image_build_text_path_from_path(dest_file_path);
   int success = 0;
 
-  if(txt_dest)
+  if(!IS_NULL_PTR(txt_dest))
   {
     success = _copy_file(txt_source, txt_dest);
     dt_print(DT_DEBUG_IMPORT, "[Import] copying %s to %s %s\n", txt_source, txt_dest,
@@ -308,7 +308,7 @@ int _import_copy_file(const char *const filename, const int index, dt_control_im
 void _write_xmp_id(const char *filename, int32_t imgid)
 {
   GList *res = dt_metadata_get(imgid, "Xmp.darktable.image_id", NULL);
-  if(res != NULL)
+  if(!IS_NULL_PTR(res))
   {
     // Image ID is already set in metadata, don't overwrite it
     g_list_free_full(res, dt_free_gpointer);
@@ -560,10 +560,10 @@ static void _control_import_job_cleanup(void *p)
 static void *_control_import_alloc()
 {
   dt_control_image_enumerator_t *params = dt_control_image_enumerator_alloc();
-  if(!params) return NULL;
+  if(IS_NULL_PTR(params)) return NULL;
 
   params->data = g_malloc0(sizeof(dt_control_import_t));
-  if(!params->data)
+  if(IS_NULL_PTR(params->data))
   {
     _control_import_job_cleanup(params);
     return NULL;
@@ -574,9 +574,9 @@ static void *_control_import_alloc()
 static dt_job_t *_control_import_job_create(dt_control_import_t data)
 {
   dt_job_t *job = dt_control_job_create(&_control_import_job_run, "import");
-  if(!job) return NULL;
+  if(IS_NULL_PTR(job)) return NULL;
   dt_control_image_enumerator_t *params = _control_import_alloc();
-  if(!params)
+  if(IS_NULL_PTR(params))
   {
     dt_control_job_dispose(job);
     return NULL;

@@ -77,7 +77,7 @@ static void _g_list_closure_unref(gpointer data)
 
 static inline void _shortcut_set_widget_data(GtkWidget *widget, dt_shortcut_t *shortcut)
 {
-  if(!widget) return;
+  if(IS_NULL_PTR(widget)) return;
   g_object_set_data(G_OBJECT(widget), DT_ACCELS_WIDGET_SHORTCUT_KEY, shortcut);
   if(!g_object_get_data(G_OBJECT(widget), DT_ACCELS_WIDGET_TOOLTIP_DISABLED_KEY))
     gtk_widget_set_has_tooltip(widget, TRUE);
@@ -91,7 +91,7 @@ static gboolean _accels_tooltip_query_hook(GSignalInvocationHint *hint, guint n_
   if(n_param_values < 5) return TRUE;
 
   GtkWidget *widget = g_value_get_object(&param_values[0]);
-  if(!widget) return TRUE;
+  if(IS_NULL_PTR(widget)) return TRUE;
 
   if(!gtk_widget_get_has_tooltip(widget)) return TRUE;
   if(g_object_get_data(G_OBJECT(widget), DT_ACCELS_WIDGET_TOOLTIP_DISABLED_KEY)) return TRUE;
@@ -100,7 +100,7 @@ static gboolean _accels_tooltip_query_hook(GSignalInvocationHint *hint, guint n_
   const char *base_text = base_markup ? NULL : g_object_get_data(G_OBJECT(widget), "dt-accel-tooltip-base-text");
   const gboolean base_none = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "dt-accel-tooltip-base-none"));
 
-  if(!base_markup && !base_text && !base_none)
+  if(IS_NULL_PTR(base_markup) && IS_NULL_PTR(base_text) && !base_none)
   {
     gchar *current_markup = gtk_widget_get_tooltip_markup(widget);
     if(current_markup && current_markup[0])
@@ -126,7 +126,7 @@ static gboolean _accels_tooltip_query_hook(GSignalInvocationHint *hint, guint n_
   }
 
   dt_shortcut_t *shortcut = g_object_get_data(G_OBJECT(widget), DT_ACCELS_WIDGET_SHORTCUT_KEY);
-  if(!shortcut)
+  if(IS_NULL_PTR(shortcut))
   {
     const char *accel_path = g_object_get_data(G_OBJECT(widget), "accel-path");
     if(accel_path && darktable.gui && darktable.gui->accels)
@@ -138,7 +138,7 @@ static gboolean _accels_tooltip_query_hook(GSignalInvocationHint *hint, guint n_
     }
   }
 
-  if(!shortcut || shortcut->key == 0)
+  if(IS_NULL_PTR(shortcut) || shortcut->key == 0)
   {
     if(base_markup)
       gtk_widget_set_tooltip_markup(widget, base_markup);
@@ -148,7 +148,7 @@ static gboolean _accels_tooltip_query_hook(GSignalInvocationHint *hint, guint n_
   }
 
   gchar *shortcut_label = gtk_accelerator_get_label(shortcut->key, shortcut->mods);
-  if(!shortcut_label || !shortcut_label[0])
+  if(IS_NULL_PTR(shortcut_label) || !shortcut_label[0])
   {
     dt_free(shortcut_label);
     return TRUE;
@@ -208,7 +208,7 @@ static void _clean_shortcut(gpointer data)
 // Return the last closure in the list
 PayloadClosure *dt_shortcut_get_payload_closure(dt_shortcut_t *shortcut)
 {
-  GList *link = g_list_first(shortcut->closure);
+  GList *link = g_list_last(shortcut->closure);
   if(link)
     return (PayloadClosure *)link->data;
   else
@@ -231,7 +231,7 @@ GClosure *dt_shortcut_get_closure(dt_shortcut_t *shortcut)
 // attached to all its children.
 void dt_shortcut_remove_closure(dt_shortcut_t *shortcut, gpointer data)
 {
-  if(!shortcut->closure) return;
+  if(IS_NULL_PTR(shortcut->closure)) return;
 
   PayloadClosure *cl = NULL;
   GList *link = NULL;
@@ -281,7 +281,8 @@ static void _find_parent_hashtable(gpointer _key, gpointer value, gpointer user_
   {
     GClosure *parent_closure = dt_shortcut_get_closure(parent_shortcut);
     PayloadClosure *child_closure = dt_shortcut_get_payload_closure(child_shortcut);
-    child_closure->parent_data = parent_closure->data;
+    if(parent_closure && child_closure)
+      child_closure->parent_data = parent_closure->data;
 
     /*
     fprintf(stdout, "%s is the parent of %s - pointer %p\n", parent_shortcut->path, child_shortcut->path,
@@ -330,6 +331,9 @@ dt_accels_t * dt_accels_init(char *config_file, GtkAccelFlags flags)
   accels->global_accels = gtk_accel_group_new();
   accels->darkroom_accels = gtk_accel_group_new();
   accels->lighttable_accels = gtk_accel_group_new();
+  accels->map_accels = gtk_accel_group_new();
+  accels->print_accels = gtk_accel_group_new();
+  accels->slideshow_accels = gtk_accel_group_new();
   accels->acceleratables = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, _clean_shortcut);
   accels->active_group = NULL;
   accels->reset = 1;
@@ -358,9 +362,15 @@ void dt_accels_cleanup(dt_accels_t *accels)
   g_object_unref(accels->global_accels);
   g_object_unref(accels->darkroom_accels);
   g_object_unref(accels->lighttable_accels);
+  g_object_unref(accels->map_accels);
+  g_object_unref(accels->print_accels);
+  g_object_unref(accels->slideshow_accels);
   accels->global_accels = NULL;
   accels->darkroom_accels = NULL;
   accels->lighttable_accels = NULL;
+  accels->map_accels = NULL;
+  accels->print_accels = NULL;
+  accels->slideshow_accels = NULL;
 
   dt_pthread_mutex_lock(&accels->lock);
   g_hash_table_unref(accels->acceleratables);
@@ -375,7 +385,7 @@ void dt_accels_cleanup(dt_accels_t *accels)
 
 void dt_accels_connect_active_group(dt_accels_t *accels, const gchar *group)
 {
-  if(!accels) return;
+  if(IS_NULL_PTR(accels)) return;
 
   if(!g_strcmp0(group, "lighttable") && accels->lighttable_accels)
   {
@@ -387,6 +397,21 @@ void dt_accels_connect_active_group(dt_accels_t *accels, const gchar *group)
     accels->reset--;
     accels->active_group = accels->darkroom_accels;
   }
+  else if(!g_strcmp0(group, "map") && accels->map_accels)
+  {
+    accels->reset--;
+    accels->active_group = accels->map_accels;
+  }
+  else if(!g_strcmp0(group, "print") && accels->print_accels)
+  {
+    accels->reset--;
+    accels->active_group = accels->print_accels;
+  }
+  else if(!g_strcmp0(group, "slideshow") && accels->slideshow_accels)
+  {
+    accels->reset--;
+    accels->active_group = accels->slideshow_accels;
+  }
   else
   {
     fprintf(stderr, "[dt_accels_connect_active_group] INFO: unknown value: `%s'\n", group);
@@ -396,7 +421,7 @@ void dt_accels_connect_active_group(dt_accels_t *accels, const gchar *group)
 
 void dt_accels_disconnect_active_group(dt_accels_t *accels)
 {
-  if(!accels) return;
+  if(IS_NULL_PTR(accels)) return;
   accels->active_group = NULL;
   accels->reset++;
 }
@@ -490,6 +515,7 @@ static void _remove_generic_accel(dt_shortcut_t *shortcut)
 {
   // Need to increase the number of references to avoid loosing the closure just yet.
   GClosure *cl = dt_shortcut_get_closure(shortcut);
+  if(IS_NULL_PTR(cl)) return;
   g_closure_ref(cl);
   g_closure_sink(cl);
   gtk_accel_group_disconnect(shortcut->accel_group, cl);
@@ -518,7 +544,7 @@ static gboolean _virtual_shortcut_callback(GtkAccelGroup *group, GObject *accele
                                        GdkModifierType mods, gpointer user_data)
 {
   dt_shortcut_t *shortcut = (dt_shortcut_t *)user_data;
-  if(!shortcut->widget) return FALSE;
+  if(IS_NULL_PTR(shortcut->widget)) return FALSE;
 
   // Focus the target widget
   gtk_widget_grab_focus(shortcut->widget);
@@ -567,7 +593,7 @@ void dt_accels_new_virtual_shortcut(dt_accels_t *accels, GtkAccelGroup *accel_gr
     return;
   }
 
-  if(!shortcut)
+  if(IS_NULL_PTR(shortcut))
   {
     shortcut = malloc(sizeof(dt_shortcut_t));
     shortcut->accel_group = accel_group;
@@ -602,7 +628,7 @@ void dt_accels_new_virtual_instance_shortcut(dt_accels_t *accels,
   dt_shortcut_t *shortcut = (dt_shortcut_t *)g_hash_table_lookup(accels->acceleratables, accel_path);
   dt_pthread_mutex_unlock(&accels->lock);
 
-  if(!shortcut)
+  if(IS_NULL_PTR(shortcut))
   {
     shortcut = malloc(sizeof(dt_shortcut_t));
     shortcut->accel_group = accel_group;
@@ -698,7 +724,9 @@ void dt_accels_new_action_shortcut(dt_accels_t *accels,
   dt_shortcut_t *shortcut = (dt_shortcut_t *)g_hash_table_lookup(accels->acceleratables, accel_path);
   dt_pthread_mutex_unlock(&accels->lock);
 
-  if(shortcut && dt_shortcut_get_closure(shortcut) && dt_shortcut_get_closure(shortcut)->data == data)
+  GClosure *closure = shortcut ? dt_shortcut_get_closure(shortcut) : NULL;
+
+  if(closure && closure->data == data)
   {
     // reference is still up-to-date: nothing to do.
     return;
@@ -706,7 +734,7 @@ void dt_accels_new_action_shortcut(dt_accels_t *accels,
   else if(shortcut && shortcut->type != DT_SHORTCUT_UNSET)
   {
     // If we already have a shortcut object wired to Gtk for this accel path, just update it
-    if(shortcut->key > 0) _remove_generic_accel(shortcut);
+    if(shortcut->key > 0 && closure) _remove_generic_accel(shortcut);
     dt_shortcut_set_closure(shortcut, action_callback, data);
     if(shortcut->key > 0) _add_generic_accel(shortcut, accels->flags);
   }
@@ -830,7 +858,7 @@ _remove_accel_hashtable(gpointer _key, gpointer value, gpointer user_data)
 // For all shortcuts matching path (fully or partially), remove the closure instance referencing data
 void dt_accels_remove_accel(dt_accels_t *accels, const char *path, gpointer data)
 {
-  if(!accels || !accels->acceleratables) return;
+  if(IS_NULL_PTR(accels) || IS_NULL_PTR(accels->acceleratables)) return;
 
   _accel_removal_t *params = malloc(sizeof(_accel_removal_t));
   params->path = path;
@@ -861,7 +889,7 @@ gchar *dt_accels_build_path(const gchar *scope, const gchar *feature)
 
 static void _accels_keys_decode(dt_accels_t *accels, GdkEvent *event, guint *keyval, GdkModifierType *mods)
 {
-  if(accels == NULL) return;
+  if(IS_NULL_PTR(accels)) return;
 
   // Get modifiers
   gdk_event_get_state(event, mods);
@@ -1004,7 +1032,7 @@ static gboolean _has_shortcut(dt_accels_t *accels, GtkAccelGroup *group, guint k
   g_hash_table_foreach(accels->acceleratables, _for_each_non_virtual_accel, &result);
   dt_pthread_mutex_unlock(&accels->lock);
 
-  const gboolean has_accel = (result.results != NULL);
+  const gboolean has_accel = (!IS_NULL_PTR(result.results));
   g_list_free(result.results);
   result.results = NULL;
   return has_accel;
@@ -1042,17 +1070,10 @@ static gboolean _key_pressed(GtkWidget *w, GdkEvent *event, dt_accels_t *accels,
 gboolean dt_accels_dispatch(GtkWidget *w, GdkEvent *event, gpointer user_data)
 {
   dt_accels_t *accels = (dt_accels_t *)user_data;
-  if(accels->disable_accels) return FALSE;
-
-  if(event->type == GDK_KEY_PRESS && event->key.keyval == GDK_KEY_Escape)
-  {
-    dt_ctl_switch_mode_to("lighttable");
-    return TRUE;
-  }
 
   // Ditch everything that is not a key stroke or key strokes that are modifiers alone
   // Abort early for performance.
-  if(event->key.is_modifier || accels->active_group == NULL || accels->reset > 0 || !gtk_window_is_active(GTK_WINDOW(w)))
+  if(event->key.is_modifier || IS_NULL_PTR(accels->active_group) || accels->reset > 0 || !gtk_window_is_active(GTK_WINDOW(w)))
     return FALSE;
 
   if(!(event->type == GDK_KEY_PRESS || event->type == GDK_KEY_RELEASE || event->type == GDK_SCROLL))
@@ -1072,7 +1093,20 @@ gboolean dt_accels_dispatch(GtkWidget *w, GdkEvent *event, gpointer user_data)
   guint keyval;
   _accels_keys_decode(accels, event, &keyval, &mods);
 
-  if(event->type == GDK_KEY_PRESS)
+  // Ugly design : global shortcuts are supposed to have a key modifier.
+  // To allow single-key shortcuts, we have to work around that and impose our own shortcut handler.
+  // But then, that breaks regular text input on GtkEntry, GtkSearchEntry, etc. 
+  // because letters are then captured as shortcuts.
+  // Which was the whole purpose of forcing global shortcuts to use modifiers.
+  // So, to avoid that, when text entries get focused, we manually set accels->disable_accels,
+  // and unset it when they loose focus.
+  // When "disabled", we reset typical Gtk behaviour : capture global shortcuts only if there is a modifier.
+  // NOTE: this nasty workaround should not be taken as an incentive to extend it further.
+  // It's bad design, it should not be turned into a rule.
+  if(accels->disable_accels && !mods) return FALSE;
+
+  if(event->type == GDK_KEY_PRESS && 
+    !(keyval == accels->active_key.accel_key && mods == accels->active_key.accel_mods))
   {
     // Store active keys until release
     accels->active_key.accel_key = keyval;
@@ -1136,8 +1170,8 @@ static void _make_column_editable(GtkTreeViewColumn *col, GtkCellRenderer *rende
   dt_shortcut_t *shortcut;
   gtk_tree_model_get(model, iter, COL_SHORTCUT, &shortcut, -1);
   g_object_set(renderer,
-               "visible", (shortcut != NULL),
-               "editable", (shortcut != NULL && !shortcut->locked),
+               "visible", (!IS_NULL_PTR(shortcut)),
+               "editable", (!IS_NULL_PTR(shortcut) && !shortcut->locked),
                "accel-mode", GTK_CELL_RENDERER_ACCEL_MODE_OTHER,
                NULL);
 }
@@ -1148,9 +1182,9 @@ static void _make_column_clearable(GtkTreeViewColumn *col, GtkCellRenderer *rend
   dt_shortcut_t *shortcut;
   gtk_tree_model_get(model, iter, COL_SHORTCUT, &shortcut, -1);
   g_object_set (renderer,
-                "icon-name", (shortcut != NULL && !shortcut->locked) ? "edit-delete-symbolic" : "lock",
-                "visible",   (shortcut != NULL),
-                "sensitive", (shortcut != NULL && !shortcut->locked && shortcut->key),
+                "icon-name", (!IS_NULL_PTR(shortcut) && !shortcut->locked) ? "edit-delete-symbolic" : "lock",
+                "visible",   (!IS_NULL_PTR(shortcut)),
+                "sensitive", (!IS_NULL_PTR(shortcut) && !shortcut->locked && shortcut->key),
                 NULL);
 }
 
@@ -1187,7 +1221,7 @@ static void _shortcut_edited(GtkCellRenderer *cell, const gchar *path_string, gu
   // We will need to access its underlying store (full, unfiltered)
   GtkTreeModel *filter = GTK_TREE_MODEL(user_data);
   GtkTreeModel *store = gtk_tree_model_filter_get_model(GTK_TREE_MODEL_FILTER(filter));
-  if(!store) return;
+  if(IS_NULL_PTR(store)) return;
 
   GtkTreePath *path = gtk_tree_path_new_from_string(path_string);
   dt_shortcut_t *shortcut = NULL;
@@ -1200,22 +1234,37 @@ static void _shortcut_edited(GtkCellRenderer *cell, const gchar *path_string, gu
 
   const char *shortcut_path = NULL;
 
+  // In GTK "OTHER" accel mode, clearing from the editor may come through either as
+  // VoidSymbol or as an unmodified Delete/BackSpace key press. Normalize all those
+  // cases to an empty shortcut so the model and the GtkAccelMap stay in sync.
+  if(keyval == GDK_KEY_VoidSymbol
+     || (mods == 0 && (keyval == GDK_KEY_Delete || keyval == GDK_KEY_BackSpace)))
+  {
+    keyval = 0;
+    mods = 0;
+    hardware_key = 0;
+  }
+
   // mods input arg doesn't record states (numlock, capslock), so we need to fetch it
   // directly before decoding full key combinations
-  GdkDisplay *display = gdk_display_get_default();
-  GdkSeat *seat = gdk_display_get_default_seat(display);
-  GdkDevice *pointer = gdk_seat_get_pointer(seat);
-  GdkModifierType state;
-  gdk_device_get_state(pointer, gdk_get_default_root_window(), NULL, &state);
+  if(keyval != 0 || mods != 0)
+  {
+    GdkDisplay *display = gdk_display_get_default();
+    GdkSeat *seat = gdk_display_get_default_seat(display);
+    GdkDevice *pointer = gdk_seat_get_pointer(seat);
+    GdkModifierType state;
+    gdk_device_get_state(pointer, gdk_get_default_root_window(), NULL, &state);
 
-  // Ensure modifiers, language-heuristics and numpad/keypad keys are uniformingly decoded
-  GdkEventKey event = { 0 };
-  event.type = GDK_KEY_PRESS;
-  event.state = mods | state;
-  event.keyval = keyval;
-  event.hardware_keycode = hardware_key;
-  event.group = guess_key_group(accels_global_ref, keyval, hardware_key);
-  _accels_keys_decode(accels_global_ref, (GdkEvent *)&event, &keyval, &mods);
+    // We only decode actual key strokes here. Clearing shortcuts bypasses this path
+    // because there is no hardware key or modifier state to preserve.
+    GdkEventKey event = { 0 };
+    event.type = GDK_KEY_PRESS;
+    event.state = mods | state;
+    event.keyval = keyval;
+    event.hardware_keycode = hardware_key;
+    event.group = guess_key_group(accels_global_ref, keyval, hardware_key);
+    _accels_keys_decode(accels_global_ref, (GdkEvent *)&event, &keyval, &mods);
+  }
 
   if(shortcut)
   {
@@ -1224,7 +1273,7 @@ static void _shortcut_edited(GtkCellRenderer *cell, const gchar *path_string, gu
       shortcut_path = _find_path_for_keys(shortcut->accels, keyval, mods, shortcut->accel_group);
 
     // Try to update the GtkAccelMap with new keys
-    if(!shortcut_path && gtk_accel_map_change_entry(shortcut->path, keyval, mods, FALSE))
+    if(IS_NULL_PTR(shortcut_path) && gtk_accel_map_change_entry(shortcut->path, keyval, mods, FALSE))
     {
       // Success:
       // Resync our internal shortcut object and its GtkAccelGroup to GtkAccelMap
@@ -1257,6 +1306,11 @@ static void _shortcut_edited(GtkCellRenderer *cell, const gchar *path_string, gu
   gtk_tree_path_free(path);
 }
 
+static void _shortcut_cleared(GtkCellRendererAccel *renderer, const gchar *path_string, gpointer user_data)
+{
+  _shortcut_edited(GTK_CELL_RENDERER(renderer), path_string, 0, 0, 0, user_data);
+}
+
 
 static gboolean _icon_activate(GtkCellRenderer *cell, GdkEvent *event, GtkWidget *treeview, const gchar *path_str,
                                GdkRectangle *background, GdkRectangle *cell_area, GtkCellRendererState flags,
@@ -1284,7 +1338,7 @@ void _for_each_accel_create_treeview_row(gpointer key, gpointer value, gpointer 
 {
   // Extract HashTable key/value
   dt_shortcut_t *shortcut = (dt_shortcut_t *)value;
-  if(!shortcut) return;
+  if(IS_NULL_PTR(shortcut)) return;
   const gchar *path = (const gchar *)key;
 
   // Extract user_data
@@ -1318,7 +1372,7 @@ void _for_each_accel_create_treeview_row(gpointer key, gpointer value, gpointer 
     iter = g_hash_table_lookup(node_cache, accum);
 
     // If current node is not already in tree, add it.
-    if(!iter)
+    if(IS_NULL_PTR(iter))
     {
       // We need a heap-allocated iter to pass it along to the hashtable.
       // This will be freed when cleaning up the hashtable.
@@ -1355,11 +1409,11 @@ void _for_each_path_create_treeview_row(gpointer key, gpointer value, gpointer u
 {
   // Extract HashTable key/value
   dt_shortcut_t *shortcut = (dt_shortcut_t *)value;
-  if(!shortcut) return;
+  if(IS_NULL_PTR(shortcut)) return;
   const gchar *path = (const gchar *)key;
 
   GtkListStore *store = (GtkListStore *)user_data;
-  if(!store) return;
+  if(IS_NULL_PTR(store)) return;
 
   dt_accels_t *accels = shortcut->accels;
   //g_print("My object is a <%s>\n", G_OBJECT_TYPE_NAME(store));
@@ -1438,8 +1492,8 @@ static gboolean filter_callback(GtkTreeModel *model, GtkTreeIter *iter, gpointer
   const gchar *needle_path = gtk_entry_get_text(GTK_ENTRY(params->path_search));
   const gchar *needle_keys = gtk_entry_get_text(GTK_ENTRY(params->keys_search));
 
-  if((needle_path == NULL || needle_path[0] == '\0') &&
-     (needle_keys == NULL || needle_keys[0] == '\0'))
+  if((IS_NULL_PTR(needle_path) || needle_path[0] == '\0') &&
+     (IS_NULL_PTR(needle_keys) || needle_keys[0] == '\0'))
     return TRUE;
 
   gboolean show = TRUE;
@@ -1521,8 +1575,8 @@ static void search_changed(GtkEntry *entry, gpointer user_data)
   const gchar *needle_path = gtk_entry_get_text(GTK_ENTRY(params->path_search));
   const gchar *needle_keys = gtk_entry_get_text(GTK_ENTRY(params->keys_search));
 
-  if((needle_path == NULL || needle_path[0] == '\0') &&
-      (needle_keys == NULL || needle_keys[0] == '\0'))
+  if((IS_NULL_PTR(needle_path) || needle_path[0] == '\0') &&
+      (IS_NULL_PTR(needle_keys) || needle_keys[0] == '\0'))
     gtk_tree_view_collapse_all(GTK_TREE_VIEW(params->tree_view));
   else
     gtk_tree_view_expand_all(GTK_TREE_VIEW(params->tree_view));
@@ -1614,6 +1668,7 @@ void dt_accels_window(dt_accels_t *accels, GtkWindow *main_window)
                                                     COL_MODS, NULL);
   gtk_tree_view_column_set_cell_data_func(column, renderer, _make_column_editable, NULL, NULL);
   g_signal_connect(renderer, "accel-edited", G_CALLBACK(_shortcut_edited), filter_model);
+  g_signal_connect(renderer, "accel-cleared", G_CALLBACK(_shortcut_cleared), filter_model);
   gtk_tree_view_column_set_min_width(column, 100);
   gtk_tree_view_column_set_resizable(column, TRUE);
   gtk_tree_view_append_column(GTK_TREE_VIEW(tree_view), column);
@@ -1661,19 +1716,19 @@ void dt_accels_window(dt_accels_t *accels, GtkWindow *main_window)
 static int _match_text(GtkTreeModel *model, GtkTreeIter *iter, const char *needle)
 {
   int ret = -1;
-  if(needle == NULL || needle[0] == '\0') return 0;
+  if(IS_NULL_PTR(needle) || needle[0] == '\0') return 0;
 
   // Get row entry
   gchar *label;
   gtk_tree_model_get(model, iter, 0, &label, -1);
-  if(label == NULL || label[0] == '\0') return -1;
+  if(IS_NULL_PTR(label) || label[0] == '\0') return -1;
 
   // Convert to lowercase
   gchar *label_ci = g_utf8_casefold(label, -1);
 
   // Find match
   const char *match = g_strrstr(label_ci, needle);
-  if(match != NULL)
+  if(!IS_NULL_PTR(match))
   {
     // Index results by relevance.
     // Since pathes start generic and end specific, we posit that
@@ -1792,7 +1847,7 @@ static void _call_shortcut_cclosure(dt_shortcut_t *shortcut, GtkWindow *main_win
 
 static void _dispatch_selected_shortcut(dt_accels_dispatch_state_t *state)
 {
-  if(!state->shortcut) return;
+  if(IS_NULL_PTR(state->shortcut)) return;
 
   dt_gui_refocus_center();
 

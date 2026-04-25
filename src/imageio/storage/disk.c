@@ -375,10 +375,6 @@ size_t params_size(dt_imageio_module_storage_t *self)
 
 void init(dt_imageio_module_storage_t *self)
 {
-#ifdef USE_LUA
-  dt_lua_register_module_member(darktable.lua_state.state, self, dt_imageio_disk_t, filename,
-                                char_path_length);
-#endif
 }
 
 void *get_params(dt_imageio_module_storage_t *self)
@@ -398,7 +394,7 @@ void *get_params(dt_imageio_module_storage_t *self)
 
 void free_params(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *params)
 {
-  if(!params) return;
+  if(IS_NULL_PTR(params)) return;
   dt_imageio_disk_t *d = (dt_imageio_disk_t *)params;
   dt_variables_params_destroy(d->vp);
   dt_free(params);

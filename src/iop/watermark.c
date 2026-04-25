@@ -356,16 +356,24 @@ int operation_tags()
   return IOP_TAG_DECORATION;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
+}
+
+void input_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                  dt_iop_buffer_dsc_t *dsc)
+{
+  default_input_format(self, pipe, piece, dsc);
+  dsc->channels = 4;
+  dsc->datatype = TYPE_FLOAT;
 }
 
 // sets text / color / font widgets sensitive based on watermark file type
 static void _text_color_font_set_sensitive(dt_iop_watermark_gui_data_t *g, gchar *filename)
 {
   const gchar *extension = strrchr(filename, '.');
-  if(extension)
+  if(!IS_NULL_PTR(extension))
   {
     const gboolean active = !g_ascii_strcasecmp(extension, ".svg");
     gtk_widget_set_sensitive(GTK_WIDGET(g->colorpick), active);
@@ -485,13 +493,16 @@ static gchar *_watermark_get_svgdoc(dt_iop_module_t *self, dt_iop_watermark_data
   return svgdata;
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_watermark_data_t *data = (dt_iop_watermark_data_t *)piece->data;
   float *in = (float *)ivoid;
   float *out = (float *)ovoid;
-  const int ch = piece->colors;
+  const int ch = 4;
   const float angle = (M_PI / 180) * (-data->rotate);
 
   gchar configdir[PATH_MAX] = { 0 };
@@ -517,7 +528,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   // find out the watermark type
   dt_iop_watermark_type_t type;
   const gchar *extension = strrchr(data->filename, '.');
-  if(extension)
+  if(!IS_NULL_PTR(extension))
   {
     if(!g_ascii_strcasecmp(extension, ".svg"))
       type = DT_WTM_SVG;
@@ -539,8 +550,8 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   gchar *svgdoc = NULL;
   if(type == DT_WTM_SVG)
   {
-    svgdoc = _watermark_get_svgdoc(self, data, &piece->pipe->image, filename);
-    if(!svgdoc)
+    svgdoc = _watermark_get_svgdoc(self, data, &pipe->dev->image_storage, filename);
+    if(IS_NULL_PTR(svgdoc))
     {
       dt_iop_image_copy_by_size(ovoid, ivoid, roi_out->width, roi_out->height, ch);
       return 0;
@@ -558,7 +569,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
   /* create a cairo memory surface that is later used for reading watermark overlay data */
   guint8 *image = (guint8 *)g_try_malloc0_n(roi_out->height, stride);
-  if(image == NULL)
+  if(IS_NULL_PTR(image))
   {
     dt_iop_image_copy_by_size(ovoid, ivoid, roi_out->width, roi_out->height, ch);
     return 1;
@@ -584,7 +595,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     GError *error = NULL;
     svg = rsvg_handle_new_from_data((const guint8 *)svgdoc, strlen(svgdoc), &error);
     dt_free(svgdoc);
-    if(!svg || error)
+    if(IS_NULL_PTR(svg) || error)
     {
       cairo_surface_destroy(surface);
       dt_free(image);
@@ -722,7 +733,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
     const int stride_two = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, watermark_width);
     image_two = (guint8 *)g_try_malloc0_n(watermark_height, stride_two);
-    if(image_two == NULL)
+    if(IS_NULL_PTR(image_two))
     {
       cairo_surface_destroy(surface);
       g_object_unref(svg);
@@ -824,11 +835,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   /* render surface on output */
   guint8 *sd = image;
   const float opacity = data->opacity / 100.0f;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(roi_out, in, out, sd, opacity, ch)   \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int j = 0; j < roi_out->height * roi_out->width; j++)
   {
     float *const i = in + ch*j;
@@ -869,7 +876,7 @@ static void watermark_callback(GtkWidget *tb, gpointer user_data)
   dt_dev_add_history_item(darktable.develop, self, TRUE, TRUE);
 }
 
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_watermark_gui_data_t *g = (dt_iop_watermark_gui_data_t *)self->gui_data;
   dt_iop_watermark_params_t *p = (dt_iop_watermark_params_t *)self->params;

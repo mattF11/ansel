@@ -49,9 +49,7 @@
 #include "config.h"
 #endif
 #include <stdlib.h>
-#if defined(__SSE__)
-#include <xmmintrin.h>
-#endif
+
 #include <cairo.h>
 
 #include "common/opencl.h"
@@ -113,7 +111,7 @@ int flags()
   return IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_HIDDEN | IOP_FLAGS_ONE_INSTANCE | IOP_FLAGS_NO_HISTORY_STACK;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -127,12 +125,11 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
 }
 
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, piece->module, piece->colors,
-                                         ivoid, ovoid, roi_in, roi_out))
-    return 0; // image has been copied through to output and module's trouble flag has been updated
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
 
   dt_develop_t *dev = self->dev;
 
@@ -148,23 +145,12 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   const float *const restrict in = __builtin_assume_aligned((const float *const restrict)ivoid, 64);
   float *const restrict out = __builtin_assume_aligned((float *const restrict)ovoid, 64);
 
-  const dt_iop_order_iccprofile_info_t *const current_profile = dt_ioppr_get_pipe_current_profile_info(self, piece->pipe);
-
-  #ifdef __SSE2__
-    // flush denormals to zero to avoid performance penalty if there are a lot of near-zero values
-    const unsigned int oldMode = _MM_GET_FLUSH_ZERO_MODE();
-    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
-  #endif
+  const dt_iop_order_iccprofile_info_t *const current_profile = dt_ioppr_get_pipe_current_profile_info(self, pipe);
 
   if(dev->overexposed.mode == DT_CLIPPING_PREVIEW_ANYRGB)
   {
     // Any of the RGB channels is out of bounds
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, in, lower, lower_color, out, roi_out, \
-                      upper, upper_color) \
-  schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(size_t k = 0; k < (size_t)ch * roi_out->width * roi_out->height; k += ch)
     {
       if(in[k + 0] >= upper || in[k + 1] >= upper || in[k + 2] >= upper)
@@ -182,15 +168,10 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     }
   }
 
-  else if(dev->overexposed.mode == DT_CLIPPING_PREVIEW_GAMUT && current_profile)
+  else if(dev->overexposed.mode == DT_CLIPPING_PREVIEW_GAMUT && !IS_NULL_PTR(current_profile))
   {
     // Gamut is out of bounds
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, in, lower, lower_color, out, roi_out, \
-                      upper, upper_color, current_profile) \
-  schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(size_t k = 0; k < (size_t)ch * roi_out->width * roi_out->height; k += ch)
     {
       const float luminance = dt_ioppr_get_rgb_matrix_luminance(in + k,
@@ -240,15 +221,10 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     }
   }
 
-  else if(dev->overexposed.mode == DT_CLIPPING_PREVIEW_LUMINANCE && current_profile)
+  else if(dev->overexposed.mode == DT_CLIPPING_PREVIEW_LUMINANCE && !IS_NULL_PTR(current_profile))
   {
     // Luminance channel is out of bounds
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, in, lower, lower_color, out, roi_out, \
-                      upper, upper_color, current_profile) \
-  schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(size_t k = 0; k < (size_t)ch * roi_out->width * roi_out->height; k += ch)
     {
       const float luminance = dt_ioppr_get_rgb_matrix_luminance(in + k,
@@ -272,15 +248,10 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     }
   }
 
-  else if(dev->overexposed.mode == DT_CLIPPING_PREVIEW_SATURATION && current_profile)
+  else if(dev->overexposed.mode == DT_CLIPPING_PREVIEW_SATURATION && !IS_NULL_PTR(current_profile))
   {
     // Show saturation out of bounds where luminance is valid
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, in, lower, lower_color, out, roi_out, \
-                      upper, upper_color, current_profile) \
-  schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(size_t k = 0; k < (size_t)ch * roi_out->width * roi_out->height; k += ch)
     {
       const float luminance = dt_ioppr_get_rgb_matrix_luminance(in + k,
@@ -319,32 +290,28 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
       }
     }
   }
-
-  #ifdef __SSE2__
-    _MM_SET_FLUSH_ZERO_MODE(oldMode);
-  #endif
-
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
+  
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
     dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
 
   return 0;
 }
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_develop_t *dev = self->dev;
   dt_iop_overexposed_global_data_t *gd = (dt_iop_overexposed_global_data_t *)self->global_data;
 
   cl_int err = -999;
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   const int width = roi_out->width;
   const int height = roi_out->height;
 
-  const dt_iop_order_iccprofile_info_t *const current_profile = dt_ioppr_get_pipe_current_profile_info(self, piece->pipe);
+  const dt_iop_order_iccprofile_info_t *const current_profile = dt_ioppr_get_pipe_current_profile_info(self, pipe);
 
-  const int use_work_profile = (current_profile == NULL) ? 0 : 1;
+  const int use_work_profile = (IS_NULL_PTR(current_profile)) ? 0 : 1;
   cl_mem dev_profile_info = NULL;
   cl_mem dev_profile_lut = NULL;
   dt_colorspaces_iccprofile_info_cl_t *profile_info_cl;
@@ -385,9 +352,7 @@ error:
 }
 #endif
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
   tiling->factor = 3.0f;  // in + out + temp
   tiling->factor_cl = 3.0f;

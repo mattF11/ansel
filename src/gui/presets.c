@@ -114,8 +114,8 @@ void dt_gui_presets_init()
   // Avoid regenerating all auto-presets on every startup when the build and UI language are unchanged.
   // This cuts a large number of INSERTs during module load without altering behavior across upgrades.
   gchar *lang = dt_conf_get_string("ui_last/gui_language");
-  if(!lang) lang = g_strdup("");
-  gchar *sig = g_strdup_printf("%d|%s", dt_version(), lang);
+  if(IS_NULL_PTR(lang)) lang = g_strdup("");
+  gchar *sig = g_strdup_printf("%s|%s", darktable_package_version, lang);
   gchar *prev = dt_conf_get_string("ui_last/presets_autogen_signature");
   _gui_presets_autogen_enabled = !(prev && !g_strcmp0(prev, sig));
   dt_conf_set_string("ui_last/presets_autogen_signature", sig);
@@ -280,7 +280,7 @@ static void _menuitem_delete_preset(GtkMenuItem *menuitem, dt_iop_module_t *modu
 {
   int writeprotect = -1;
   gchar *name = _get_active_preset_name(module, &writeprotect);
-  if(name == NULL) return;
+  if(IS_NULL_PTR(name)) return;
 
   if(writeprotect)
   {
@@ -326,7 +326,7 @@ static void _edit_preset_response(GtkDialog *dialog, gint response_id, dt_gui_pr
     const gchar *name = gtk_entry_get_text(g->name);
     if(((g->old_id >= 0) && (strcmp(g->original_name, name) != 0)) || (g->old_id < 0))
     {
-      if(name == NULL || *name == '\0' || strcmp(_("new preset"), name) == 0)
+      if(IS_NULL_PTR(name) || *name == '\0' || strcmp(_("new preset"), name) == 0)
       {
         // show error dialog
         GtkWidget *dlg_changename
@@ -519,7 +519,7 @@ static void _edit_preset_response(GtkDialog *dialog, gint response_id, dt_gui_pr
 
 void dt_gui_presets_confirm_and_delete(GtkWidget *parent_dialog, const char *name, const char *module_name, int rowid)
 {
-  if(!module_name) return;
+  if(IS_NULL_PTR(module_name)) return;
 
   // This means with want to remove the preset
   GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(parent_dialog), GTK_DIALOG_DESTROY_WITH_PARENT | GTK_DIALOG_MODAL,
@@ -603,7 +603,7 @@ static void _presets_show_edit_dialog(dt_gui_presets_edit_dialog_t *g, gboolean 
   gtk_widget_set_tooltip_text(GTK_WIDGET(g->filter), _("be very careful with this option. "
                                                            "this might be the last time you see your preset."));
   gtk_box_pack_start(box, GTK_WIDGET(g->filter), FALSE, FALSE, 0);
-  if(!g->iop)
+  if(IS_NULL_PTR(g->iop))
   {
     // lib usually don't support autoapply
     gtk_widget_set_no_show_all(GTK_WIDGET(g->autoapply), !dt_presets_module_can_autoapply(g->module_name));
@@ -878,11 +878,11 @@ void dt_gui_presets_show_edit_dialog(const char *name_in, const char *module_nam
 static void _edit_preset(const char *name_in, dt_iop_module_t *module)
 {
   gchar *name = NULL;
-  if(name_in == NULL)
+  if(IS_NULL_PTR(name_in))
   {
     int writeprotect = -1;
     name = _get_active_preset_name(module, &writeprotect);
-    if(name == NULL) return;
+    if(IS_NULL_PTR(name)) return;
     if(writeprotect)
     {
       dt_control_log(_("preset `%s' is write-protected! can't edit it!"), name);

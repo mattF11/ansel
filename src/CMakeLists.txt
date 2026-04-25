@@ -1,5 +1,7 @@
 add_subdirectory(external)
 
+add_library(ansel_deps INTERFACE)
+
 include(CheckCCompilerFlag)
 include(CheckCXXCompilerFlag)
 include(CheckCSourceCompiles)
@@ -57,11 +59,11 @@ FILE(GLOB SOURCE_FILES
   "common/color_picker.c"
   "common/color_vocabulary.c"
   "common/colorlabels.c"
+  "common/colorequal_shared.c"
   "common/colorspaces.c"
   "common/curve_tools.c"
   "common/splines.cpp"
   "common/curl_tools.c"
-  "common/cpuid.c"
   "common/darktable.c"
   "common/database.c"
   "common/datetime.c"
@@ -73,6 +75,7 @@ FILE(GLOB SOURCE_FILES
   "common/film.c"
   "common/file_location.c"
   "common/focus_peaking.c"
+  "common/fp_mode.c"
   "common/gaussian.c"
   "common/grouping.c"
   "common/guided_filter.c"
@@ -102,6 +105,8 @@ FILE(GLOB SOURCE_FILES
   "common/locallaplacian.c"
   "common/locallaplaciancl.c"
   "common/l10n.c"
+  "common/lut3d.c"
+  "common/lut_viewer.c"
   "common/matrices.c"
   "common/metadata.c"
   "common/metadata_export.c"
@@ -152,6 +157,8 @@ FILE(GLOB SOURCE_FILES
   "develop/lightroom.c"
   "develop/pixelpipe.c"
   "develop/pixelpipe_cache.c"
+  "develop/pixelpipe_cpu.c"
+  "develop/pixelpipe_gpu.c"
   "develop/blend.c"
   "develop/blend_gui.c"
   "develop/blends/blendif_lab.c"
@@ -161,6 +168,7 @@ FILE(GLOB SOURCE_FILES
   "develop/tiling.c"
   "common/dwt.c"
   "common/heal.c"
+  "common/iop-autoset.c"
   "develop/masks/brush.c"
   "develop/masks/circle.c"
   "develop/masks/group.c"
@@ -277,70 +285,98 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-if(APPLE AND (CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
-        list(REMOVE_ITEM CMAKE_CXX_IMPLICIT_LINK_LIBRARIES stdc++)
-        list(APPEND CMAKE_CXX_IMPLICIT_LINK_LIBRARIES c++)
-        list(REMOVE_DUPLICATES CMAKE_CXX_IMPLICIT_LINK_LIBRARIES)
-        # Also remove incorrectly parsed -lto_library flag
-        # It wasn't present with Xcode 7.2 and appeared before 8.3 release
-        # cmake 3.7.2 doesn't understand this flag and thinks it's a library
-        list(REMOVE_ITEM CMAKE_CXX_IMPLICIT_LINK_LIBRARIES to_library)
+# This enables LTO (`-flto`): https://gcc.gnu.org/onlinedocs/gccint/LTO-Overview.html
+# It fails on Windows for exr.cc because std:string objects are defined twice,
+# once from OpenEXR and one from darktable.h, and there is no way to selectively
+# disable it there because it's global by nature.
+# LTO allows to look across DLL boundaries to merge symbols,
+# possibly allowing to inline functions across libraries for better 
+# parallel loops. But Linux/MacOS don't import libraries the way Windows does,
+# they use shared libraries.
+# Also Ansel inherits from Darktable a messy architecture that pretends to be 
+# modular, while in fact all libraries are shared globally, so using `-fvisibility=hidden`
+# breaks the whole project.
+# So I haven't found a way to fix that and it sucks that one lib is making us drop 
+# this feature for the whole project.
+if(NOT WIN32)
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
 endif()
-
-# Append thread flags/libraries to LIBS
-list(APPEND LIBS "${CMAKE_THREAD_LIBS_INIT}")
-
-# Need to explicitly link against math library.
-list(APPEND LIBS "-lm")
-
-if(USE_OPENMP)
-  if(OpenMP_C_FLAGS)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
-  endif()
-
-  if(OpenMP_CXX_FLAGS)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-  endif()
-
-  if(OpenMP_C_INCLUDE_DIRS)
-    include_directories(${OpenMP_C_INCLUDE_DIRS})
-  endif()
-
-  if(OpenMP_CXX_INCLUDE_DIRS)
-    include_directories(${OpenMP_CXX_INCLUDE_DIRS})
-  endif()
-
-  list(APPEND LIBS ${OpenMP_C_LIBRARIES} ${OpenMP_CXX_LIBRARIES})
-endif(USE_OPENMP)
 
 if(USE_DARKTABLE_PROFILING)
 	add_definitions(-DUSE_DARKTABLE_PROFILING)
 	set(SOURCES ${SOURCES} "common/profiling.c")
 endif()
 
-#
+##
 # Find all other required libraries for building
-#
-# GTK3 does pull glib, but this allows us to check for the version
-find_package(Glib 2.64 REQUIRED)
+##
+
+# For GTK3, we grab the PkgConfig definition directly.
+# Don't reinvent a worse wheel.
+find_package(PkgConfig)
+pkg_check_modules(GTK3 REQUIRED IMPORTED_TARGET gtk+-3.0>=3.24)
+pkg_check_modules(RSVG2 REQUIRED IMPORTED_TARGET librsvg-2.0)
+pkg_check_modules(JSONGLIB REQUIRED IMPORTED_TARGET json-glib-1.0)
+pkg_check_modules(LIBXML2 REQUIRED IMPORTED_TARGET libxml-2.0)
+
+# TODO: the following find_package() need to be replaced by pkg_check_modules()
+# like above as soon as they will get supported by PkgConfig,
+# and their cmake/modules/FindXXX.cmake modules deleted.
+# We shouldn't have to maintain our own modules, it's brittle and needs to be updated sometimes.
+find_package(LCMS2 REQUIRED)
+find_package(JPEG REQUIRED)
+find_package(PNG REQUIRED)
+find_package(TIFF REQUIRED)
+find_package(LensFun REQUIRED)
+find_package(Sqlite3 3.24 REQUIRED)
+find_package(Exiv2 0.27.4 REQUIRED)
+find_package(Pugixml 1.2 REQUIRED)
+
+# CMake provides a `FindCURL.cmake` module, which will set `CURL_LIBRARIES`, 
+# however if cURL is built with CMake, it will generate a `CURLConfig.cmake` 
+# config, which will not set `CURL_LIBRARIES`. 
+# 
+# MSYS2 currently build cURL with CMake, and if we do `find_package(CURL)` 
+# directly, config will be used, so we need to keep compatibility。 
+# 
+# See <https://cmake.org/cmake/help/latest/module/FindCURL.html#curl-cmake>. 
+# See <https://github.com/msys2/MINGW-packages/issues/21028>.
+find_package(CURL REQUIRED)
+
+target_include_directories(ansel_deps INTERFACE
+  LCMS2::LCMS2
+  PNG::PNG
+  JPEG::JPEG
+  TIFF::TIFF
+  LensFun::LensFun
+  Sqlite3::Sqlite3
+  Exiv2::Exiv2
+  Pugixml::Pugixml
+  CURL::libcurl
+)
+target_link_libraries(ansel_deps INTERFACE
+  PkgConfig::GTK3
+  PkgConfig::RSVG2
+  PkgConfig::JSONGLIB
+  PkgConfig::LIBXML2
+  LCMS2::LCMS2
+  PNG::PNG
+  JPEG::JPEG
+  TIFF::TIFF
+  LensFun::LensFun
+  Sqlite3::Sqlite3
+  Exiv2::Exiv2
+  Pugixml::Pugixml
+  CURL::libcurl
+)
+
 add_definitions("-DGLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_64")
 add_definitions("-DGLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_MIN_REQUIRED")
-include_directories(SYSTEM ${Glib_INCLUDE_DIRS})
-list(APPEND LIBS ${Glib_LIBRARIES})
-
-# GTK3 pulls in ATK, GDK, GDK-PIXBUF, CAIRO, GLIB, PANGO
-find_package(GTK3 3.24 REQUIRED)
 add_definitions("-DGDK_VERSION_MIN_REQUIRED=GDK_VERSION_3_24")
 #add_definitions("-DGDK_VERSION_MAX_ALLOWED=GDK_VERSION_MIN_REQUIRED")
-include_directories(SYSTEM ${GTK3_INCLUDE_DIRS})
-list(APPEND LIBS ${GTK3_LIBRARIES})
 
-# Check for libxml2 / broken cmake module can't be included in the foreach() below
-find_package(LibXml2 2.6 REQUIRED)
-include_directories(SYSTEM ${LIBXML2_INCLUDE_DIR})
-list(APPEND LIBS ${LIBXML2_LIBRARIES})
-add_definitions(${LIBXML2_DEFINITIONS})
+## Optional deps go here
 
 option(WITH_LIBSOUP2 "Use libsoup2 instead of libsoup3" OFF)
 option(WITH_LIBSOUP3 "Force libsoup3 (ignore libsoup2)" OFF)
@@ -354,15 +390,13 @@ endif()
 # used to launch a tiny http server, which could be used by OAuth services (libsoup2/3)
 find_package(LibSoup)
 if(LibSoup_FOUND)
-  include_directories(SYSTEM ${LibSoup_INCLUDE_DIRS})
-  list(APPEND LIBS ${LibSoup_LIBRARIES})
+  target_link_libraries(ansel_deps INTERFACE LibSoup::LibSoup)
   add_definitions(-DHAVE_HTTP_SERVER=1 -DLIBSOUP_VERSION_MAJOR=${LIBSOUP_VERSION_MAJOR})
   list(APPEND SOURCES "common/http_server.c")
   message(STATUS "HTTP server enabled with LibSoup ${LibSoup_VERSION}")
 else()
   message(STATUS "HTTP server DISABLED (no libsoup)")
 endif()
-
 
 if(USE_OPENEXR)
   find_package(OpenEXR CONFIG)
@@ -372,8 +406,7 @@ if(USE_OPENEXR)
     find_package(OpenEXR)
   endif()
   if(OpenEXR_FOUND)
-    include_directories(SYSTEM ${OpenEXR_INCLUDE_DIRS})
-    list(APPEND LIBS ${OpenEXR_LIBRARIES})
+    target_link_libraries(ansel_deps INTERFACE OpenEXR::OpenEXR)
     add_definitions(${OpenEXR_DEFINITIONS})
     add_definitions(-DHAVE_OPENEXR=1)
     list(APPEND SOURCES "common/imageio_exr.cc")
@@ -384,8 +417,7 @@ endif(USE_OPENEXR)
 if(USE_WEBP)
   find_package(WebP 0.3.0)
   if(WebP_FOUND)
-    include_directories(SYSTEM ${WebP_INCLUDE_DIRS})
-    list(APPEND LIBS ${WebP_LIBRARIES})
+    target_link_libraries(ansel_deps INTERFACE WebP::WebP)
     add_definitions(${WebP_DEFINITIONS})
     add_definitions(-DHAVE_WEBP=1)
     list(APPEND SOURCES "common/imageio_webp.c")
@@ -394,91 +426,44 @@ if(USE_WEBP)
 endif(USE_WEBP)
 
 if(USE_AVIF)
-  # libavif released stable version and we support it since 0.8.2, but its
-  # `config-version.cmake` requires exact match of major version, so we have to
-  # check the version manually.
   find_package(libavif CONFIG)
-  if(libavif_FOUND AND libavif_VERSION VERSION_GREATER_EQUAL 0.8.2)
-    list(APPEND LIBS avif)
+  if(libavif_FOUND AND libavif_VERSION VERSION_GREATER_EQUAL 0.8.2 AND TARGET avif)
+    target_link_libraries(ansel_deps INTERFACE avif)
     add_definitions(-DHAVE_LIBAVIF=1)
-    list(APPEND SOURCES "common/imageio_avif.c")
+    list(APPEND SOURCES common/imageio_avif.c)
     set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} avif CACHE INTERNAL "")
   else()
-    # Version mismatched.
-    set(libavif_FOUND NOTFOUND)
+    # Fallback path (MSYS2 / older distros)
+    pkg_check_modules(AVIF REQUIRED IMPORTED_TARGET libavif)
+    if(TARGET PkgConfig::AVIF)
+      target_link_libraries(ansel_deps INTERFACE PkgConfig::AVIF)
+      target_compile_definitions(ansel_deps INTERFACE HAVE_LIBAVIF=1)
+      list(APPEND SOURCES common/imageio_avif.c )
+      set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} avif CACHE INTERNAL "")
+    endif()
   endif()
 endif()
 
 if(USE_HEIF)
-  # libheif's `config-version.cmake` requires exact match of all version, so we
-  # have to check the version manually.
+  # Try modern CMake package first
   find_package(libheif CONFIG)
   if(NOT libheif_FOUND)
     find_package(libheif 1.13.0 MODULE)
   endif()
-  if(libheif_FOUND AND libheif_VERSION VERSION_GREATER_EQUAL 1.13.0)
-    list(APPEND LIBS heif)
+  if(libheif_FOUND AND libheif_VERSION VERSION_GREATER_EQUAL 1.13.0 AND TARGET heif)
+    target_link_libraries(ansel_deps INTERFACE heif)
     add_definitions(-DHAVE_LIBHEIF=1)
-    list(APPEND SOURCES "common/imageio_heif.c")
+    list(APPEND SOURCES common/imageio_heif.c )
     set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} heif heic hif CACHE INTERNAL "")
+    # libheif may also support AVIF
     if(NOT libavif_FOUND)
-      # libheif can handle avif, too.
-      set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} avif CACHE INTERNAL "")
+      list(APPEND DT_SUPPORTED_EXTENSIONS avif)
+      set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} CACHE INTERNAL "")
     endif()
   else()
-    # Version mismatched.
     set(libheif_FOUND NOTFOUND)
   endif()
 endif()
-
-if(USE_LENSFUN)
-  find_package(LensFun)
-  if(LensFun_FOUND)
-    include_directories(SYSTEM ${LensFun_INCLUDE_DIRS})
-    list(APPEND LIBS ${LensFun_LIBRARIES})
-    add_definitions(-DHAVE_LENSFUN=1)
-    add_definitions(${LensFun_DEFINITIONS})
-  endif()
-endif()
-
-find_package(Sqlite3 3.24 REQUIRED)
-include_directories(SYSTEM ${Sqlite3_INCLUDE_DIR})
-list(APPEND LIBS ${Sqlite3_LIBRARIES})
-add_definitions(${Sqlite3_DEFINITIONS})
-
-# CMake provides a `FindCURL.cmake` module, which will set `CURL_LIBRARIES`,
-# however if cURL is built with CMake, it will generate a `CURLConfig.cmake`
-# config, which will not set `CURL_LIBRARIES`.
-#
-# MSYS2 currently build cURL with CMake, and if we do `find_package(CURL)`
-# directly, config will be used, so we need to keep compatibility。
-#
-# See <https://cmake.org/cmake/help/latest/module/FindCURL.html#curl-cmake>.
-# See <https://github.com/msys2/MINGW-packages/issues/21028>.
-find_package(CURL REQUIRED)
-if(TARGET CURL::libcurl)
-  set(CURL_LIBRARIES CURL::libcurl)
-endif()
-include_directories(SYSTEM ${CURL_INCLUDE_DIRS})
-list(APPEND LIBS ${CURL_LIBRARIES})
-add_definitions(${CURL_DEFINITIONS})
-
-foreach(lib ${OUR_LIBS} GIO GThread GModule PangoCairo Rsvg2 LibXml2 PNG JPEG TIFF LCMS2 JsonGlib)
-  find_package(${lib} REQUIRED)
-  include_directories(SYSTEM ${${lib}_INCLUDE_DIRS})
-  list(APPEND LIBS ${${lib}_LIBRARIES})
-  add_definitions(${${lib}_DEFINITIONS})
-endforeach(lib)
-
-# Require exiv2 >= 0.27 to make sure everything we need is available
-find_package(Exiv2 0.27.4 REQUIRED)
-include_directories(SYSTEM ${Exiv2_INCLUDE_DIRS})
-list(APPEND LIBS ${Exiv2_LIBRARIES})
-add_definitions(${Exiv2_DEFINITIONS})
-
-find_package(Pugixml 1.2 REQUIRED)
-include_directories(SYSTEM ${Pugixml_INCLUDE_DIRS})
-list(APPEND LIBS ${Pugixml_LIBRARIES})
 
 # Optionally enable ISOBMFF support in Exiv2
 if(USE_ISOBMFF)
@@ -500,10 +485,9 @@ endif()
 if(USE_OPENJPEG)
   find_package(OpenJPEG)
   if(OpenJPEG_FOUND)
+    target_link_libraries(ansel_deps INTERFACE OpenJPEG::OpenJPEG)
     add_definitions(-DHAVE_OPENJPEG=1)
     list(APPEND SOURCES "common/imageio_j2k.c")
-    include_directories(SYSTEM ${OpenJPEG_INCLUDE_DIRS})
-    list(APPEND LIBS ${OpenJPEG_LIBRARIES})
     set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} j2c j2k jp2 jpc CACHE INTERNAL "")
   endif(OpenJPEG_FOUND)
 endif(USE_OPENJPEG)
@@ -518,20 +502,19 @@ endif(IsoCodes_FOUND)
 #
 # Detect compile of optional pwstorage backends
 #
-if(USE_LIBSECRET AND JsonGlib_FOUND)
+if(USE_LIBSECRET)
   find_package(Libsecret)
   if(Libsecret_FOUND)
     if(Libsecret_VERSION VERSION_LESS "0.18")
       message(STATUS "Found libsecret unsupported version ${Libsecret_VERSION}. Please upgrade to version 0.18 or newer.")
       set(Libsecret_FOUND FALSE)
     else()
+      target_link_libraries(ansel_deps INTERFACE Libsecret::Libsecret)
       set(SOURCES ${SOURCES} "common/pwstorage/backend_libsecret.c")
-      include_directories(SYSTEM ${Libsecret_INCLUDE_DIRS})
-      list(APPEND LIBS ${Libsecret_LIBRARIES})
       add_definitions(-DHAVE_LIBSECRET=1)
     endif()
   endif(Libsecret_FOUND)
-endif(USE_LIBSECRET AND JsonGlib_FOUND)
+endif()
 
 if(USE_KWALLET)
   add_definitions(-DHAVE_KWALLET=1)
@@ -539,132 +522,122 @@ endif(USE_KWALLET)
 
 if(USE_MAC_INTEGRATION)
   find_package(MacIntegration)
-  if(MacIntegration_FOUND)
-    include_directories(SYSTEM ${MacIntegration_INCLUDE_DIRS})
-    list(APPEND LIBS ${MacIntegration_LIBRARIES})
+  if(TARGET MacIntegration::MacIntegration)
+    target_link_libraries(ansel_deps INTERFACE MacIntegration::MacIntegration)
     add_definitions("-DMAC_INTEGRATION")
-  endif(MacIntegration_FOUND)
-endif(USE_MAC_INTEGRATION)
+  elseif(MacIntegration_FOUND)
+    # Fallback for legacy FindMacIntegration.cmake
+    target_include_directories(ansel_deps INTERFACE ${MacIntegration_INCLUDE_DIRS})
+    target_link_libraries(ansel_deps INTERFACE ${MacIntegration_LIBRARIES})
+    add_definitions("-DMAC_INTEGRATION")
+  endif()
+endif()
 
 if(USE_GRAPHICSMAGICK)
   find_package(GraphicsMagick)
-  if(GraphicsMagick_FOUND)
-    add_definitions(-DHAVE_GRAPHICSMAGICK=1)
-    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} gif jpc jp2 bmp dcm jng miff mng pbm pnm ppm pgm webp CACHE INTERNAL "")
-    include_directories(SYSTEM ${GraphicsMagick_INCLUDE_DIRS})
-    list(APPEND LIBS ${GraphicsMagick_LIBRARIES})
-  endif(GraphicsMagick_FOUND)
-endif(USE_GRAPHICSMAGICK)
 
-if(USE_IMAGEMAGICK AND NOT GraphicsMagick_FOUND)
-  # Do not use find_package(): module is not providing needed CFLAGS
-  find_package(PkgConfig)
-  pkg_check_modules(ImageMagick MagickWand>=7)
-  if(ImageMagick_FOUND)
-    add_definitions(-DHAVE_IMAGEMAGICK=1 ${ImageMagick_CFLAGS_OTHER})
-    include_directories(SYSTEM ${ImageMagick_INCLUDE_DIRS})
-    foreach(lib ${ImageMagick_LIBRARIES})
-      find_library(ImageMagick_LIBRARY NAMES ${lib} HINTS ${ImageMagick_LIBRARY_DIRS})
-      list(APPEND LIBS ${ImageMagick_LIBRARY})
-      unset(ImageMagick_LIBRARY CACHE)
-    endforeach()
-    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} gif jpc jp2 bmp dcm jng miff mng pam webp CACHE INTERNAL "")
-  endif(ImageMagick_FOUND)
-endif(USE_IMAGEMAGICK AND NOT GraphicsMagick_FOUND)
+  if(TARGET GraphicsMagick::GraphicsMagick)
+    target_link_libraries(ansel_deps INTERFACE GraphicsMagick::GraphicsMagick)
+  else()
+    # pkg-config fallback
+    pkg_check_modules(GRAPHICSMAGICK QUIET IMPORTED_TARGET GraphicsMagick)
+
+    if(TARGET PkgConfig::GRAPHICSMAGICK)
+      target_link_libraries(ansel_deps INTERFACE PkgConfig::GRAPHICSMAGICK)
+    elseif(GraphicsMagick_FOUND)
+      # legacy fallback
+      target_include_directories(ansel_deps INTERFACE ${GraphicsMagick_INCLUDE_DIRS})
+      target_link_libraries(ansel_deps INTERFACE ${GraphicsMagick_LIBRARIES})
+    endif()
+  endif()
+
+  if(TARGET GraphicsMagick::GraphicsMagick OR TARGET PkgConfig::GRAPHICSMAGICK OR GraphicsMagick_FOUND)
+    set(DT_SUPPORTED_EXTENSIONS
+        ${DT_SUPPORTED_EXTENSIONS}
+        gif jpc jp2 bmp dcm jng miff mng pbm pnm ppm pgm webp
+        CACHE INTERNAL "")
+    add_definitions(-DHAVE_GRAPHICSMAGICK=1)
+  endif()
+endif()
+
+if(USE_IMAGEMAGICK AND NOT TARGET GraphicsMagick::GraphicsMagick AND NOT TARGET PkgConfig::GRAPHICSMAGICK)
+  pkg_check_modules(IMAGEMAGICK IMPORTED_TARGET MagickWand>=7)
+
+  if(TARGET PkgConfig::IMAGEMAGICK)
+    target_link_libraries(ansel_deps INTERFACE PkgConfig::IMAGEMAGICK)
+    add_definitions(-DHAVE_IMAGEMAGICK=1)
+
+    # pkg-config CFLAGS_OTHER (rare but needed for ImageMagick)
+    if(IMAGEMAGICK_CFLAGS_OTHER)
+      target_compile_options(ansel_deps INTERFACE ${IMAGEMAGICK_CFLAGS_OTHER})
+    endif()
+
+    set(DT_SUPPORTED_EXTENSIONS
+        ${DT_SUPPORTED_EXTENSIONS}
+        gif jpc jp2 bmp dcm jng miff mng pam webp
+        CACHE INTERNAL "")
+  endif()
+endif()
 
 if(USE_GMIC)
   find_package(GMIC)
   if(GMIC_FOUND)
     add_definitions(-DHAVE_GMIC=1)
-    include_directories(SYSTEM ${GMIC_INCLUDE_DIRS})
-    list(APPEND LIBS ${GMIC_LIBRARIES})
+    target_link_libraries(ansel_deps INTERFACE ${GMIC_LIBRARIES})
   endif(GMIC_FOUND)
 endif(USE_GMIC)
 
 if(USE_ICU)
-  find_package(ICU)
-  if(ICU_FOUND)
+  find_package(ICU REQUIRED COMPONENTS uc i18n data)
+
+  if(TARGET ICU::uc)
+    target_link_libraries(ansel_deps INTERFACE ICU::uc ICU::i18n ICU::data)
     add_definitions(-DHAVE_ICU=1 -DSQLITE_CORE -DSQLITE_ENABLE_ICU)
-    include_directories(SYSTEM ${ICU_INCLUDE_DIRS})
-    list(APPEND LIBS ${ICU_LIBRARIES})
-    set(SOURCES ${SOURCES} "common/sqliteicu.c")
-  endif(ICU_FOUND)
-endif(USE_ICU)
+    list(APPEND SOURCES common/sqliteicu.c)
+  endif()
+endif()
+
+if(USE_CMARK)
+  find_package(CMark)
+  if(CMark_FOUND)
+    if(TARGET CMark::CMark)
+      target_include_directories(ansel_deps INTERFACE CMark::CMark)
+      target_link_libraries(ansel_deps INTERFACE CMark::CMark)
+    elseif(TARGET cmark::cmark)
+      target_include_directories(ansel_deps INTERFACE cmark::cmark)
+      target_link_libraries(ansel_deps INTERFACE cmark::cmark)
+    else()
+      target_include_directories(ansel_deps INTERFACE ${CMark_INCLUDE_DIRS})
+      target_link_libraries(ansel_deps INTERFACE ${CMark_LIBRARIES})
+    endif()
+    add_definitions(-DHAVE_CMARK=1)
+  else()
+    message(WARNING "cmark not found. Disabling USE_CMARK.")
+    set(USE_CMARK OFF CACHE BOOL "" FORCE)
+  endif()
+endif()
 
 if(USE_OPENCL)
   add_definitions(-DHAVE_OPENCL=1)
 endif(USE_OPENCL)
 
-# Check for __builtin_cpu_supports here due to a bug in clang/llvm. LLVM uses
-# libgcc to provide the symbols, so if clang wasn't compiled with libgcc, the
-# compiler will say it's available; however the linker cannot find the symbols.
-# So do a quick test compile to see if it's actually available.
-# See https://llvm.org/bugs/show_bug.cgi?id=25510
-check_c_source_compiles("#include <stdio.h>
-int main() {
-  __builtin_cpu_init();
-  printf(\"%d\", __builtin_cpu_supports(\"sse3\"));
-}" HAVE_BUILTIN_CPU_SUPPORTS)
-if(HAVE_BUILTIN_CPU_SUPPORTS)
-  add_definitions(-DHAVE_BUILTIN_CPU_SUPPORTS=1)
-endif(HAVE_BUILTIN_CPU_SUPPORTS)
-MESSAGE(STATUS "Does the compiler support __builtin_cpu_supports(): ${HAVE_BUILTIN_CPU_SUPPORTS}")
-
-check_c_source_compiles("
-static __thread int tls;
-int main(void)
-{
-  return 0;
-}" HAVE_TLS)
-if(NOT HAVE_TLS)
-  MESSAGE(FATAL_ERROR "The compiler does not support Thread-local storage.")
-endif()
-
-
 if(WIN32)
-  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--enable-runtime-pseudo-reloc -municode")
-  set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,--enable-runtime-pseudo-reloc")
-  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--enable-runtime-pseudo-reloc")
+  # Linker flags (apply to final executable/shared targets, not globally)
+  target_link_options(ansel_deps INTERFACE
+    -Wl,--enable-runtime-pseudo-reloc
+    -Wl,--no-undefined
+    -Wl,-O1
+    -Wl,--as-needed
+    -Wl,--sort-common
+    -municode
+  )
 
-  SET(CMAKE_SHARED_LIBRARY_LINK_C_FLAGS "-Wl,--no-undefined -static-libgcc -Wl,-O1 -Wl,--as-needed -Wl,--sort-common")
-  SET(CMAKE_SHARED_LIBRARY_LINK_CXX_FLAGS "-Wl,--no-undefined -static-libgcc -Wl,-O1 -Wl,--as-needed -Wl,--sort-common")
-
-  list(APPEND LIBS psapi) # Needed for GetProcessMemoryInfo()
-  list(APPEND LIBS exchndl) # Needed for exception handling and backtrace()
-endif(WIN32)
-
-if(NOT CUSTOM_CFLAGS)
-  if(BUILD_SSE2_CODEPATHS)
-    #we MUST always specify our required instruction set, native might not detect it
-    set(DT_REQ_INSTRUCTIONS "-msse2")
-  endif()
-
-  include(march-mtune)
-
-  #if(NOT BUILD_SSE2_CODEPATHS)
-  #  set(MARCH "${MARCH} -mno-sse2 -D__DISABLE_SSE2__ -U__SSE2__ -D__DISABLE_SSE__ -U__SSE__")
-  #endif()
-
-  #-g MUST be set for ALL builds, or there will be no support for them when bugs happen
-  # warnings we need to enable (and then fix the warning): -Werror=sign-compare -Wpedantic
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${MARCH} ${DT_REQ_INSTRUCTIONS} -g -Wfatal-errors -std=c11")
-  set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O2 -ftree-vectorize")
-  set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -ffast-math -fno-finite-math-only")
-  set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -Werror -Wuninitialized")
-  if(CMAKE_COMPILER_IS_GNUCC)
-    if(BUILD_SSE2_CODEPATHS)
-      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mfpmath=sse")
-    endif()
-
-    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0 -g3 -ggdb3 -Wall -Wmaybe-uninitialized -Wno-undef -Wimplicit-function-declaration -Wnull-dereference -Wimplicit -Winfinite-recursion")
-    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -fexpensive-optimizations")
-  else()
-    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0")
-  endif()
-endif(NOT CUSTOM_CFLAGS)
-
-set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -D_DEBUG")
-set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D_DEBUG")
+  # Libraries (proper modern form)
+  target_link_libraries(ansel_deps INTERFACE
+    psapi      # GetProcessMemoryInfo()
+    exchndl    # exception handling / backtrace
+  )
+endif()
 
 #
 # Generate config.h
@@ -672,116 +645,59 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D_DEBUG")
 string(REPLACE ";" "\", \"" DT_SUPPORTED_EXTENSIONS_STRING "${DT_SUPPORTED_EXTENSIONS}")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/config.cmake.h" "${CMAKE_CURRENT_BINARY_DIR}/config.h" @ONLY)
 
-
 #
 # Build external deps
 #
 
 # Actual defination of the target is in `external/CMakeLists.txt`.
-list(APPEND STATIC_LIBS whereami)
+target_include_directories(whereami PUBLIC external/whereami)
 
 add_library(lib_ansel_imageio_rawspeed STATIC common/imageio_rawspeed.cc)
 target_link_libraries(lib_ansel_imageio_rawspeed PRIVATE rawspeed)
-list(APPEND STATIC_LIBS lib_ansel_imageio_rawspeed)
+target_link_libraries(lib_ansel_imageio_rawspeed PUBLIC ansel_deps)
 
 # Don't do too much, if `USE_BUNDLED_LIBRAW=OFF` but `libraw_FOUND=NOTFOUND`,
 # it's considered as packager's mistake. Instead of using bundled LibRaw as
 # fallback, just build without LibRaw support in that case so the mistake could
 # be easily found.
 if(USE_LIBRAW)
+  add_library(ansel_libraw INTERFACE)
   if(USE_BUNDLED_LIBRAW)
-    add_definitions(-DHAVE_LIBRAW=1)
-    list(APPEND SOURCES "common/imageio_libraw.c")
+    target_link_libraries(ansel_libraw INTERFACE libraw::libraw)
     set(LIBRAW_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external/LibRaw" CACHE STRING "Relative path to libraw directory (default=CMAKE_CURRENT_SOURCE_DIR)")
     if(NOT USE_OPENMP)
       set(ENABLE_OPENMP OFF CACHE BOOL "")
     endif()
     add_subdirectory(external/LibRaw-cmake)
-    list(APPEND STATIC_LIBS libraw::libraw)
+
+    set(libraw_FOUND TRUE)
   else()
-    find_package(libraw 0.21.0)
+    find_package(libraw)
+
     if(libraw_FOUND)
-      list(APPEND LIBS ${libraw_LIBRARY})
-      add_definitions(-DHAVE_LIBRAW=1)
-      list(APPEND SOURCES "common/imageio_libraw.c")
+      if(TARGET libraw::libraw)
+        target_link_libraries(ansel_libraw INTERFACE libraw::libraw)
+      elseif(TARGET LibRaw::LibRaw)
+        target_link_libraries(ansel_libraw INTERFACE LibRaw::LibRaw)
+      else()
+        # fallback to raw variables (FindLibRaw legacy)
+        target_link_libraries(ansel_libraw INTERFACE ${libraw_LIBRARIES})
+        target_include_directories(ansel_libraw INTERFACE ${libraw_INCLUDE_DIRS})
+      endif()
     endif()
   endif()
-endif()
 
-# Check whether Lua is available.
-# Like what we did for LibRaw.
-if(USE_LUA)
-  if(USE_BUNDLED_LUA)
-    add_definitions("-DUSE_LUA")
-    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/external/lua/src)
-    add_subdirectory(external/lua)
-    list(APPEND STATIC_LIBS lua)
+  if(libraw_FOUND)
+    add_library(lib_ansel_imageio_libraw STATIC common/imageio_libraw.c)
+    target_link_libraries(lib_ansel_imageio_libraw PRIVATE ansel_libraw)
+    target_link_libraries(lib_ansel_imageio_libraw PUBLIC ansel_deps)
+    add_definitions(-DHAVE_LIBRAW=1)
   else()
-    find_package(Lua54 5.4)
-    if(Lua54_FOUND)
-      add_definitions("-DUSE_LUA")
-      include_directories(SYSTEM ${Lua54_INCLUDE_DIRS})
-      list(APPEND LIBS ${Lua54_LDFLAGS})
-    else()
-      # Prevent further Lua-related sources from loading.
-      set(USE_LUA OFF)
-    endif()
+    message(STATUS "No LibRaw library was found. Canon CR3 support will be disabled.")
   endif()
+else()
+  message(STATUS "LibRaw support is disabled. Canon CR3 will not be supported.")
 endif()
-
-# Load Lua-related sources.
-if(USE_LUA)
-  FILE(GLOB SOURCE_FILES_LUA
-    "lua/cairo.c"
-    "lua/call.c"
-    "lua/configuration.c"
-    "lua/database.c"
-    "lua/events.c"
-    "lua/film.c"
-    "lua/format.c"
-    "lua/gettext.c"
-    "lua/glist.c"
-    "lua/gui.c"
-    "lua/guides.c"
-    "lua/image.c"
-    "lua/init.c"
-    "lua/lib.c"
-    "lua/lua.c"
-    "lua/lualib.c"
-    "lua/luastorage.c"
-    "lua/modules.c"
-    "lua/password.c"
-    "lua/preferences.c"
-    "lua/print.c"
-    "lua/storage.c"
-    "lua/styles.c"
-    "lua/tags.c"
-    "lua/types.c"
-    "lua/view.c"
-    "lua/widget/widget.c"
-    "lua/widget/box.c"
-    "lua/widget/button.c"
-    "lua/widget/check_button.c"
-    "lua/widget/combobox.c"
-    "lua/widget/container.c"
-    "lua/widget/entry.c"
-    "lua/widget/file_chooser.c"
-    "lua/widget/label.c"
-    "lua/widget/section_label.c"
-    "lua/widget/separator.c"
-    "lua/widget/slider.c"
-    "lua/widget/stack.c"
-    "lua/widget/text_view.c"
-  )
-  set(SOURCES ${SOURCES} ${SOURCE_FILES_LUA})
-endif(USE_LUA)
-
-# LuaAutoC for Lua automated interface generation.
-if(USE_LUA)
-  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/external/LuaAutoC/)
-  add_subdirectory(external/LuaAutoC)
-  list(APPEND STATIC_LIBS lautoc)
-endif(USE_LUA)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   # do not error out on "loop not vectorized" clang OpenMP warnings
@@ -792,6 +708,7 @@ endif()
 if(USE_MAP)
   find_package(OSMGpsMap)
   if(OSMGpsMap_FOUND)
+    target_link_libraries(ansel_deps INTERFACE OSMGpsMap::OSMGpsMap)
     message(STATUS "Map mode: enabled")
     add_definitions(-DHAVE_MAP=1)
     if(NOT OSMGpsMap_VERSION VERSION_LESS 1.1.0)
@@ -800,8 +717,6 @@ if(USE_MAP)
     if(OSMGpsMap_VERSION VERSION_GREATER 1.1.0)
       add_definitions(-DHAVE_OSMGPSMAP_NEWER_THAN_110=1)
     endif()
-    include_directories(SYSTEM ${OSMGpsMap_INCLUDE_DIRS})
-    list(APPEND LIBS ${OSMGpsMap_LIBRARIES})
     add_definitions(${OSMGpsMap_DEFINITIONS})
   else(OSMGpsMap_FOUND)
     set(USE_MAP OFF)
@@ -817,14 +732,9 @@ if(USE_COLORD)
   if(Colord_FOUND)
     find_package(ColordGTK)
     if(ColordGTK_FOUND)
-      # We might make use of colord directly so link against it explicitly. just in case. move up if it is used without colord-gtk, too.
-      include_directories(SYSTEM ${Colord_INCLUDE_DIRS})
-      list(APPEND LIBS ${Colord_LIBRARIES})
-      add_definitions(${Colord_DEFINITIONS})
+      target_link_libraries(ansel_deps INTERFACE Colord::Colord ColordGTK::ColordGTK)
 
-      # ... and also against libcolord-gtk to get the display profile
-      include_directories(SYSTEM ${ColordGTK_INCLUDE_DIRS})
-      list(APPEND LIBS ${ColordGTK_LIBRARIES})
+      # We might make use of colord directly so link against it explicitly. just in case. move up if it is used without colord-gtk, too.
       add_definitions(${ColordGTK_DEFINITIONS})
       add_definitions("-DUSE_COLORDGTK")
     else(ColordGTK_FOUND)
@@ -840,7 +750,7 @@ endif(USE_COLORD)
 if(BUILD_PRINT)
   find_package(Cups)
   if(CUPS_FOUND)
-    include_directories(SYSTEM ${CUPS_INCLUDE_DIR})
+    target_link_libraries(ansel_deps INTERFACE Cups::Cups)
     FILE(GLOB SOURCE_FILES_PRINT
       "common/cups_print.h"
       "common/cups_print.c"
@@ -849,7 +759,6 @@ if(BUILD_PRINT)
       "common/printing.c"
       )
     set(SOURCES ${SOURCES} ${SOURCE_FILES_PRINT})
-    list(APPEND LIBS ${CUPS_LIBRARIES})
     add_definitions(-DHAVE_PRINT=1)
     message(STATUS "Print mode: enabled")
   else(CUPS_FOUND)
@@ -941,17 +850,40 @@ add_dependencies(lib_ansel generate_authors_h)
 if(APPLE)
   set_target_properties(lib_ansel PROPERTIES MACOSX_RPATH TRUE)
 endif()
+
 set_target_properties(lib_ansel PROPERTIES OUTPUT_NAME ansel)
 set_target_properties(lib_ansel PROPERTIES LINKER_LANGUAGE C)
 
 #
 # Link external libs
 #
-target_link_libraries(lib_ansel PRIVATE ${STATIC_LIBS})
-target_link_libraries(lib_ansel PUBLIC ${LIBS})
+target_link_libraries(lib_ansel PUBLIC ansel_deps)
+target_link_libraries(lib_ansel PRIVATE lib_ansel_imageio_rawspeed)
+target_link_libraries(lib_ansel PRIVATE lib_ansel_imageio_libraw)
+target_link_libraries(lib_ansel PRIVATE whereami)
 
-unset(STATIC_LIBS)
-unset(LIBS)
+if(OpenMP_C_FOUND)
+  target_link_libraries(lib_ansel PUBLIC OpenMP::OpenMP_C)
+endif()
+
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(lib_ansel PUBLIC OpenMP::OpenMP_CXX)
+endif()
+
+if(LIBS)
+  message(FATAL_ERROR "LIBS is deprecated and must not be used: ${LIBS}")
+endif()
+if(STATIC_LIBS)
+  message(FATAL_ERROR "STATIC_LIBS is deprecated and must not be used: ${STATIC_LIBS}")
+endif()
+
+#get_target_property(_ansel_deps_libs ansel_deps INTERFACE_LINK_LIBRARIES)
+#if(_ansel_deps_libs)
+#  list(REMOVE_DUPLICATES _ansel_deps_libs)
+#  set_property(TARGET ansel_deps PROPERTY INTERFACE_LINK_LIBRARIES "${_ansel_deps_libs}")
+#endif()
+
+message(STATUS "Ansel deps:" ${_ansel_deps_libs})
 
 #
 # Install libansel
@@ -999,16 +931,18 @@ endif(BUILD_TESTING)
 add_library(help_menu "gui/actions/help.c")
 add_dependencies(help_menu generate_authors_h)
 target_include_directories(help_menu PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(help_menu PRIVATE ansel_deps)
 
 #
 # build ansel executable
 #
 add_executable(ansel ${SUBSYSTEM_MACOSX} ${SUBSYSTEM_WIN32} main.c ${RESOURCE_OBJECT})
 set_target_properties(ansel PROPERTIES LINKER_LANGUAGE C)
+target_link_libraries(ansel PRIVATE lib_ansel)
+
 if(APPLE)
   set_target_properties(lib_ansel PROPERTIES LINK_FLAGS "-framework Carbon -framework AppKit")
 endif(APPLE)
-target_link_libraries(ansel lib_ansel)
 
 if(WIN32)
   set_target_properties(ansel PROPERTIES LINK_FLAGS "-mconsole -mwindows -Wl,-subsystem,console")

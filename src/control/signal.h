@@ -94,6 +94,22 @@ typedef enum dt_signal_t
    */
   DT_SIGNAL_VIEWMANAGER_THUMBTABLE_ACTIVATE,
 
+  /** \brief This signal is raised when a thumb is single-clicked in the filmstrip.
+    Views that want filmstrip click-to-commit behavior need to opt in explicitly,
+    so thumbtable activation keeps its double-click semantics everywhere else.
+    1 : int the imageid of the thumbnail
+    no returned value
+   */
+  DT_SIGNAL_VIEWMANAGER_FILMSTRIP_ACTIVATE,
+
+  /** \brief This signal is raised when a drag starts from the filmstrip.
+    Views that need filmstrip drags to commit a working image first can opt in
+    explicitly before dt_act_on_get_images() freezes the drag payload.
+    1 : int the imageid of the thumbnail under the pointer
+    no returned value
+   */
+  DT_SIGNAL_VIEWMANAGER_FILMSTRIP_DRAG_BEGIN,
+
   /** \brief This signal is raised when collection changed. To avoid leaking the list,
     dt_collection_t is connected to this event and responsible of that.
     1 : dt_collection_change_t the reason why the collection has changed
@@ -115,7 +131,7 @@ typedef enum dt_signal_t
 
   /** \brief This signal is raised when a geotag is added/deleted/changed  */
   // when imgs <> NULL these images have some geotag changes
-  // when imgs == NULL locations have changed
+  // when IS_NULL_PTR(imgs) locations have changed
   // if locid <> 0 it the new selected location on map
   DT_SIGNAL_GEOTAG_CHANGED,
 
@@ -162,6 +178,12 @@ typedef enum dt_signal_t
     */
   DT_SIGNAL_DEVELOP_UI_PIPE_FINISHED,
 
+  /** \brief This signal is raised when one cacheline write lock is released.
+    1 : uint64_t cacheline hash
+    no returned value
+    */
+  DT_SIGNAL_CACHELINE_READY,
+
   /** \brief This signal is raised to request a modulegroups update.
     1 : dt_iop_module_t *module, or NULL to only refresh visibility
     no returned value
@@ -180,6 +202,11 @@ typedef enum dt_signal_t
   no param, no returned value
     */
   DT_SIGNAL_DEVELOP_HISTORY_CHANGE,
+
+  /** \brief This signal is raised once darkroom history has been resynchronized into all live pipelines.
+  no param, no returned value
+    */
+  DT_SIGNAL_HISTORY_RESYNC,
 
   /** \brief This signal is raised when a module is removed from the history stack
     1 module
@@ -257,10 +284,8 @@ typedef enum dt_signal_t
   */
   DT_SIGNAL_CONTROL_TOAST_REDRAW,
 
-  /** \brief This signal is raised when new color picker data are available in the pixelpipe.
-    1 module
-    2 piece
-    no returned value
+  /** \brief This signal is raised when new color picker data are available in darkroom.
+    no param, no returned value
   */
   DT_SIGNAL_CONTROL_PICKERDATA_READY,
 

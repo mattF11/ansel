@@ -72,11 +72,11 @@ dt_dlopencl_t *dt_dlopencl_init(const char *name)
   if(!success) return NULL;
 
   /* try to load library. if a name is given check only that library - else iterate over default names. */
-  if(name != NULL && name[0] != '\0')
+  if(!IS_NULL_PTR(name) && name[0] != '\0')
   {
     library = name;
     module = dt_gmodule_open(library);
-    if(module == NULL)
+    if(IS_NULL_PTR(module))
       dt_vprint(DT_DEBUG_OPENCL, "[dt_dlopencl_init] could not find opencl runtime library '%s'\n", library);
     else
       dt_vprint(DT_DEBUG_OPENCL, "[dt_dlopencl_init] found opencl runtime library '%s'\n", library);
@@ -84,11 +84,11 @@ dt_dlopencl_t *dt_dlopencl_init(const char *name)
   else
   {
     const char **iter = ocllib;
-    while(*iter && (module == NULL))
+    while(*iter && (IS_NULL_PTR(module)))
     {
       library = *iter;
       module = dt_gmodule_open(library);
-      if(module == NULL)
+      if(IS_NULL_PTR(module))
         dt_vprint(DT_DEBUG_OPENCL, "[dt_dlopencl_init] could not find opencl runtime library '%s'\n", library);
       else
         dt_vprint(DT_DEBUG_OPENCL, "[dt_dlopencl_init] found opencl runtime library '%s'\n", library);
@@ -96,7 +96,7 @@ dt_dlopencl_t *dt_dlopencl_init(const char *name)
     }
   }
 
-  if(module == NULL)
+  if(IS_NULL_PTR(module))
     return NULL;
   else
   {
@@ -104,7 +104,7 @@ dt_dlopencl_t *dt_dlopencl_init(const char *name)
     success = TRUE;
     ocl = (dt_dlopencl_t *)malloc(sizeof(dt_dlopencl_t));
 
-    if(ocl == NULL)
+    if(IS_NULL_PTR(ocl))
     {
       dt_free(module);
       return NULL;
@@ -112,7 +112,7 @@ dt_dlopencl_t *dt_dlopencl_init(const char *name)
 
     ocl->symbols = (dt_dlopencl_symbols_t *)calloc(1, sizeof(dt_dlopencl_symbols_t));
 
-    if(ocl->symbols == NULL)
+    if(IS_NULL_PTR(ocl->symbols))
     {
       dt_free(ocl);
       dt_free(module);
@@ -195,6 +195,8 @@ dt_dlopencl_t *dt_dlopencl_init(const char *name)
                                            (void (**)(void)) & ocl->symbols->dt_clGetKernelInfo);
     success = success && dt_gmodule_symbol(module, "clEnqueueBarrier",
                                            (void (**)(void)) & ocl->symbols->dt_clEnqueueBarrier);
+    success = success && dt_gmodule_symbol(module, "clFlush",
+                                           (void (**)(void)) & ocl->symbols->dt_clFlush);
     success = success && dt_gmodule_symbol(module, "clGetKernelWorkGroupInfo",
                                            (void (**)(void)) & ocl->symbols->dt_clGetKernelWorkGroupInfo);
     success = success && dt_gmodule_symbol(module, "clEnqueueReadBuffer",

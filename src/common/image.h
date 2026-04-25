@@ -243,8 +243,6 @@ typedef struct dt_image_geoloc_t
 
 struct dt_cache_entry_t;
 
-// TODO: add color labels and such as cacheable
-// __attribute__ ((aligned (128)))
 typedef struct dt_image_t
 {
   // minimal exif data here (all in multiples of 4-byte to interface nicely with c++):
@@ -288,6 +286,12 @@ typedef struct dt_image_t
   uint32_t group_members;
   uint32_t history_items;
   uint64_t history_hash;
+
+  // mipmap_hash is stored in database as an attempt to record the validity
+  // of thumbnails stored on the disk cache. But it is actually unusable until we
+  // have one hash per mipmap size. So it's not implemented anywhere for now.
+  // Saving all hashes for all mipmap sizes will change the database structure and
+  // loose compatibility.
   uint64_t mipmap_hash;
   uint64_t self_hash;
 
@@ -296,7 +300,7 @@ typedef struct dt_image_t
 
   dt_image_loader_t loader;
 
-  dt_iop_buffer_dsc_t buf_dsc;
+  dt_iop_buffer_dsc_t dsc;
 
   float d65_color_matrix[9]; // the 3x3 matrix embedded in some DNGs
   uint8_t *profile;          // embedded profile, for example from JPEGs

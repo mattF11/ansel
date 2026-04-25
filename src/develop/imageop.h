@@ -62,7 +62,12 @@
 extern "C" {
 #endif
 
-/** region of interest */
+/**
+ * @brief Region of interest passed through the pixelpipe.
+ *
+ * @details `scale` must stay consistent with `x`, `y`, `width` and `height`,
+ * which all describe the same raster ROI seen by the current pipeline stage.
+ */
 typedef struct dt_iop_roi_t
 {
   int x, y, width, height;
@@ -107,6 +112,24 @@ typedef enum dt_iop_module_header_icons_t
   IOP_MODULE_LAST
 } dt_iop_module_header_icons_t;
 
+/**
+ * @brief Get the size of one current-grid pixel in full-resolution image pixels.
+ *
+ * @details `pipe->iscale` tracks how much the pipeline input was already
+ * downsampled when the mipmap cache selected the source buffer. `roi_in->scale`
+ * then applies the per-module raster scaling on top of that buffer. Modules
+ * that author radii or frequencies in original-image pixels should derive
+ * their current working scale from this ratio and clamp it locally only when
+ * they explicitly want to avoid magnifying the effect above 100%.
+ *
+ * @param pipe current pixelpipe input contract.
+ * @param roi_in input ROI currently processed by the module.
+ *
+ * @return float current-grid pixel footprint expressed in full-resolution image
+ * pixels.
+ */
+float dt_dev_get_module_scale(const struct dt_dev_pixelpipe_t *pipe, const dt_iop_roi_t *roi_in);
+
 /** module group */
 typedef enum dt_iop_group_t
 {
@@ -149,8 +172,8 @@ typedef enum dt_iop_flags_t
   IOP_FLAGS_ONE_INSTANCE = 1 << 6,       // The module doesn't support multiple instances
   IOP_FLAGS_PREVIEW_NON_OPENCL = 1 << 7, // Preview pixelpipe of this module must not run on GPU but always on CPU
   IOP_FLAGS_NO_HISTORY_STACK = 1 << 8,   // This iop will never show up in the history stack
-  IOP_FLAGS_NO_MASKS = 1 << 9,          // The module doesn't support masks (used with SUPPORT_BLENDING)
-  IOP_FLAGS_FENCE = 1 << 10,             // No module can be moved pass this one
+  IOP_FLAGS_NO_MASKS = 1 << 9,           // The module doesn't support masks (used with SUPPORT_BLENDING)
+  IOP_FLAGS_TAKE_NO_INPUT = 1 << 10,     // The module doesn't use input
   IOP_FLAGS_UNSAFE_COPY = 1 << 11,       // Unsafe to copy as part of history
   IOP_FLAGS_GUIDES_SPECIAL_DRAW = 1 << 12, // handle the grid drawing directly
   IOP_FLAGS_INTERNAL_MASKS = 1 << 13     // Module uses masks internally, outside of blendops. This advertises the need to commit them to history unconditionnaly.
@@ -183,7 +206,13 @@ typedef enum dt_iop_colorspace_type_t
   IOP_CS_LCH = 3,
   IOP_CS_HSL = 4,
   IOP_CS_JZCZHZ = 5,
+  IOP_CS_RGB_DISPLAY = 6,
 } dt_iop_colorspace_type_t;
+
+static inline gboolean dt_iop_colorspace_is_rgb(const dt_iop_colorspace_type_t cst)
+{
+  return cst == IOP_CS_RGB || cst == IOP_CS_RGB_DISPLAY;
+}
 
 /** part of the module which only contains the cached dlopen stuff. */
 typedef struct dt_iop_module_so_t
@@ -205,9 +234,8 @@ typedef struct dt_iop_module_so_t
 //  dt_iop_gui_data_t *gui_data;
   /** which results in this widget here, too. */
 
-  int (*process_plain)(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                       const void *const i, void *const o, const struct dt_iop_roi_t *const roi_in,
-                       const struct dt_iop_roi_t *const roi_out);
+  int (*process_plain)(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe,
+                       const struct dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o);
 
   // introspection related data
   gboolean have_introspection;
@@ -259,6 +287,13 @@ typedef struct dt_iop_module_t
   /** scale the histogram so the middle grey is at .5 */
   int histogram_middle_grey;
   /** the module is used in this develop module. */
+  // FIXME: this should disappear from there.
+  // To access the develop object from backend (pipeline threads), we already have pipe->dev 
+  // referenced in the pipeline object.
+  // To access the develop object from frontend (GUI), we have the global darktable.develop reference.
+  // Splitting like this between frontend/backend makes things clear and legible.
+  // This internal reference can be either, and used for writes and reads alike, 
+  // which is impossible to track across the program.
   struct dt_develop_t *dev;
   /** non zero if this node should be processed. */
   gboolean enabled;
@@ -336,9 +371,8 @@ typedef struct dt_iop_module_t
   /** delayed-event handling */
   guint timeout_handle;
 
-  int (*process_plain)(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                       const void *const i, void *const o, const struct dt_iop_roi_t *const roi_in,
-                       const struct dt_iop_roi_t *const roi_out);
+  int (*process_plain)(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe,
+                       const struct dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o);
 
   // introspection related data
   gboolean have_introspection;
@@ -372,6 +406,10 @@ void dt_iop_cleanup_pipe(struct dt_iop_module_t *module, struct dt_dev_pixelpipe
 /** checks if iop do have an ui */
 gboolean dt_iop_so_is_hidden(dt_iop_module_so_t *module);
 gboolean dt_iop_is_hidden(dt_iop_module_t *module);
+
+/** Check if the module is currently visible in GUI */
+gboolean dt_iop_is_visible(dt_iop_module_t *module);
+
 /** enter a GUI critical section by acquiring gui_data->lock **/
 static inline void dt_iop_gui_enter_critical_section(dt_iop_module_t *const module)
   ACQUIRE(&module->gui_lock)
@@ -415,7 +453,12 @@ GtkWidget *dt_iop_gui_get_widget(dt_iop_module_t *module);
 /** get the eventbox of plugin ui in expander */
 GtkWidget *dt_iop_gui_get_pluginui(dt_iop_module_t *module);
 
-/** requests the focus for this plugin (to draw overlays over the center image) */
+/** requests the focus for this plugin (to draw overlays over the center image)
+ * NOTE: this sets the current module expander as the scroll reference,
+ * which is handled when the parent panel changes size, which happens when
+ * uncollapsing the module. So dt_iop_request_focus() needs to be called
+ * before expanding modules (dt_iop_set_expanded) for auto-scroll to work properly.
+ */
 void dt_iop_request_focus(dt_iop_module_t *module);
 /** allocate and load default settings from introspection. */
 void dt_iop_default_init(dt_iop_module_t *module);
@@ -438,7 +481,7 @@ dt_iop_module_t *dt_iop_get_module(const char *op);
     if multi_priority == -1 do not check for it */
 dt_iop_module_t *dt_iop_get_module_by_op_priority(GList *modules, const char *operation, const int multi_priority);
 /** returns module with op + multi_name or NULL if not found on the list,
-    if multi_name == NULL do not check for it */
+    if IS_NULL_PTR(multi_name) do not check for it */
 dt_iop_module_t *dt_iop_get_module_by_instance_name(GList *modules, const char *operation, const char *multi_name);
 
 /** returns true if module is the first instance of this operation in the pipe */
@@ -469,6 +512,54 @@ dt_iop_module_t *dt_iop_gui_get_previous_visible_module(dt_iop_module_t *module)
 dt_iop_module_t *dt_iop_gui_get_next_visible_module(dt_iop_module_t *module);
 /** check if current module is visible **/
 gboolean dt_iop_gui_module_is_visible(dt_iop_module_t *module);
+/**
+ * @brief Move a module before another one and commit the GUI-side effects.
+ *
+ * This is the GUI boundary for module reordering: @ref dt_ioppr_move_iop_before
+ * only mutates the pipeline list and order list, while this function is
+ * responsible for updating visible headers, rebuilding the pipes, recording the
+ * history step and notifying GUI listeners.
+ *
+ * @param module Module being moved.
+ * @param module_next Module that should end up immediately after @p module.
+ * @param reason Debug string used in IOP-order checks.
+ * @return TRUE if the move was applied, FALSE otherwise.
+ */
+gboolean dt_iop_gui_move_module_before(dt_iop_module_t *module, dt_iop_module_t *module_next,
+                                       const char *reason);
+/**
+ * @brief Commit the GUI-side consequences of an IOP-order change.
+ *
+ * Order changes may come from drag-and-drop, context-menu move commands or
+ * preset application. The low-level order code only mutates @ref dt_develop_t::iop
+ * and the serialized order list; this function updates module headers, rebuilds
+ * the pipes, stores the history item when requested and broadcasts the GUI
+ * change signal.
+ *
+ * @param dev Develop instance owning the reordered modules.
+ * @param module Module to record in history, or NULL for whole-pipeline changes.
+ * @param enable History enable state passed to @ref dt_dev_add_history_item.
+ * @param write_history TRUE to record a history item, FALSE to skip it.
+ * @param reason Debug string used in IOP-order checks.
+ * @return TRUE when the GUI refresh completed, FALSE if @p dev was NULL.
+ */
+gboolean dt_iop_gui_commit_iop_order_change(struct dt_develop_t *dev, dt_iop_module_t *module,
+                                            gboolean enable, gboolean write_history, const char *reason);
+/**
+ * @brief Move a module after another one and commit the GUI-side effects.
+ *
+ * This is the GUI boundary for module reordering: @ref dt_ioppr_move_iop_after
+ * only mutates the pipeline list and order list, while this function is
+ * responsible for updating visible headers, rebuilding the pipes, recording the
+ * history step and notifying GUI listeners.
+ *
+ * @param module Module being moved.
+ * @param module_prev Module that should end up immediately before @p module.
+ * @param reason Debug string used in IOP-order checks.
+ * @return TRUE if the move was applied, FALSE otherwise.
+ */
+gboolean dt_iop_gui_move_module_after(dt_iop_module_t *module, dt_iop_module_t *module_prev,
+                                      const char *reason);
 
 // initializes memory.darktable_iop_names
 void dt_iop_set_darktable_iop_table();
@@ -501,13 +592,6 @@ static inline dt_iop_gui_data_t *_iop_gui_alloc(dt_iop_module_t *module, size_t 
     self->gui_data = NULL;                         \
   }                                                \
   self->gui_data = NULL;
-
-/** check whether we have the required number of channels in the input data; if not, copy the input buffer to the
- ** output buffer, set the module's trouble message, and return FALSE */
-gboolean dt_iop_have_required_input_format(const int required_ch, struct dt_iop_module_t *const module,
-                                           const int actual_pipe_ch,
-                                           const void *const __restrict__ ivoid, void *const __restrict__ ovoid,
-                                           const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out);
 
 /* bring up module rename dialog */
 void dt_iop_gui_rename_module(dt_iop_module_t *module);
@@ -581,7 +665,7 @@ void dt_iop_set_cache_bypass(dt_iop_module_t *module, gboolean state);
 // fence to ensure proper visibility
 static inline void dt_sfence()
 {
-#if defined(__SSE__)
+#if defined(__x86_64__) || defined(__i386__)
   _mm_sfence();
 #else
   // the following generates an MFENCE instruction on x86/x64.  We

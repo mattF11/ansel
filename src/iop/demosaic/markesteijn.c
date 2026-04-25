@@ -42,7 +42,8 @@ static inline const short * hexmap(const int row, const int col, short (*const a
 
 /*
    Frank Markesteijn's algorithm for Fuji X-Trans sensors
- */
+*/
+__DT_CLONE_TARGETS__
 static void xtrans_markesteijn_interpolate(float *out, const float *const in,
                                            const dt_iop_roi_t *const roi_out,
                                            const dt_iop_roi_t *const roi_in,
@@ -65,7 +66,7 @@ static void xtrans_markesteijn_interpolate(float *out, const float *const in,
   const size_t buffer_size = (size_t)TS * TS * (ndir * 4 + 3) * sizeof(float);
   size_t padded_buffer_size;
   char *const all_buffers = (char *)dt_pixelpipe_cache_alloc_perthread(buffer_size, sizeof(char), &padded_buffer_size);
-  if(!all_buffers)
+  if(IS_NULL_PTR(all_buffers))
   {
     printf("[demosaic] not able to allocate Markesteijn buffers\n");
     return;
@@ -100,12 +101,7 @@ static void xtrans_markesteijn_interpolate(float *out, const float *const in,
 
   // extra passes propagates out errors at edges, hence need more padding
   const int pad_tile = (passes == 1) ? 12 : 17;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(all_buffers, padded_buffer_size, dir, height, in, ndir, pad_tile, passes, roi_in, width, xtrans) \
-  shared(sgrow, sgcol, allhex, out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   // step through TSxTS cells of image, each tile overlapping the
   // prior as interpolation needs a substantial border
   for(int top = -pad_tile; top < height - pad_tile; top += TS - (pad_tile*2))
@@ -516,12 +512,15 @@ static void xtrans_markesteijn_interpolate(float *out, const float *const in,
         }
     }
   }
+  
+
   dt_pixelpipe_cache_free_align(all_buffers);
 }
 
 #undef TS
 
 #define TS 122
+__DT_CLONE_TARGETS__
 static void xtrans_fdc_interpolate(struct dt_iop_module_t *self, float *out, const float *const in,
                                    const dt_iop_roi_t *const roi_out, const dt_iop_roi_t *const roi_in,
                                    const uint8_t (*const xtrans)[6])
@@ -1071,7 +1070,7 @@ static void xtrans_fdc_interpolate(struct dt_iop_module_t *self, float *out, con
   const size_t buffer_size = (size_t)TS * TS * (ndir * 4 + 7) * sizeof(float);
   size_t padded_buffer_size;
   char *const all_buffers = (char *)dt_pixelpipe_cache_alloc_perthread(buffer_size, sizeof(char), &padded_buffer_size);
-  if(!all_buffers)
+  if(IS_NULL_PTR(all_buffers))
   {
     fprintf(stderr, "[demosaic] not able to allocate FDC base buffers\n");
     return;
@@ -1136,13 +1135,7 @@ static void xtrans_fdc_interpolate(struct dt_iop_module_t *self, float *out, con
     hybrid_fdc[0] = 0.0f;
     hybrid_fdc[1] = 1.0f;
   }
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none)                                                                            \
-    dt_omp_firstprivate(ndir, all_buffers, dir, directionality, harr, height, in, Minv, modarr, roi_in, width,    \
-                        xtrans, pad_tile, padded_buffer_size)                                                     \
-        shared(sgrow, sgcol, allhex, out, rowoffset, coloffset, hybrid_fdc) schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   // step through TSxTS cells of image, each tile overlapping the
   // prior as interpolation needs a substantial border
   for(int top = -pad_tile; top < height - pad_tile; top += TS - (pad_tile * 2))
@@ -1635,24 +1628,26 @@ static void xtrans_fdc_interpolate(struct dt_iop_module_t *self, float *out, con
         }
     }
   }
+  
   dt_pixelpipe_cache_free_align(all_buffers);
 }
 
 #ifdef HAVE_OPENCL
 
-static int process_markesteijn_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in,
-                                  cl_mem dev_out, const dt_iop_roi_t *const roi_in,
-                                  const dt_iop_roi_t *const roi_out, const gboolean smooth)
+static int process_markesteijn_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                                  const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
+                                  const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out,
+                                  const gboolean smooth)
 {
   dt_iop_demosaic_data_t *data = (dt_iop_demosaic_data_t *)piece->data;
   dt_iop_demosaic_global_data_t *gd = (dt_iop_demosaic_global_data_t *)self->global_data;
 
-  const int devid = piece->pipe->devid;
-  const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->pipe->dsc.xtrans;
+  const int devid = pipe->devid;
+  const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->dsc_in.xtrans;
 
   const float processed_maximum[4]
-      = { piece->pipe->dsc.processed_maximum[0], piece->pipe->dsc.processed_maximum[1],
-          piece->pipe->dsc.processed_maximum[2], 1.0f };
+      = { piece->dsc_in.processed_maximum[0], piece->dsc_in.processed_maximum[1],
+          piece->dsc_in.processed_maximum[2], 1.0f };
 
   cl_mem dev_tmp = NULL;
   cl_mem dev_tmptmp = NULL;
@@ -1671,9 +1666,8 @@ static int process_markesteijn_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe
 
   cl_mem *dev_rgb = dev_rgbv;
 
-  dev_xtrans
-      = dt_opencl_copy_host_to_device_constant(devid, sizeof(piece->pipe->dsc.xtrans), piece->pipe->dsc.xtrans);
-  if(dev_xtrans == NULL) goto error;
+  dev_xtrans = dt_opencl_copy_host_to_device_constant(devid, sizeof(piece->dsc_in.xtrans), (void *)piece->dsc_in.xtrans);
+  if(IS_NULL_PTR(dev_xtrans)) goto error;
 
   int width = roi_in->width;
   int height = roi_in->height;
@@ -1721,7 +1715,7 @@ static int process_markesteijn_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe
       }
 
   dev_allhex = dt_opencl_copy_host_to_device_constant(devid, sizeof(allhex), allhex);
-  if(dev_allhex == NULL) goto error;
+  if(IS_NULL_PTR(dev_allhex)) goto error;
 
   for(int n = 0; n < ndir; n++)
   {
@@ -1730,10 +1724,10 @@ static int process_markesteijn_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe
   }
 
   dev_gminmax = dt_opencl_alloc_device_buffer(devid, sizeof(float) * 2 * width * height);
-  if(dev_gminmax == NULL) goto error;
+  if(IS_NULL_PTR(dev_gminmax)) goto error;
 
   dev_aux = dt_opencl_alloc_device_buffer(devid, sizeof(float) * 4 * width * height);
-  if(dev_aux == NULL) goto error;
+  if(IS_NULL_PTR(dev_aux)) goto error;
 
   dev_tmp = dev_out;
 
@@ -2145,7 +2139,7 @@ static int process_markesteijn_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe
 
   // need to get another temp buffer for the output image (may use the space of dev_drv[] freed earlier)
   dev_tmptmp = dt_opencl_alloc_device(devid, (size_t)width, height, sizeof(float) * 4);
-  if(dev_tmptmp == NULL) goto error;
+  if(IS_NULL_PTR(dev_tmptmp)) goto error;
 
   cl_mem dev_t1 = dev_tmp;
   cl_mem dev_t2 = dev_tmptmp;
@@ -2257,18 +2251,18 @@ static int process_markesteijn_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe
 
     // reserve input buffer for image edge
     dev_edge_in = dt_opencl_alloc_device(devid, edges[n][2], edges[n][3], sizeof(float));
-    if(dev_edge_in == NULL) goto error;
+    if(IS_NULL_PTR(dev_edge_in)) goto error;
 
     // reserve output buffer for VNG processing of edge
     dev_edge_out = dt_opencl_alloc_device(devid, edges[n][2], edges[n][3], sizeof(float) * 4);
-    if(dev_edge_out == NULL) goto error;
+    if(IS_NULL_PTR(dev_edge_out)) goto error;
 
     // copy edge to input buffer
     err = dt_opencl_enqueue_copy_image(devid, dev_in, dev_edge_in, iorigin, oorigin, region);
     if(err != CL_SUCCESS) goto error;
 
     // VNG processing
-    if(!process_vng_cl(self, piece, dev_edge_in, dev_edge_out, &roi, &roi, smooth, FALSE))
+    if(!process_vng_cl(self, pipe, piece, dev_edge_in, dev_edge_out, &roi, &roi, smooth, FALSE))
       goto error;
 
     // adjust for "good" part, dropping linear border where possible
@@ -2288,9 +2282,6 @@ static int process_markesteijn_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe
     dt_opencl_release_mem_object(dev_edge_out);
     dev_edge_in = dev_edge_out = NULL;
   }
-  dt_dev_write_rawdetail_mask_cl(piece, dev_tmp, roi_in, DT_DEV_DETAIL_MASK_DEMOSAIC);
-
-
   // free remaining temporary buffers
   if(dev_tmp != dev_out) dt_opencl_release_mem_object(dev_tmp);
   dev_tmp = NULL;
@@ -2302,7 +2293,7 @@ static int process_markesteijn_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe
   // color smoothing
   if(data->color_smoothing)
   {
-    if(!color_smoothing_cl(self, piece, dev_out, dev_out, roi_out, data->color_smoothing))
+    if(!color_smoothing_cl(self, pipe, piece, dev_out, dev_out, roi_out, data->color_smoothing))
       goto error;
   }
 

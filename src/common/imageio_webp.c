@@ -34,7 +34,7 @@ dt_imageio_retval_t dt_imageio_open_webp(dt_image_t *img, const char *filename, 
   WebPData icc_profile;
 
   FILE *f = g_fopen(filename, "rb");
-  if(!f)
+  if(IS_NULL_PTR(f))
   {
     dt_print(DT_DEBUG_IMAGEIO, "[webp_open] cannot open file for read: %s\n", filename);
     return DT_IMAGEIO_FILE_CORRUPTED;
@@ -50,7 +50,7 @@ dt_imageio_retval_t dt_imageio_open_webp(dt_image_t *img, const char *filename, 
   {
     fclose(f);
     dt_free(read_buffer);
-    dt_print(DT_DEBUG_IMAGEIO, "[webp_open] failed to read %zu bytes from %s\n", filesize, filename);
+    dt_print(DT_DEBUG_IMAGEIO, "[webp_open] failed to read %" G_GSIZE_FORMAT " bytes from %s\n", filesize, filename);
     return DT_IMAGEIO_FILE_CORRUPTED;
   }
   fclose(f);
@@ -66,24 +66,25 @@ dt_imageio_retval_t dt_imageio_open_webp(dt_image_t *img, const char *filename, 
   }
   img->width = w;
   img->height = h;
-  img->buf_dsc.channels = 4;
-  img->buf_dsc.datatype = TYPE_FLOAT;
-  img->buf_dsc.cst = IOP_CS_RGB;
-  img->buf_dsc.filters = 0u;
+  img->dsc.channels = 4;
+  img->dsc.datatype = TYPE_FLOAT;
+  img->dsc.bpp = 4 * sizeof(float);
+  img->dsc.cst = IOP_CS_RGB;
+  img->dsc.filters = 0u;
   img->flags &= ~DT_IMAGE_RAW;
   img->flags &= ~DT_IMAGE_S_RAW;
   img->flags &= ~DT_IMAGE_HDR;
   img->flags |= DT_IMAGE_LDR;
   img->loader = LOADER_WEBP;
 
-  if(!mbuf)
+  if(IS_NULL_PTR(mbuf))
   {
     dt_free(read_buffer);
     return DT_IMAGEIO_OK;
   }
 
   float *mipbuf = (float *)dt_mipmap_cache_alloc(mbuf, img);
-  if(!mipbuf)
+  if(IS_NULL_PTR(mipbuf))
   {
     dt_free(read_buffer);
     dt_print(DT_DEBUG_IMAGEIO, "[webp_open] could not alloc full buffer for image: %s\n", img->filename);
@@ -91,7 +92,7 @@ dt_imageio_retval_t dt_imageio_open_webp(dt_image_t *img, const char *filename, 
   }
 
   uint8_t *int_RGBA_buf = WebPDecodeRGBA(read_buffer, filesize, &w, &h);
-  if(!int_RGBA_buf)
+  if(IS_NULL_PTR(int_RGBA_buf))
   {
     dt_free(read_buffer);
     dt_print(DT_DEBUG_IMAGEIO,"[webp_open] failed to decode file: %s\n", filename);
@@ -100,10 +101,7 @@ dt_imageio_retval_t dt_imageio_open_webp(dt_image_t *img, const char *filename, 
 
   uint8_t intval;
   float floatval;
-
-#ifdef _OPENMP
-#pragma omp parallel for private(intval, floatval)
-#endif
+  __OMP_PARALLEL_FOR__(private(intval, floatval))
   for(int i=0; i < w*h*4; i++)
   {
     intval = *(int_RGBA_buf+i);

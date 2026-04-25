@@ -113,7 +113,7 @@ dt_metadata_t dt_metadata_get_keyid_by_display_order(const uint32_t order)
 
 dt_metadata_t dt_metadata_get_keyid_by_name(const char* name)
 {
-  if(!name) return -1;
+  if(IS_NULL_PTR(name)) return -1;
   for(unsigned int i = 0; i < DT_METADATA_NUMBER; i++)
   {
     if(strncmp(name, dt_metadata_def[i].name, strlen(dt_metadata_def[i].name)) == 0)
@@ -145,7 +145,7 @@ const char *dt_metadata_get_name(const uint32_t keyid)
 
 dt_metadata_t dt_metadata_get_keyid(const char* key)
 {
-  if(!key) return -1;
+  if(IS_NULL_PTR(key)) return -1;
   for(unsigned int i = 0; i < DT_METADATA_NUMBER; i++)
   {
     if(strncmp(key, dt_metadata_def[i].key, strlen(dt_metadata_def[i].key)) == 0)
@@ -488,7 +488,7 @@ GList *dt_metadata_get(const int id, const char *key, uint32_t *count)
       }
       sqlite3_finalize(stmt);
     }
-    if(count != NULL) *count = local_count;
+    if(!IS_NULL_PTR(count)) *count = local_count;
     return g_list_reverse(result);
   }
 
@@ -496,7 +496,7 @@ GList *dt_metadata_get(const int id, const char *key, uint32_t *count)
   if(id == -1)
   {
     // clang-format off
-    if(!_metadata_get_selected_stmt)
+    if(IS_NULL_PTR(_metadata_get_selected_stmt))
     {
       DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
                                   "SELECT value FROM main.meta_data WHERE id IN "
@@ -511,7 +511,7 @@ GList *dt_metadata_get(const int id, const char *key, uint32_t *count)
   }
   else // single image under mouse cursor
   {
-    if(!_metadata_get_single_stmt)
+    if(IS_NULL_PTR(_metadata_get_single_stmt))
     {
       DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
                                   "SELECT value FROM main.meta_data WHERE id = ?1 AND key = ?2 ORDER BY value", -1,
@@ -529,7 +529,7 @@ GList *dt_metadata_get(const int id, const char *key, uint32_t *count)
     char *value = (char *)sqlite3_column_text(stmt, 0);
     result = g_list_prepend(result, g_strdup(value ? value : "")); // to avoid NULL value
   }
-  if(count != NULL) *count = local_count;
+  if(!IS_NULL_PTR(count)) *count = local_count;
   return g_list_reverse(result);  // list was built in reverse order, so un-reverse it
 }
 
@@ -642,7 +642,7 @@ static void _metadata_execute(const GList *imgs, const GList *metadata, GList **
 
 void dt_metadata_set(const int32_t imgid, const char *key, const char *value, const gboolean undo_on)
 {
-  if(!key || !imgid) return;
+  if(IS_NULL_PTR(key) || !imgid) return;
 
   int keyid = dt_metadata_get_keyid(key);
   if(keyid != -1) // known key
@@ -680,7 +680,7 @@ void dt_metadata_set(const int32_t imgid, const char *key, const char *value, co
 
 void dt_metadata_set_import(const int32_t imgid, const char *key, const char *value)
 {
-  if(!key || !imgid || imgid == UNKNOWN_IMAGE) return;
+  if(IS_NULL_PTR(key) || !imgid || imgid == UNKNOWN_IMAGE) return;
 
   const int keyid = dt_metadata_get_keyid(key);
 
@@ -824,7 +824,7 @@ void dt_metadata_set_list_id(const GList *img, const GList *metadata, const gboo
 
 int dt_metadata_already_imported(const char *filename, const char *datetime)
 {
-  if(!filename || !datetime)
+  if(!filename || IS_NULL_PTR(datetime))
     return FALSE;
   char *id = g_strconcat(filename, "-", datetime, NULL);
   sqlite3_stmt *stmt;

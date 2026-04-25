@@ -66,7 +66,7 @@ void dt_map_location_delete(const guint locid)
 // rename a location
 void dt_map_location_rename(const guint locid, const char *const name)
 {
-  if(locid == -1 || !name || !name[0]) return;
+  if(locid == -1 || IS_NULL_PTR(name) || !name[0]) return;
   char *old_name = dt_tag_get_name(locid);
   if(old_name)
   {
@@ -112,7 +112,7 @@ int dt_map_location_get_images_count(const guint locid)
 GList *dt_map_location_get_locations_by_path(const gchar *path,
                                              const gboolean remove_root)
 {
-  if(!path) return NULL;
+  if(IS_NULL_PTR(path)) return NULL;
 
   gchar *path1, *path2;
   if(!path[0])

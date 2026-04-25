@@ -206,7 +206,7 @@ int default_group()
   return IOP_GROUP_EFFECTS;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -271,16 +271,20 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
   return 1;
 }
 
-static int get_grab(float pointerx, float pointery, float startx, float starty, float endx, float endy,
+static int get_grab(dt_iop_module_t *self, float pointerx, float pointery, float startx, float starty, float endx, float endy,
                     float zoom_scale)
 {
-  const float radius = 5.0 / zoom_scale;
-
-  if(powf(pointerx - startx, 2) + powf(pointery, 2) <= powf(radius, 2)) return 2; // x size
-  if(powf(pointerx, 2) + powf(pointery - starty, 2) <= powf(radius, 2)) return 4; // y size
-  if(powf(pointerx, 2) + powf(pointery, 2) <= powf(radius, 2)) return 1;          // center
-  if(powf(pointerx - endx, 2) + powf(pointery, 2) <= powf(radius, 2)) return 8;   // x falloff
-  if(powf(pointerx, 2) + powf(pointery - endy, 2) <= powf(radius, 2)) return 16;  // y falloff
+  // trick to convert the radius from image norm to preview abs
+  float radius[2] = { DT_GUI_MOUSE_EFFECT_RADIUS_SCALED, 0 };
+  dt_dev_coordinates_image_abs_to_image_norm(self->dev, radius, 1);
+  dt_dev_coordinates_image_norm_to_preview_abs(self->dev, radius, 1); 
+  const float radius_sq = radius[0] * radius[0];
+ 
+  if((pointerx - startx) * (pointerx - startx) + pointery * pointery <= radius_sq) return 2;  // x size
+  if(pointerx * pointerx + (pointery - starty) * (pointery - starty) <= radius_sq) return 4;  // y size
+  if(pointerx * pointerx + pointery * pointery <= radius_sq)                       return 1;  // center
+  if((pointerx - endx) * (pointerx - endx) + pointery * pointery <= radius_sq)     return 8;  // x falloff
+  if(pointerx * pointerx + (pointery - endy) * (pointery - endy) <= radius_sq)     return 16; // y falloff
 
   return 0;
 }
@@ -436,7 +440,7 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
     }
   }
 
-  int grab = get_grab(pzx * wd - vignette_x, pzy * ht - vignette_y, vignette_w, -vignette_h, vignette_fx,
+  int grab = get_grab(self, pzx * wd - vignette_x, pzy * ht - vignette_y, vignette_w, -vignette_h, vignette_fx,
                       -vignette_fy, zoom_scale);
   cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
   cairo_set_line_width(cr, DT_PIXEL_APPLY_DPI(3.0) / zoom_scale);
@@ -524,7 +528,7 @@ int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressur
 
   if(grab == 0 || !(darktable.control->button_down && darktable.control->button_down_which == 1))
   {
-    grab = get_grab(pzx * wd - vignette_x, pzy * ht - vignette_y, vignette_w, -vignette_h, vignette_fx,
+    grab = get_grab(self, pzx * wd - vignette_x, pzy * ht - vignette_y, vignette_w, -vignette_h, vignette_fx,
                     -vignette_fy, zoom_scale);
   }
 
@@ -657,12 +661,15 @@ int button_released(struct dt_iop_module_t *self, double x, double y, int which,
   return 0;
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const dt_iop_vignette_data_t *data = (dt_iop_vignette_data_t *)piece->data;
   const dt_iop_roi_t *buf_in = &piece->buf_in;
-  const size_t ch = piece->colors;
+  const size_t ch = piece->dsc_in.channels;
   const gboolean unbound = data->unbound;
 
   /* Center coordinates of buf_in, these should not consider buf_in->{x,y}! */
@@ -725,14 +732,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   }
 
   unsigned int *const tea_states = alloc_tea_states(darktable.num_openmp_threads);
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, dscale, exp1, exp2, fscale, ivoid, ovoid, \
-                      roi_center_scaled, roi_out, tea_states, unbound) \
-  shared(data, yscale, xscale, dither) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int j = 0; j < roi_out->height; j++)
   {
     const size_t k = (size_t)ch * roi_out->width * j;
@@ -811,14 +811,15 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_vignette_data_t *data = (dt_iop_vignette_data_t *)piece->data;
   dt_iop_vignette_global_data_t *gd = (dt_iop_vignette_global_data_t *)self->global_data;
 
   cl_int err = -999;
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   const int width = roi_out->width;
   const int height = roi_out->height;
 

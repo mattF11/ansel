@@ -70,9 +70,6 @@
 #include "gui/presets.h"
 #include "libs/lib.h"
 #include "preferences_gen.h"
-#ifdef USE_LUA
-#include "lua/preferences.h"
-#endif
 #ifdef GDK_WINDOWING_QUARTZ
 #include "osx/osx.h"
 #endif
@@ -566,15 +563,8 @@ void dt_gui_preferences_show()
   init_tab_misc(_preferences_dialog, stack);
   init_tab_presets(stack);
 
-#ifdef USE_LUA
-  GtkGrid* lua_grid = init_tab_lua(_preferences_dialog, stack);
-#endif
   gtk_widget_show_all(_preferences_dialog);
   (void)gtk_dialog_run(GTK_DIALOG(_preferences_dialog));
-
-#ifdef USE_LUA
-  destroy_tab_lua(lua_grid);
-#endif
 
   dt_free(tweak_widgets);
   gtk_widget_destroy(_preferences_dialog);
@@ -655,8 +645,8 @@ static void tree_insert_presets(GtkTreeStore *tree_model)
     int min, max;
 
     gchar *module = g_strdup(dt_iop_get_localized_name(operation));
-    if(module == NULL) module = g_strdup(dt_lib_get_localized_name(operation));
-    if(module == NULL) module = g_strdup(operation);
+    if(IS_NULL_PTR(module)) module = g_strdup(dt_lib_get_localized_name(operation));
+    if(IS_NULL_PTR(module)) module = g_strdup(operation);
 
     if(!dt_presets_module_can_autoapply(operation))
     {
@@ -677,7 +667,7 @@ static void tree_insert_presets(GtkTreeStore *tree_model)
       if(iso_min == 0.0 && iso_max == FLT_MAX)
         iso = g_strdup("%");
       else
-        iso = g_strdup_printf("%zu - %zu", (size_t)iso_min, (size_t)iso_max);
+        iso = g_strdup_printf("%" G_GSIZE_FORMAT " - %" G_GSIZE_FORMAT "", (size_t)iso_min, (size_t)iso_max);
 
       for(min = 0; min < dt_gui_presets_exposure_value_cnt && exposure_min > dt_gui_presets_exposure_value[min]; min++)
         ;
@@ -928,7 +918,7 @@ static void tree_row_activated_presets(GtkTreeView *tree, GtkTreePath *path, Gtk
     GdkPixbuf *editable;
     gtk_tree_model_get(model, &iter, P_ROWID_COLUMN, &rowid, P_NAME_COLUMN, &name, P_OPERATION_COLUMN,
                        &operation, P_EDITABLE_COLUMN, &editable, -1);
-    if(editable == NULL)
+    if(IS_NULL_PTR(editable))
       edit_preset(tree, rowid, name, operation);
     else
       g_object_unref(editable);
@@ -964,7 +954,7 @@ static gboolean tree_key_press_presets(GtkWidget *widget, GdkEventKey *event, gp
     GdkPixbuf *editable;
     gtk_tree_model_get(model, &iter, P_ROWID_COLUMN, &rowid, P_NAME_COLUMN, &name,
                        P_EDITABLE_COLUMN, &editable, -1);
-    if(editable == NULL)
+    if(IS_NULL_PTR(editable))
     {
       sqlite3_stmt *stmt;
       gchar* operation = NULL;

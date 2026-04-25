@@ -127,13 +127,13 @@ dt_ioppr_set_pipe_output_profile_info(struct dt_develop_t *dev,
 dt_iop_order_iccprofile_info_t *dt_ioppr_get_histogram_profile_info(struct dt_develop_t *dev);
 
 /** returns the active work/input/output profile on the pipe */
-dt_iop_order_iccprofile_info_t *dt_ioppr_get_pipe_work_profile_info(struct dt_dev_pixelpipe_t *pipe);
-dt_iop_order_iccprofile_info_t *dt_ioppr_get_pipe_input_profile_info(struct dt_dev_pixelpipe_t *pipe);
-dt_iop_order_iccprofile_info_t *dt_ioppr_get_pipe_output_profile_info(struct dt_dev_pixelpipe_t *pipe);
+dt_iop_order_iccprofile_info_t *dt_ioppr_get_pipe_work_profile_info(const struct dt_dev_pixelpipe_t *pipe);
+dt_iop_order_iccprofile_info_t *dt_ioppr_get_pipe_input_profile_info(const struct dt_dev_pixelpipe_t *pipe);
+dt_iop_order_iccprofile_info_t *dt_ioppr_get_pipe_output_profile_info(const struct dt_dev_pixelpipe_t *pipe);
 
 /** Get the relevant RGB -> XYZ profile at the position of current module */
 dt_iop_order_iccprofile_info_t *dt_ioppr_get_pipe_current_profile_info(struct dt_iop_module_t *module,
-                                                                       struct dt_dev_pixelpipe_t *pipe);
+                                                                       const struct dt_dev_pixelpipe_t *pipe);
 
 /** returns the current setting of the work profile on colorin iop */
 void dt_ioppr_get_work_profile_type(struct dt_develop_t *dev,
@@ -217,9 +217,7 @@ int dt_ioppr_transform_image_colorspace_rgb_cl(const int devid, cl_mem dev_img_i
 
 /** the following must have the matrix_in and matrix_out generated */
 
-#ifdef _OPENMP
-#pragma omp declare simd aligned(lut:64) uniform(lut)
-#endif
+__OMP_DECLARE_SIMD__(aligned(lut:64) uniform(lut))
 static inline __attribute__((always_inline)) float extrapolate_lut(const float *const lut, const float v, const int lutsize)
 {
   // TODO: check if optimization is worthwhile!
@@ -232,33 +230,26 @@ static inline __attribute__((always_inline)) float extrapolate_lut(const float *
 }
 
 
-#ifdef _OPENMP
-#pragma omp declare simd uniform(coeff)
-#endif
+__OMP_DECLARE_SIMD__(uniform(coeff))
 static inline __attribute__((always_inline)) float eval_exp(const float coeff[3], const float x)
 {
   return coeff[1] * powf(x * coeff[0], coeff[2]);
 }
 
-#ifdef _OPENMP
-#pragma omp declare simd aligned(lut:64) uniform(lut, coeff)
-#endif
+__OMP_DECLARE_SIMD__(aligned(lut:64) uniform(lut, coeff))
 static inline __attribute__((always_inline)) float dt_ioppr_eval_trc(const float x, const float *const lut, const float coeff[3], const int lutsize)
 {
   return (x < 1.0f) ? extrapolate_lut(lut, x, lutsize) : eval_exp(coeff, x);
 }
-
-
 #ifdef _OPENMP
 #pragma omp declare simd \
   aligned(rgb_in, rgb_out, unbounded_coeffs:16) \
   aligned(lut:64) \
-  uniform(rgb_in, rgb_out, unbounded_coeffs, lut)
+  uniform(lut, unbounded_coeffs)
 #endif
-static inline void _apply_trc(const dt_aligned_pixel_t rgb_in, dt_aligned_pixel_t rgb_out,
-                              float *const lut[3],
-                              const float unbounded_coeffs[3][3],
-                              const int lutsize)
+static inline __attribute__((always_inline)) void
+_apply_trc(const dt_aligned_pixel_t rgb_in, dt_aligned_pixel_t rgb_out, float *const lut[3],
+           const float unbounded_coeffs[3][3], const int lutsize)
 {
   for(int c = 0; c < 3; c++)
   {
@@ -269,9 +260,11 @@ static inline void _apply_trc(const dt_aligned_pixel_t rgb_in, dt_aligned_pixel_
 
 #ifdef _OPENMP
 #pragma omp declare simd \
-  aligned(rgb, matrix_in, unbounded_coeffs_in:16) \
+  aligned(rgb:16) \
+  aligned(matrix_in:64) \
+  aligned(unbounded_coeffs_in:16) \
   aligned(lut_in:64) \
-  uniform(rgb, matrix_in, lut_in, unbounded_coeffs_in)
+  uniform(matrix_in, lut_in, unbounded_coeffs_in)
 #endif
 static inline float dt_ioppr_get_rgb_matrix_luminance(const dt_aligned_pixel_t rgb,
                                                       const dt_colormatrix_t matrix_in, float *const lut_in[3],
@@ -295,9 +288,11 @@ static inline float dt_ioppr_get_rgb_matrix_luminance(const dt_aligned_pixel_t r
 
 #ifdef _OPENMP
 #pragma omp declare simd \
+  aligned(rgb, xyz:16) \
+  aligned(matrix_in_transposed:64) \
   aligned(unbounded_coeffs_in:16) \
   aligned(lut_in:64) \
-  uniform(lut_in, unbounded_coeffs_in)
+  uniform(matrix_in_transposed, lut_in, unbounded_coeffs_in)
 #endif
 static inline void dt_ioppr_rgb_matrix_to_xyz(const dt_aligned_pixel_t rgb, dt_aligned_pixel_t xyz,
                                               const dt_colormatrix_t matrix_in_transposed, float *const lut_in[3],
@@ -316,9 +311,11 @@ static inline void dt_ioppr_rgb_matrix_to_xyz(const dt_aligned_pixel_t rgb, dt_a
 
 #ifdef _OPENMP
 #pragma omp declare simd \
+  aligned(lab, rgb:16) \
+  aligned(matrix_out_transposed:64) \
   aligned(unbounded_coeffs_out:16) \
   aligned(lut_out:64) \
-  uniform(lut_out, unbounded_coeffs_out)
+  uniform(matrix_out_transposed, lut_out, unbounded_coeffs_out)
 #endif
 static inline void dt_ioppr_lab_to_rgb_matrix(const dt_aligned_pixel_t lab, dt_aligned_pixel_t rgb,
                                               const dt_colormatrix_t matrix_out_transposed, float *const lut_out[3],
@@ -342,9 +339,11 @@ static inline void dt_ioppr_lab_to_rgb_matrix(const dt_aligned_pixel_t lab, dt_a
 
 #ifdef _OPENMP
 #pragma omp declare simd \
+  aligned(rgb, lab:16) \
+  aligned(matrix_in_transposed:64) \
   aligned(unbounded_coeffs_in:16) \
   aligned(lut_in:64) \
-  uniform(lut_in, unbounded_coeffs_in)
+  uniform(matrix_in_transposed, lut_in, unbounded_coeffs_in)
 #endif
 static inline void dt_ioppr_rgb_matrix_to_lab(const dt_aligned_pixel_t rgb, dt_aligned_pixel_t lab,
                                               const dt_colormatrix_t matrix_in_transposed, float *const lut_in[3],
@@ -361,9 +360,7 @@ static inline float dt_ioppr_get_profile_info_middle_grey(const dt_iop_order_icc
   return profile_info->grey;
 }
 
-#ifdef _OPENMP
-#pragma omp declare simd
-#endif
+__OMP_DECLARE_SIMD__(uniform(profile_info))
 static inline float dt_ioppr_compensate_middle_grey(const float x, const dt_iop_order_iccprofile_info_t *const profile_info)
 {
   // we transform the curve nodes from the image colorspace to lab
@@ -374,9 +371,7 @@ static inline float dt_ioppr_compensate_middle_grey(const float x, const dt_iop_
   return lab[0] * .01f;
 }
 
-#ifdef _OPENMP
-#pragma omp declare simd
-#endif
+__OMP_DECLARE_SIMD__(uniform(profile_info))
 static inline float dt_ioppr_uncompensate_middle_grey(const float x, const dt_iop_order_iccprofile_info_t *const profile_info)
 {
   // we transform the curve nodes from lab to the image colorspace

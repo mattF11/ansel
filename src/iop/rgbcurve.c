@@ -152,7 +152,7 @@ int flags()
   return IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_ALLOW_TILING;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -303,7 +303,7 @@ static void picker_scale(const float *const in, float *out, dt_iop_rgbcurve_para
   switch(p->curve_autoscale)
   {
     case DT_S_SCALE_MANUAL_RGB:
-      if(p->compensate_middle_grey && work_profile)
+      if(p->compensate_middle_grey && !IS_NULL_PTR(work_profile))
       {
         for(int c = 0; c < 3; c++) out[c] = dt_ioppr_compensate_middle_grey(in[c], work_profile);
       }
@@ -322,7 +322,7 @@ static void picker_scale(const float *const in, float *out, dt_iop_rgbcurve_para
                                                                work_profile->lutsize,
                                                                work_profile->nonlinearlut)
                            : dt_camera_rgb_luminance(in);
-      if(p->compensate_middle_grey && work_profile)
+      if(p->compensate_middle_grey && !IS_NULL_PTR(work_profile))
       {
         out[0] = dt_ioppr_compensate_middle_grey(val, work_profile);
       }
@@ -384,7 +384,7 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
   {
     const dt_iop_order_iccprofile_info_t *const work_profile
         = dt_ioppr_get_iop_work_profile_info(self, self->dev->iop);
-    if(work_profile == NULL) return;
+    if(IS_NULL_PTR(work_profile)) return;
 
     for(int ch = 0; ch < DT_IOP_RGBCURVE_MAX_CHANNELS; ch++)
     {
@@ -500,7 +500,7 @@ static inline int _add_node_from_picker(dt_iop_rgbcurve_params_t *p, const float
   else
     val = in[ch];
 
-  if(p->compensate_middle_grey && work_profile)
+  if(p->compensate_middle_grey && !IS_NULL_PTR(work_profile))
     y = x = dt_ioppr_compensate_middle_grey(val, work_profile);
   else
     y = x = val;
@@ -514,8 +514,9 @@ static inline int _add_node_from_picker(dt_iop_rgbcurve_params_t *p, const float
   return _add_node(p->curve_nodes[ch], &p->curve_num_nodes[ch], x, y);
 }
 
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
+  (void)piece;
   dt_iop_rgbcurve_gui_data_t *g = (dt_iop_rgbcurve_gui_data_t *)self->gui_data;
   if(picker == g->colorpicker_set_values)
   {
@@ -523,7 +524,7 @@ void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpi
     dt_iop_rgbcurve_params_t *d = (dt_iop_rgbcurve_params_t *)self->default_params;
 
     const int ch = g->channel;
-    const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(piece->pipe);
+    const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(pipe);
 
     // reset current curve
     p->curve_num_nodes[ch] = d->curve_num_nodes[ch];
@@ -814,7 +815,7 @@ static gboolean _area_draw_callback(GtkWidget *widget, cairo_t *crf, dt_iop_modu
     if (!is_linear)
       hist_max = logf(1.0 + hist_max);
 
-    if(hist && hist_max > 0.0f)
+    if(!IS_NULL_PTR(hist) && hist_max > 0.0f)
     {
       cairo_push_group_with_content(cr, CAIRO_CONTENT_COLOR);
       cairo_scale(cr, width / 255.0, -(height - DT_PIXEL_APPLY_DPI(5)) / hist_max);
@@ -848,11 +849,11 @@ static gboolean _area_draw_callback(GtkWidget *widget, cairo_t *crf, dt_iop_modu
       dt_aligned_pixel_t picker_mean, picker_min, picker_max;
 
       // the global live samples ...
-      GSList *samples = darktable.lib->proxy.colorpicker.live_samples;
+      GSList *samples = darktable.develop->color_picker.samples;
       if(samples)
       {
         const dt_iop_order_iccprofile_info_t *const display_profile = dt_ioppr_get_pipe_output_profile_info(dev->pipe);
-        if(work_profile && display_profile)
+        if(!IS_NULL_PTR(work_profile) && !IS_NULL_PTR(display_profile))
         {
           for(; samples; samples = g_slist_next(samples))
           {
@@ -1259,7 +1260,7 @@ void gui_reset(struct dt_iop_module_t *self)
 void change_image(struct dt_iop_module_t *self)
 {
   dt_iop_rgbcurve_gui_data_t *g = (dt_iop_rgbcurve_gui_data_t *)self->gui_data;
-  if(g)
+  if(!IS_NULL_PTR(g))
   {
     if(!g->channel)
       g->channel = DT_IOP_RGBCURVE_R;
@@ -1304,10 +1305,9 @@ void gui_init(struct dt_iop_module_t *self)
   // color pickers
   g->colorpicker = dt_color_picker_new(self, DT_COLOR_PICKER_POINT_AREA, hbox);
   gtk_widget_set_tooltip_text(g->colorpicker, _("pick GUI color from image\nctrl+click or right-click to select an area"));
-  gtk_widget_set_name(g->colorpicker, "keep-active");
   g->colorpicker_set_values = dt_color_picker_new(self, DT_COLOR_PICKER_AREA, hbox);
   dtgtk_togglebutton_set_paint(DTGTK_TOGGLEBUTTON(g->colorpicker_set_values),
-                               dtgtk_cairo_paint_colorpicker_set_values, 0, NULL);
+                               dtgtk_cairo_paint_colorpicker, CPF_ALTER, NULL);
   dt_gui_add_class(g->colorpicker_set_values, "dt_transparent_background");
   gtk_widget_set_size_request(g->colorpicker_set_values, DT_PIXEL_APPLY_DPI(14), DT_PIXEL_APPLY_DPI(14));
   gtk_widget_set_tooltip_text(g->colorpicker_set_values, _("create a curve based on an area from the image\n"
@@ -1443,18 +1443,19 @@ void init(dt_iop_module_t *module)
 
 // this will be called from process*()
 // it must be executed only if profile info has changed
-static void _generate_curve_lut(dt_dev_pixelpipe_t *pipe, dt_iop_rgbcurve_data_t *d)
+__DT_CLONE_TARGETS__
+static void _generate_curve_lut(const dt_dev_pixelpipe_t *pipe, dt_iop_rgbcurve_data_t *d)
 {
   const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(pipe);
 
   dt_iop_rgbcurve_node_t curve_nodes[3][DT_IOP_RGBCURVE_MAXNODES];
 
-  if(work_profile)
+  if(!IS_NULL_PTR(work_profile))
   {
     if(d->type_work == work_profile->type && strcmp(d->filename_work, work_profile->filename) == 0) return;
   }
 
-  if(work_profile && d->params.compensate_middle_grey)
+  if(!IS_NULL_PTR(work_profile) && d->params.compensate_middle_grey)
   {
     d->type_work = work_profile->type;
     g_strlcpy(d->filename_work, work_profile->filename, sizeof(d->filename_work));
@@ -1531,20 +1532,19 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
 }
 
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+            void *const ovoid)
 {
-  const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(piece->pipe);
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
+  const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(pipe);
 
   const float *const restrict in = (float*)ivoid;
   float *const restrict out = (float*)ovoid;
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
-                                         in, out, roi_in, roi_out))
-    return 0; // image has been copied through to output and module's trouble flag has been updated
 
   dt_iop_rgbcurve_data_t *const restrict d = (dt_iop_rgbcurve_data_t *)(piece->data);
 
-  _generate_curve_lut(piece->pipe, d);
+  _generate_curve_lut(pipe, d);
 
   const float xm_L = 1.0f / d->unbounded_coeffs[DT_IOP_RGBCURVE_R][0];
   const float xm_g = 1.0f / d->unbounded_coeffs[DT_IOP_RGBCURVE_G][0];
@@ -1556,13 +1556,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   const int autoscale = d->params.curve_autoscale;
   const _curve_table_ptr restrict table = d->table;
   const _coeffs_table_ptr restrict unbounded_coeffs = d->unbounded_coeffs;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(autoscale, npixels, work_profile, xm_b, xm_g, xm_L) \
-  dt_omp_sharedconst(in, out, table, unbounded_coeffs, d) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int y = 0; y < 4*npixels; y += 4)
   {
     if(autoscale == DT_S_SCALE_MANUAL_RGB)

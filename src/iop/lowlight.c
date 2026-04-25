@@ -128,12 +128,20 @@ int default_group()
   return IOP_GROUP_EFFECTS;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
 }
 
-static float lookup(const float *lut, const float i)
+void input_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                  dt_iop_buffer_dsc_t *dsc)
+{
+  default_input_format(self, pipe, piece, dsc);
+  dsc->channels = 4;
+  dsc->datatype = TYPE_FLOAT;
+}
+
+static inline __attribute__((always_inline)) float lookup(const float *lut, const float i)
 {
   const int bin0 = MIN(0xffff, MAX(0, DT_IOP_LOWLIGHT_LUT_RES * i));
   const int bin1 = MIN(0xffff, MAX(0, DT_IOP_LOWLIGHT_LUT_RES * i + 1));
@@ -141,11 +149,12 @@ static float lookup(const float *lut, const float i)
   return lut[bin1] * f + lut[bin0] * (1. - f);
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o,
-             const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o)
 {
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_lowlight_data_t *d = (dt_iop_lowlight_data_t *)(piece->data);
-  const int ch = piece->colors;
+  const int ch = 4;
 
   // empiric coefficient
   const float c = 0.5f;
@@ -156,13 +165,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   dt_aligned_pixel_t XYZ_sw;
 
   dt_Lab_to_XYZ(Lab_sw, XYZ_sw);
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, i, o, roi_out, threshold, c) \
-  shared(d, XYZ_sw) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < (size_t)roi_out->width * roi_out->height; k++)
   {
     float *in = (float *)i + ch * k;

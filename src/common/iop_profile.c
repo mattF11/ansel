@@ -50,29 +50,12 @@
 #include "develop/pixelpipe.h"
 #include "develop/develop.h"
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/** Note :
- * we do not use finite-math-only and fast-math because divisions by zero are not manually avoided in the code
- * fp-contract=fast enables hardware-accelerated Fused Multiply-Add
- * the rest is loop reorganization and vectorization optimization
- **/
-#if defined(__GNUC__)
-#pragma GCC optimize ("unroll-loops", "tree-loop-if-convert", \
-                      "tree-loop-distribution", "no-strict-aliasing", \
-                      "loop-interchange", "loop-nest-optimize", "tree-loop-im", \
-                      "unswitch-loops", "tree-loop-ivcanon", "ira-loop-pressure", \
-                      "split-ivs-in-unroller", "variable-expansion-in-unroller", \
-                      "split-loops", "ivopts", "predictive-commoning",\
-                      "tree-loop-linear", "loop-block", "loop-strip-mine", \
-                      "fp-contract=fast", \
-                      "tree-vectorize")
-#endif
-
-
-static void _mark_as_nonmatrix_profile(dt_iop_order_iccprofile_info_t *const profile_info)
+static inline __attribute__((always_inline)) void _mark_as_nonmatrix_profile(dt_iop_order_iccprofile_info_t *const profile_info)
 {
   profile_info->matrix_in[0][0] = NAN;
   profile_info->matrix_in_transposed[0][0] = NAN;
@@ -80,6 +63,7 @@ static void _mark_as_nonmatrix_profile(dt_iop_order_iccprofile_info_t *const pro
   profile_info->matrix_out_transposed[0][0] = NAN;
 }
 
+__DT_CLONE_TARGETS__
 static void _clear_lut_curves(dt_iop_order_iccprofile_info_t *const profile_info)
 {
   for(int i = 0; i < 3; i++)
@@ -120,7 +104,7 @@ static void _transform_from_to_rgb_lab_lcms2(const float *const image_in, float 
         rgb_profile = NULL;
     }
   }
-  if(rgb_profile == NULL)
+  if(IS_NULL_PTR(rgb_profile))
   {
     rgb_profile = dt_colorspaces_get_profile(DT_COLORSPACE_LIN_REC2020, "", DT_PROFILE_DIRECTION_WORK)->profile;
     fprintf(stderr, _("unsupported working profile %s has been replaced by Rec2020 RGB!\n"), filename);
@@ -163,7 +147,7 @@ static void _transform_from_to_rgb_lab_lcms2(const float *const image_in, float 
   if(xform) cmsDeleteTransform(xform);
 }
 
-static void _transform_rgb_to_rgb_lcms2(const float *const image_in, float *const image_out, const int width,
+static inline __attribute__((always_inline)) void _transform_rgb_to_rgb_lcms2(const float *const image_in, float *const image_out, const int width,
                                         const int height, const dt_colorspaces_color_profile_type_t type_from,
                                         const char *filename_from,
                                         const dt_colorspaces_color_profile_type_t type_to, const char *filename_to,
@@ -259,14 +243,14 @@ static void _transform_lcms2(struct dt_iop_module_t *self, const float *const im
 
   *converted_cst = cst_to;
 
-  if(cst_from == IOP_CS_RGB && cst_to == IOP_CS_LAB)
+  if(dt_iop_colorspace_is_rgb(cst_from) && cst_to == IOP_CS_LAB)
   {
     dt_print(DT_DEBUG_DEV,
              "[_transform_lcms2] transfoming from RGB to Lab (%s %s)\n", self->op, self->multi_name);
     _transform_from_to_rgb_lab_lcms2(image_in, image_out, width, height, profile_info->type,
                                      profile_info->filename, profile_info->intent, 1);
   }
-  else if(cst_from == IOP_CS_LAB && cst_to == IOP_CS_RGB)
+  else if(cst_from == IOP_CS_LAB && dt_iop_colorspace_is_rgb(cst_to))
   {
     dt_print(DT_DEBUG_DEV,
              "[_transform_lcms2] transfoming from Lab to RGB (%s %s)\n", self->op, self->multi_name);
@@ -280,7 +264,7 @@ static void _transform_lcms2(struct dt_iop_module_t *self, const float *const im
   }
 }
 
-static inline void _transform_lcms2_rgb(const float *const image_in, float *const image_out, const int width,
+static inline __attribute__((always_inline)) void _transform_lcms2_rgb(const float *const image_in, float *const image_out, const int width,
                                         const int height,
                                         const dt_iop_order_iccprofile_info_t *const profile_info_from,
                                         const dt_iop_order_iccprofile_info_t *const profile_info_to)
@@ -338,11 +322,7 @@ static inline void _apply_tonecurves(const float *const image_in, float *const i
   // do we have any lut to apply, or is this a linear profile?
   if((lut[0][0] >= 0.0f) && (lut[1][0] >= 0.0f) && (lut[2][0] >= 0.0f))
   {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(stride, image_in, image_out, lut, lutsize, unbounded_coeffs, ch) \
-    schedule(static) collapse(2)
-#endif
+    __OMP_PARALLEL_FOR__(collapse(2))
     for(size_t k = 0; k < stride; k += ch)
     {
       for(int c = 0; c < 3; c++) // for_each_channel doesn't vectorize, and some code needs image_out[3] preserved
@@ -353,11 +333,7 @@ static inline void _apply_tonecurves(const float *const image_in, float *const i
   }
   else if((lut[0][0] >= 0.0f) || (lut[1][0] >= 0.0f) || (lut[2][0] >= 0.0f))
   {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(stride, image_in, image_out, lut, lutsize, unbounded_coeffs, ch) \
-    schedule(static) collapse(2)
-#endif
+    __OMP_PARALLEL_FOR__(collapse(2))
     for(size_t k = 0; k < stride; k += ch)
     {
       for(int c = 0; c < 3; c++) // for_each_channel doesn't vectorize, and some code needs image_out[3] preserved
@@ -391,12 +367,7 @@ static inline void _transform_rgb_to_lab_matrix(const float *const restrict imag
                       profile_info->lut_in[2], profile_info->unbounded_coeffs_in[0],
                       profile_info->unbounded_coeffs_in[1], profile_info->unbounded_coeffs_in[2],
                       profile_info->lutsize);
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-    dt_omp_firstprivate(image_out, profile_info, stride, ch, m0, m1, m2) \
-    schedule(static) aligned(image_out:64)
-#endif
+    __OMP_PARALLEL_FOR_SIMD__(aligned(image_out:64))
     for(size_t y = 0; y < stride; y += ch)
     {
       float *const restrict in = __builtin_assume_aligned(image_out + y, 16);
@@ -408,11 +379,7 @@ static inline void _transform_rgb_to_lab_matrix(const float *const restrict imag
   }
   else
   {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-    dt_omp_firstprivate(image_in, image_out, profile_info, stride, ch, m0, m1, m2) \
-    schedule(static) aligned(image_in, image_out:64)
-#endif
+    __OMP_PARALLEL_FOR_SIMD__(aligned(image_in, image_out:64))
     for(size_t y = 0; y < stride; y += ch)
     {
       const float *const restrict in = __builtin_assume_aligned(image_in + y, 16);
@@ -439,12 +406,7 @@ static inline void _transform_lab_to_rgb_matrix(const float *const image_in, flo
   const dt_aligned_pixel_simd_t m0 = dt_colormatrix_row_to_simd(*matrix_ptr, 0);
   const dt_aligned_pixel_simd_t m1 = dt_colormatrix_row_to_simd(*matrix_ptr, 1);
   const dt_aligned_pixel_simd_t m2 = dt_colormatrix_row_to_simd(*matrix_ptr, 2);
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(image_in, image_out, stride, profile_info, ch, m0, m1, m2, use_nontemporal)   \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t y = 0; y < stride; y += ch)
   {
     const float *const restrict in = __builtin_assume_aligned(image_in + y, 16);
@@ -506,12 +468,7 @@ static inline void _transform_matrix_rgb(const float *const restrict image_in,
     const int run_lut_out[3] DT_ALIGNED_PIXEL = { (profile_info_to->lut_out[0][0] >= 0.0f),
                                                   (profile_info_to->lut_out[1][0] >= 0.0f),
                                                   (profile_info_to->lut_out[2][0] >= 0.0f) };
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(stride, image_in, image_out, profile_info_from, profile_info_to, run_lut_in, run_lut_out, m0, m1, m2, use_nontemporal) \
-    schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(size_t y = 0; y < stride; y += 4)
     {
       const float *const restrict in = __builtin_assume_aligned(image_in + y, 16);
@@ -567,11 +524,7 @@ static inline void _transform_matrix_rgb(const float *const restrict image_in,
   }
   else
   {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(stride, image_in, image_out, profile_info_from, profile_info_to, m0, m1, m2) \
-    schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(size_t y = 0; y < stride; y += 4)
     {
       const float *const restrict in = __builtin_assume_aligned(image_in + y, 16);
@@ -602,11 +555,11 @@ static inline void _transform_matrix(struct dt_iop_module_t *self,
 
   *converted_cst = cst_to;
 
-  if(cst_from == IOP_CS_RGB && cst_to == IOP_CS_LAB)
+  if(dt_iop_colorspace_is_rgb(cst_from) && cst_to == IOP_CS_LAB)
   {
     _transform_rgb_to_lab_matrix(image_in, image_out, width, height, profile_info);
   }
-  else if(cst_from == IOP_CS_LAB && cst_to == IOP_CS_RGB)
+  else if(cst_from == IOP_CS_LAB && dt_iop_colorspace_is_rgb(cst_to))
   {
     _transform_lab_to_rgb_matrix(image_in, image_out, width, height, profile_info);
   }
@@ -620,6 +573,7 @@ static inline void _transform_matrix(struct dt_iop_module_t *self,
 
 #define DT_IOPPR_LUT_SAMPLES 0x10000
 
+__DT_CLONE_TARGETS__
 void dt_ioppr_init_profile_info(dt_iop_order_iccprofile_info_t *profile_info, const int lutsize)
 {
   profile_info->type = DT_COLORSPACE_NONE;
@@ -657,6 +611,7 @@ void dt_ioppr_cleanup_profile_info(dt_iop_order_iccprofile_info_t *profile_info)
  * it can be called multiple time between init and cleanup
  * return 0 if OK, non zero otherwise
  */
+__DT_CLONE_TARGETS__
 static int dt_ioppr_generate_profile_info(dt_iop_order_iccprofile_info_t *profile_info, const int type, const char *filename, const int intent)
 {
   int err_code = 0;
@@ -743,6 +698,7 @@ static int dt_ioppr_generate_profile_info(dt_iop_order_iccprofile_info_t *profil
   return err_code;
 }
 
+__DT_CLONE_TARGETS__
 dt_iop_order_iccprofile_info_t *
 dt_ioppr_get_profile_info_from_list(struct dt_develop_t *dev,
                                     const dt_colorspaces_color_profile_type_t profile_type,
@@ -770,7 +726,7 @@ dt_ioppr_add_profile_info_to_list(struct dt_develop_t *dev,
                                   const int intent)
 {
   dt_iop_order_iccprofile_info_t *profile_info = dt_ioppr_get_profile_info_from_list(dev, profile_type, profile_filename);
-  if(profile_info == NULL)
+  if(IS_NULL_PTR(profile_info))
   {
     profile_info = dt_alloc_align(sizeof(dt_iop_order_iccprofile_info_t));
     dt_ioppr_init_profile_info(profile_info, 0);
@@ -839,7 +795,7 @@ dt_ioppr_set_pipe_work_profile_info(struct dt_develop_t *dev,
 {
   dt_iop_order_iccprofile_info_t *profile_info = dt_ioppr_add_profile_info_to_list(dev, type, filename, intent);
 
-  if(profile_info == NULL || isnan(profile_info->matrix_in[0][0]) || isnan(profile_info->matrix_out[0][0]))
+  if(IS_NULL_PTR(profile_info) || isnan(profile_info->matrix_in[0][0]) || isnan(profile_info->matrix_out[0][0]))
   {
     fprintf(stderr, "[dt_ioppr_set_pipe_work_profile_info] unsupported working profile %i %s, it will be replaced with linear Rec2020\n", type, filename);
     profile_info = dt_ioppr_add_profile_info_to_list(dev, DT_COLORSPACE_LIN_REC2020, "", intent);
@@ -859,7 +815,7 @@ dt_ioppr_set_pipe_input_profile_info(struct dt_develop_t *dev,
 {
   dt_iop_order_iccprofile_info_t *profile_info = dt_ioppr_add_profile_info_to_list(dev, type, filename, intent);
 
-  if(profile_info == NULL)
+  if(IS_NULL_PTR(profile_info))
   {
     fprintf(stderr,
             "[dt_ioppr_set_pipe_input_profile_info] unsupported input profile %i %s, it will be replaced with "
@@ -892,7 +848,7 @@ dt_ioppr_set_pipe_output_profile_info(struct dt_develop_t *dev,
 {
   dt_iop_order_iccprofile_info_t *profile_info = dt_ioppr_add_profile_info_to_list(dev, type, filename, intent);
 
-  if(profile_info == NULL || isnan(profile_info->matrix_in[0][0]) || isnan(profile_info->matrix_out[0][0]))
+  if(IS_NULL_PTR(profile_info) || isnan(profile_info->matrix_in[0][0]) || isnan(profile_info->matrix_out[0][0]))
   {
     if (type != DT_COLORSPACE_DISPLAY)
     {
@@ -910,22 +866,23 @@ dt_ioppr_set_pipe_output_profile_info(struct dt_develop_t *dev,
   return profile_info;
 }
 
-dt_iop_order_iccprofile_info_t *dt_ioppr_get_pipe_work_profile_info(struct dt_dev_pixelpipe_t *pipe)
+dt_iop_order_iccprofile_info_t *dt_ioppr_get_pipe_work_profile_info(const struct dt_dev_pixelpipe_t *pipe)
 {
   return pipe->work_profile_info;
 }
 
-dt_iop_order_iccprofile_info_t *dt_ioppr_get_pipe_input_profile_info(struct dt_dev_pixelpipe_t *pipe)
+dt_iop_order_iccprofile_info_t *dt_ioppr_get_pipe_input_profile_info(const struct dt_dev_pixelpipe_t *pipe)
 {
   return pipe->input_profile_info;
 }
 
-dt_iop_order_iccprofile_info_t *dt_ioppr_get_pipe_output_profile_info(struct dt_dev_pixelpipe_t *pipe)
+dt_iop_order_iccprofile_info_t *dt_ioppr_get_pipe_output_profile_info(const struct dt_dev_pixelpipe_t *pipe)
 {
   return pipe->output_profile_info;
 }
 
-dt_iop_order_iccprofile_info_t *dt_ioppr_get_pipe_current_profile_info(dt_iop_module_t *module, struct dt_dev_pixelpipe_t *pipe)
+dt_iop_order_iccprofile_info_t *dt_ioppr_get_pipe_current_profile_info(dt_iop_module_t *module,
+                                                                       const struct dt_dev_pixelpipe_t *pipe)
 {
   dt_iop_order_iccprofile_info_t *restrict color_profile;
 
@@ -1049,7 +1006,12 @@ void dt_ioppr_transform_image_colorspace(struct dt_iop_module_t *self, const flo
     *converted_cst = cst_to;
     return;
   }
-  if(profile_info == NULL)
+  if(dt_iop_colorspace_is_rgb(cst_from) && dt_iop_colorspace_is_rgb(cst_to))
+  {
+    *converted_cst = cst_to;
+    return;
+  }
+  if(IS_NULL_PTR(profile_info))
   {
     *converted_cst = cst_from;
     return;
@@ -1072,7 +1034,8 @@ void dt_ioppr_transform_image_colorspace(struct dt_iop_module_t *self, const flo
     {
       dt_get_times(&end_time);
       fprintf(stderr, "image colorspace transform %s-->%s took %.3f secs (%.3f CPU) [%s %s]\n",
-          (cst_from == IOP_CS_RGB) ? "RGB": "Lab", (cst_to == IOP_CS_RGB) ? "RGB": "Lab",
+          dt_iop_colorspace_is_rgb(cst_from) ? "RGB" : "Lab",
+          dt_iop_colorspace_is_rgb(cst_to) ? "RGB" : "Lab",
           end_time.clock - start_time.clock, end_time.user - start_time.user, self->op, self->multi_name);
     }
   }
@@ -1084,7 +1047,8 @@ void dt_ioppr_transform_image_colorspace(struct dt_iop_module_t *self, const flo
     {
       dt_get_times(&end_time);
       fprintf(stderr, "image colorspace transform %s-->%s took %.3f secs (%.3f lcms2) [%s %s]\n",
-          (cst_from == IOP_CS_RGB) ? "RGB": "Lab", (cst_to == IOP_CS_RGB) ? "RGB": "Lab",
+          dt_iop_colorspace_is_rgb(cst_from) ? "RGB" : "Lab",
+          dt_iop_colorspace_is_rgb(cst_to) ? "RGB" : "Lab",
           end_time.clock - start_time.clock, end_time.user - start_time.user, self->op, self->multi_name);
     }
   }
@@ -1156,7 +1120,7 @@ dt_colorspaces_cl_global_t *dt_colorspaces_init_cl_global()
 
 void dt_colorspaces_free_cl_global(dt_colorspaces_cl_global_t *g)
 {
-  if(!g) return;
+  if(IS_NULL_PTR(g)) return;
 
   // destroy kernels
   dt_opencl_free_kernel(g->kernel_colorspaces_transform_lab_to_rgb_matrix);
@@ -1220,7 +1184,7 @@ cl_int dt_ioppr_build_iccprofile_params_cl(const dt_iop_order_iccprofile_info_t 
     profile_lut_cl = dt_ioppr_get_trc_cl(profile_info);
 
     dev_profile_info = dt_opencl_copy_host_to_device_constant(devid, sizeof(*profile_info_cl), profile_info_cl);
-    if(dev_profile_info == NULL)
+    if(IS_NULL_PTR(dev_profile_info))
     {
       fprintf(stderr, "[dt_ioppr_build_iccprofile_params_cl] error allocating memory 5\n");
       err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -1228,7 +1192,7 @@ cl_int dt_ioppr_build_iccprofile_params_cl(const dt_iop_order_iccprofile_info_t 
     }
 
     dev_profile_lut = dt_opencl_copy_host_to_device(devid, profile_lut_cl, 256, 256 * 6, sizeof(float));
-    if(dev_profile_lut == NULL)
+    if(IS_NULL_PTR(dev_profile_lut))
     {
       fprintf(stderr, "[dt_ioppr_build_iccprofile_params_cl] error allocating memory 6\n");
       err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -1240,7 +1204,7 @@ cl_int dt_ioppr_build_iccprofile_params_cl(const dt_iop_order_iccprofile_info_t 
     profile_lut_cl = malloc(sizeof(cl_float) * 1 * 6);
 
     dev_profile_lut = dt_opencl_copy_host_to_device(devid, profile_lut_cl, 1, 1 * 6, sizeof(float));
-    if(dev_profile_lut == NULL)
+    if(IS_NULL_PTR(dev_profile_lut))
     {
       fprintf(stderr, "[dt_ioppr_build_iccprofile_params_cl] error allocating memory 7\n");
       err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -1287,12 +1251,21 @@ int dt_ioppr_transform_image_colorspace_cl(struct dt_iop_module_t *self, const i
 {
   cl_int err = CL_SUCCESS;
 
+  assert(!IS_NULL_PTR(dev_img_in));
+  assert(!IS_NULL_PTR(dev_img_out));
+  assert(dev_img_in != dev_img_out);
+
   if(cst_from == cst_to)
   {
     *converted_cst = cst_to;
     return TRUE;
   }
-  if(profile_info == NULL)
+  if(dt_iop_colorspace_is_rgb(cst_from) && dt_iop_colorspace_is_rgb(cst_to))
+  {
+    *converted_cst = cst_to;
+    return TRUE;
+  }
+  if(IS_NULL_PTR(profile_info))
   {
     *converted_cst = cst_from;
     return FALSE;
@@ -1305,10 +1278,8 @@ int dt_ioppr_transform_image_colorspace_cl(struct dt_iop_module_t *self, const i
 
   const size_t ch = 4;
   float *src_buffer = NULL;
-  int in_place = (dev_img_in == dev_img_out);
 
   int kernel_transform = 0;
-  cl_mem dev_tmp = NULL;
   cl_mem dev_profile_info = NULL;
   cl_mem dev_lut = NULL;
   dt_colorspaces_iccprofile_info_cl_t profile_info_cl;
@@ -1322,14 +1293,11 @@ int dt_ioppr_transform_image_colorspace_cl(struct dt_iop_module_t *self, const i
     dt_times_t start_time = { 0 }, end_time = { 0 };
     if(darktable.unmuted & DT_DEBUG_PERF) dt_get_times(&start_time);
 
-    size_t origin[] = { 0, 0, 0 };
-    size_t region[] = { width, height, 1 };
-
-    if(cst_from == IOP_CS_RGB && cst_to == IOP_CS_LAB)
+    if(dt_iop_colorspace_is_rgb(cst_from) && cst_to == IOP_CS_LAB)
     {
       kernel_transform = darktable.opencl->colorspaces->kernel_colorspaces_transform_rgb_matrix_to_lab;
     }
-    else if(cst_from == IOP_CS_LAB && cst_to == IOP_CS_RGB)
+    else if(cst_from == IOP_CS_LAB && dt_iop_colorspace_is_rgb(cst_to))
     {
       kernel_transform = darktable.opencl->colorspaces->kernel_colorspaces_transform_lab_to_rgb_matrix;
     }
@@ -1344,38 +1312,15 @@ int dt_ioppr_transform_image_colorspace_cl(struct dt_iop_module_t *self, const i
     dt_ioppr_get_profile_info_cl(profile_info, &profile_info_cl);
     lut_cl = dt_ioppr_get_trc_cl(profile_info);
 
-    if(in_place)
-    {
-      dev_tmp = dt_opencl_alloc_device(devid, width, height, sizeof(float) * 4);
-      if(dev_tmp == NULL)
-      {
-        fprintf(stderr,
-                "[dt_ioppr_transform_image_colorspace_cl] error allocating memory for color transformation 4\n");
-        err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
-        goto cleanup;
-      }
-
-      err = dt_opencl_enqueue_copy_image(devid, dev_img_in, dev_tmp, origin, origin, region);
-      if(err != CL_SUCCESS)
-      {
-        fprintf(stderr, "[dt_ioppr_transform_image_colorspace_cl] error on copy image for color transformation\n");
-        goto cleanup;
-      }
-    }
-    else
-    {
-      dev_tmp = dev_img_in;
-    }
-
     dev_profile_info = dt_opencl_copy_host_to_device_constant(devid, sizeof(profile_info_cl), &profile_info_cl);
-    if(dev_profile_info == NULL)
+    if(IS_NULL_PTR(dev_profile_info))
     {
       fprintf(stderr, "[dt_ioppr_transform_image_colorspace_cl] error allocating memory for color transformation 5\n");
       err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
       goto cleanup;
     }
     dev_lut = dt_opencl_copy_host_to_device(devid, lut_cl, 256, 256 * 6, sizeof(float));
-    if(dev_lut == NULL)
+    if(IS_NULL_PTR(dev_lut))
     {
       fprintf(stderr, "[dt_ioppr_transform_image_colorspace_cl] error allocating memory for color transformation 6\n");
       err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -1384,7 +1329,7 @@ int dt_ioppr_transform_image_colorspace_cl(struct dt_iop_module_t *self, const i
 
     size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
 
-    dt_opencl_set_kernel_arg(devid, kernel_transform, 0, sizeof(cl_mem), (void *)&dev_tmp);
+    dt_opencl_set_kernel_arg(devid, kernel_transform, 0, sizeof(cl_mem), (void *)&dev_img_in);
     dt_opencl_set_kernel_arg(devid, kernel_transform, 1, sizeof(cl_mem), (void *)&dev_img_out);
     dt_opencl_set_kernel_arg(devid, kernel_transform, 2, sizeof(int), (void *)&width);
     dt_opencl_set_kernel_arg(devid, kernel_transform, 3, sizeof(int), (void *)&height);
@@ -1403,7 +1348,8 @@ int dt_ioppr_transform_image_colorspace_cl(struct dt_iop_module_t *self, const i
     {
       dt_get_times(&end_time);
       fprintf(stderr, "image colorspace transform %s-->%s took %.3f secs (%.3f GPU) [%s %s]\n",
-          (cst_from == IOP_CS_RGB) ? "RGB": "Lab", (cst_to == IOP_CS_RGB) ? "RGB": "Lab",
+          dt_iop_colorspace_is_rgb(cst_from) ? "RGB" : "Lab",
+          dt_iop_colorspace_is_rgb(cst_to) ? "RGB" : "Lab",
           end_time.clock - start_time.clock, end_time.user - start_time.user, self->op, self->multi_name);
     }
   }
@@ -1411,7 +1357,7 @@ int dt_ioppr_transform_image_colorspace_cl(struct dt_iop_module_t *self, const i
   {
     // no matrix, call lcms2
     src_buffer = dt_pixelpipe_cache_alloc_align_float_cache(ch * width * height, 0);
-    if(src_buffer == NULL)
+    if(IS_NULL_PTR(src_buffer))
     {
       fprintf(stderr, "[dt_ioppr_transform_image_colorspace_cl] error allocating memory for color transformation 1\n");
       err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -1439,7 +1385,6 @@ int dt_ioppr_transform_image_colorspace_cl(struct dt_iop_module_t *self, const i
 
 cleanup:
   dt_pixelpipe_cache_free_align(src_buffer);
-  if(dev_tmp && in_place) dt_opencl_release_mem_object(dev_tmp);
   dt_opencl_release_mem_object(dev_profile_info);
   dt_opencl_release_mem_object(dev_lut);
   dt_free(lut_cl);
@@ -1523,7 +1468,7 @@ int dt_ioppr_transform_image_colorspace_rgb_cl(const int devid, cl_mem dev_img_i
     if(in_place)
     {
       dev_tmp = dt_opencl_alloc_device(devid, width, height, sizeof(float) * 4);
-      if(dev_tmp == NULL)
+      if(IS_NULL_PTR(dev_tmp))
       {
         fprintf(
             stderr,
@@ -1547,7 +1492,7 @@ int dt_ioppr_transform_image_colorspace_rgb_cl(const int devid, cl_mem dev_img_i
 
     dev_profile_info_from
         = dt_opencl_copy_host_to_device_constant(devid, sizeof(profile_info_from_cl), &profile_info_from_cl);
-    if(dev_profile_info_from == NULL)
+    if(IS_NULL_PTR(dev_profile_info_from))
     {
       fprintf(stderr,
               "[dt_ioppr_transform_image_colorspace_rgb_cl] error allocating memory for color transformation 5\n");
@@ -1555,7 +1500,7 @@ int dt_ioppr_transform_image_colorspace_rgb_cl(const int devid, cl_mem dev_img_i
       goto cleanup;
     }
     dev_lut_from = dt_opencl_copy_host_to_device(devid, lut_from_cl, 256, 256 * 6, sizeof(float));
-    if(dev_lut_from == NULL)
+    if(IS_NULL_PTR(dev_lut_from))
     {
       fprintf(stderr,
               "[dt_ioppr_transform_image_colorspace_rgb_cl] error allocating memory for color transformation 6\n");
@@ -1565,7 +1510,7 @@ int dt_ioppr_transform_image_colorspace_rgb_cl(const int devid, cl_mem dev_img_i
 
     dev_profile_info_to
         = dt_opencl_copy_host_to_device_constant(devid, sizeof(profile_info_to_cl), &profile_info_to_cl);
-    if(dev_profile_info_to == NULL)
+    if(IS_NULL_PTR(dev_profile_info_to))
     {
       fprintf(stderr,
               "[dt_ioppr_transform_image_colorspace_rgb_cl] error allocating memory for color transformation 7\n");
@@ -1573,7 +1518,7 @@ int dt_ioppr_transform_image_colorspace_rgb_cl(const int devid, cl_mem dev_img_i
       goto cleanup;
     }
     dev_lut_to = dt_opencl_copy_host_to_device(devid, lut_to_cl, 256, 256 * 6, sizeof(float));
-    if(dev_lut_to == NULL)
+    if(IS_NULL_PTR(dev_lut_to))
     {
       fprintf(stderr,
               "[dt_ioppr_transform_image_colorspace_rgb_cl] error allocating memory for color transformation 8\n");
@@ -1583,7 +1528,7 @@ int dt_ioppr_transform_image_colorspace_rgb_cl(const int devid, cl_mem dev_img_i
     float matrix3x4[12];
     pack_3xSSE_to_3x4(matrix, matrix3x4);
     matrix_cl = dt_opencl_copy_host_to_device_constant(devid, sizeof(matrix3x4), matrix3x4);
-    if(matrix_cl == NULL)
+    if(IS_NULL_PTR(matrix_cl))
     {
       fprintf(stderr,
               "[dt_ioppr_transform_image_colorspace_rgb_cl] error allocating memory for color transformation 7\n");
@@ -1623,7 +1568,7 @@ int dt_ioppr_transform_image_colorspace_rgb_cl(const int devid, cl_mem dev_img_i
     // no matrix, call lcms2
     src_buffer_in  = dt_pixelpipe_cache_alloc_align_float_cache(ch * width * height, 0);
     src_buffer_out = dt_pixelpipe_cache_alloc_align_float_cache(ch * width * height, 0);
-    if(src_buffer_in == NULL || src_buffer_out == NULL)
+    if(IS_NULL_PTR(src_buffer_in) || IS_NULL_PTR(src_buffer_out))
     {
       fprintf(stderr,
               "[dt_ioppr_transform_image_colorspace_rgb_cl] error allocating memory for color transformation 1\n");

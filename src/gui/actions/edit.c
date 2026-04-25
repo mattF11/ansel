@@ -26,6 +26,7 @@
 #include "common/history.h"
 #include "common/history_merge.h"
 #include "develop/dev_history.h"
+#include "develop/develop.h"
 #include "control/control.h"
 
 
@@ -33,9 +34,9 @@ MAKE_ACCEL_WRAPPER(dt_gui_preferences_show)
 
 static gboolean undo_sensitive_callback()
 {
-  if(!darktable.view_manager) return FALSE;
+  if(IS_NULL_PTR(darktable.view_manager)) return FALSE;
   const dt_view_t *cv = dt_view_manager_get_current_view(darktable.view_manager);
-  if(!cv) return FALSE;
+  if(IS_NULL_PTR(cv)) return FALSE;
 
   gboolean sensitive = FALSE;
 
@@ -51,9 +52,9 @@ static gboolean undo_sensitive_callback()
 
 static gboolean undo_callback(GtkAccelGroup *group, GObject *acceleratable, guint keyval, GdkModifierType mods, gpointer user_data)
 {
-  if(!darktable.view_manager || !undo_sensitive_callback()) return FALSE;
+  if(IS_NULL_PTR(darktable.view_manager) || !undo_sensitive_callback()) return FALSE;
   const dt_view_t *cv = dt_view_manager_get_current_view(darktable.view_manager);
-  if(!cv) return FALSE;
+  if(IS_NULL_PTR(cv)) return FALSE;
 
   if(!strcmp(cv->module_name, "lighttable"))
     dt_undo_do_undo(darktable.undo, DT_UNDO_LIGHTTABLE);
@@ -72,9 +73,9 @@ static gboolean undo_callback(GtkAccelGroup *group, GObject *acceleratable, guin
 
 static gboolean redo_sensitive_callback()
 {
-  if(!darktable.view_manager) return FALSE;
+  if(IS_NULL_PTR(darktable.view_manager)) return FALSE;
   const dt_view_t *cv = dt_view_manager_get_current_view(darktable.view_manager);
-  if(!cv) return FALSE;
+  if(IS_NULL_PTR(cv)) return FALSE;
 
   gboolean sensitive = FALSE;
 
@@ -91,9 +92,9 @@ static gboolean redo_sensitive_callback()
 
 static gboolean redo_callback(GtkAccelGroup *group, GObject *acceleratable, guint keyval, GdkModifierType mods, gpointer user_data)
 {
-  if(!darktable.view_manager || !redo_sensitive_callback()) return FALSE;
+  if(IS_NULL_PTR(darktable.view_manager) || !redo_sensitive_callback()) return FALSE;
   const dt_view_t *cv = dt_view_manager_get_current_view(darktable.view_manager);
-  if(!cv) return FALSE;
+  if(IS_NULL_PTR(cv)) return FALSE;
 
   if(!strcmp(cv->module_name, "lighttable"))
     dt_undo_do_redo(darktable.undo, DT_UNDO_LIGHTTABLE);
@@ -109,7 +110,7 @@ static gboolean redo_callback(GtkAccelGroup *group, GObject *acceleratable, guin
 static gboolean compress_history_callback(GtkAccelGroup *group, GObject *acceleratable, guint keyval, GdkModifierType mods, gpointer user_data)
 {
   GList *imgs = dt_act_on_get_images();
-  if(!imgs) return FALSE;
+  if(IS_NULL_PTR(imgs)) return FALSE;
 
   gboolean is_darkroom_image_in_list = dt_menu_is_image_in_dev(imgs);
 
@@ -138,7 +139,7 @@ static gboolean delete_history_callback(GtkAccelGroup *group, GObject *accelerat
   if(!has_active_images()) return FALSE;
 
   GList *imgs = dt_act_on_get_images();
-  if(!imgs) return FALSE;
+  if(IS_NULL_PTR(imgs)) return FALSE;
 
   gboolean is_darkroom_image_in_list = dt_menu_is_image_in_dev(imgs);
 
@@ -178,7 +179,10 @@ static gboolean copy_callback(GtkAccelGroup *group, GObject *acceleratable, guin
 
   if(is_darkroom_image_in_list)
   {
-    dt_dev_write_history(darktable.develop);
+    // Copy/paste reloads the source history from the database right away.
+    // Flush the current darkroom history synchronously here so the copied
+    // source matches the edit stack currently shown in the GUI.
+    dt_dev_write_history(darktable.develop, FALSE);
   }
 
   dt_history_copy(dt_selection_get_first_id(darktable.selection));
@@ -202,7 +206,10 @@ static gboolean copy_parts_callback(GtkAccelGroup *group, GObject *acceleratable
 
   if(is_darkroom_image_in_list)
   {
-    dt_dev_write_history(darktable.develop);
+    // Selective copy opens the same immediate DB read path as full copy.
+    // Keep the persisted history in sync with the current darkroom stack
+    // before building the copy/paste state from this image.
+    dt_dev_write_history(darktable.develop, FALSE);
   }
 
   dt_history_copy_parts(dt_selection_get_first_id(darktable.selection));
@@ -268,7 +275,7 @@ static gboolean paste_parts_callback(GtkAccelGroup *group, GObject *acceleratabl
 static gboolean load_xmp_callback(GtkAccelGroup *group, GObject *acceleratable, guint keyval, GdkModifierType mods, gpointer user_data)
 {
   GList *imgs = dt_selection_get_list(darktable.selection);
-  if(!imgs) return FALSE;
+  if(IS_NULL_PTR(imgs)) return FALSE;
 
   const int act_on_one = g_list_is_singleton(imgs); // list length == 1?
   GtkWidget *win = dt_ui_main_window(darktable.gui->ui);
@@ -354,6 +361,17 @@ static gboolean duplicate_callback(GtkAccelGroup *group, GObject *acceleratable,
 {
   if(has_active_images())
   {
+    GList *imgs = dt_selection_get_list(darktable.selection);
+    if(dt_menu_is_image_in_dev(imgs))
+    {
+      // Duplication copies history from the source image into the new version.
+      // When the source is the current darkroom image, persist its live history
+      // before the background duplicate job reloads it from the database.
+      dt_dev_write_history(darktable.develop, FALSE);
+    }
+    g_list_free(imgs);
+    imgs = NULL;
+
     dt_control_duplicate_images(FALSE);
     return TRUE;
   }
@@ -366,6 +384,16 @@ static gboolean new_history_callback(GtkAccelGroup *group, GObject *acceleratabl
 {
   if(has_active_images())
   {
+    GList *imgs = dt_selection_get_list(darktable.selection);
+    if(dt_menu_is_image_in_dev(imgs))
+    {
+      // Creating a new duplicate version still starts from the current source
+      // image state, so flush the live darkroom history before duplicating it.
+      dt_dev_write_history(darktable.develop, FALSE);
+    }
+    g_list_free(imgs);
+    imgs = NULL;
+
     dt_control_duplicate_images(TRUE);
     return TRUE;
   }

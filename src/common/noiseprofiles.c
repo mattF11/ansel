@@ -41,17 +41,17 @@ JsonParser *dt_noiseprofile_init(const char *alternative)
   GError *error = NULL;
   char filename[PATH_MAX] = { 0 };
 
-  if(alternative == NULL)
+  if(IS_NULL_PTR(alternative))
   {
     char dir[PATH_MAX] = { 0 };
 
     dt_loc_get_user_config_dir(dir, sizeof(dir));
-    snprintf(filename, sizeof(filename), "%s/%s", dir, "noiseprofiles.json");
+    dt_concat_path_file(filename, dir, "noiseprofiles.json");
 
     if(!g_file_test(filename, G_FILE_TEST_EXISTS))
     {
       dt_loc_get_datadir(dir, sizeof(dir));
-      snprintf(filename, sizeof(filename), "%s/%s", dir, "noiseprofiles.json");
+      dt_concat_path_file(filename, dir, "noiseprofiles.json");
     }
   }
   else
@@ -117,7 +117,7 @@ static gboolean dt_noiseprofile_verify(JsonParser *parser)
   dt_print(DT_DEBUG_CONTROL, "[noiseprofile] verifying noiseprofile file\n");
 
   JsonNode *root = json_parser_get_root(parser);
-  if(!root) _ERROR("can't get the root node");
+  if(IS_NULL_PTR(root)) _ERROR("can't get the root node");
 
   reader = json_reader_new(root);
 
@@ -235,7 +235,7 @@ GList *dt_noiseprofile_get_matching(const dt_image_t *cimg)
   JsonReader *reader = NULL;
   GList *result = NULL;
 
-  if(!parser) goto end;
+  if(IS_NULL_PTR(parser)) goto end;
 
   JsonNode *root = json_parser_get_root(parser);
 

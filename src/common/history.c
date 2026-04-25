@@ -298,7 +298,7 @@ gboolean dt_history_check_module_exists(int32_t imgid, const char *operation, gb
       dt_database_get(darktable.db),
       "SELECT imgid"
       " FROM main.history"
-      " WHERE imgid= ?1 AND operation = ?2 AND enabled in (1, ?3)",
+      " WHERE imgid= ?1 AND operation = ?2",
       -1, &_history_check_module_exists_stmt, NULL);
     // clang-format on
   }
@@ -307,7 +307,6 @@ gboolean dt_history_check_module_exists(int32_t imgid, const char *operation, gb
   sqlite3_clear_bindings(stmt);
   DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, imgid);
   DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 2, operation, -1, SQLITE_TRANSIENT);
-  DT_DEBUG_SQLITE3_BIND_INT(stmt, 3, enabled);
   if (sqlite3_step(stmt) == SQLITE_ROW) result = TRUE;
   dt_pthread_mutex_unlock(&_history_stmt_mutex);
 
@@ -542,7 +541,7 @@ gboolean dt_history_db_write_history_item(const int32_t imgid, const int num, co
                                          const void *blendop_params, const int blendop_params_size,
                                          const int blendop_version, const int multi_priority, const char *multi_name)
 {
-  if(imgid <= 0 || num < 0 || !operation) return FALSE;
+  if(imgid <= 0 || num < 0 || IS_NULL_PTR(operation)) return FALSE;
 
   gboolean ok = TRUE;
 
@@ -602,7 +601,7 @@ gboolean dt_history_db_write_history_item(const int32_t imgid, const int num, co
 
 void dt_history_db_foreach_history_row(const int32_t imgid, dt_history_db_row_cb cb, void *user_data)
 {
-  if(imgid <= 0 || !cb) return;
+  if(imgid <= 0 || IS_NULL_PTR(cb)) return;
 
   _history_stmt_mutex_ensure();
   dt_pthread_mutex_lock(&_history_stmt_mutex);
@@ -650,7 +649,7 @@ void dt_history_db_foreach_history_row(const int32_t imgid, dt_history_db_row_cb
 void dt_history_db_foreach_auto_preset_row(const int32_t imgid, const dt_image_t *image, const char *workflow_preset,
                                           const int iformat, const int excluded, dt_history_db_row_cb cb, void *user_data)
 {
-  if(imgid <= 0 || !image || !workflow_preset || !cb) return;
+  if(imgid <= 0 || IS_NULL_PTR(image) || !workflow_preset || IS_NULL_PTR(cb)) return;
 
   _history_stmt_mutex_ensure();
   dt_pthread_mutex_lock(&_history_stmt_mutex);
@@ -728,7 +727,7 @@ gboolean dt_history_db_get_autoapply_ioporder_params(const int32_t imgid, const 
                                                     const int iformat, const int excluded, void **params,
                                                     int32_t *params_len)
 {
-  if(imgid <= 0 || !image || !params || !params_len) return FALSE;
+  if(imgid <= 0 || IS_NULL_PTR(image) || IS_NULL_PTR(params) || !params_len) return FALSE;
   *params = NULL;
   *params_len = 0;
 
@@ -786,19 +785,6 @@ gboolean dt_history_db_get_autoapply_ioporder_params(const int32_t imgid, const 
 
   dt_pthread_mutex_unlock(&_history_stmt_mutex);
   return ok;
-}
-
-
-void dt_history_hash_set_mipmap(const int32_t imgid, const uint64_t history_hash,
-                                const dt_image_cache_write_mode_t mode)
-{
-  if(imgid <= 0) return;
-  if(history_hash == UINT64_MAX) return;
-
-  dt_image_t *img = dt_image_cache_get(darktable.image_cache, imgid, 'w');
-  if(!img) return;
-  img->mipmap_hash = history_hash;
-  dt_image_cache_write_release(darktable.image_cache, img, mode);
 }
 
 #undef DT_IOP_ORDER_INFO

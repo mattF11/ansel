@@ -138,7 +138,10 @@ void dt_printing_setup_display(dt_images_box *imgs,
   {
     dt_image_box *box = &imgs->box[k];
 
-    if(box->pos.x > 0)
+    /* A valid box can start exactly at the page origin, so `pos.x == 0`
+     * is not an empty-box sentinel here. Recompute screen geometry for every
+     * box that has a non-zero relative extent. */
+    if(box->pos.width > 0.0f && box->pos.height > 0.0f)
     {
       box->screen.x      = pwidth * box->pos.x + px;
       box->screen.y      = pheight * box->pos.y + py;
@@ -152,6 +155,17 @@ void dt_printing_setup_box(dt_images_box *imgs, const int idx,
                            const float x, const float y,
                            const float width, const float height)
 {
+  if(!isfinite(imgs->screen.page.width) || !isfinite(imgs->screen.page.height)
+     || !isfinite(imgs->screen.print_area.width) || !isfinite(imgs->screen.print_area.height)
+     || imgs->screen.page.width <= 0.0f || imgs->screen.page.height <= 0.0f
+     || imgs->screen.print_area.width <= 0.0f || imgs->screen.print_area.height <= 0.0f)
+  {
+    /* Box coordinates are stored relatively to the display page. If the page
+     * has not been laid out yet, dividing by its size would poison the model
+     * with NaN positions and later redraws would never recover. */
+    return;
+  }
+
   const float dx = fminf(imgs->screen.print_area.width,
                          fmaxf(100.0f, width));
   const float dy = fminf(imgs->screen.print_area.height,
@@ -310,7 +324,7 @@ void dt_printing_setup_image(dt_images_box *imgs, const int idx,
   box->print.width  = box->pos.width * imgs->page_width;
   box->print.height = box->pos.height * imgs->page_height;
 
-  dt_image_pos pos;
+  dt_image_pos pos = { .x = 0, .y = 0, .width = 0, .height = 0 };
   _align_pos(&box->print, box->alignment, box->exp_width, box->exp_height, &pos);
 
   box->print.x = pos.x;

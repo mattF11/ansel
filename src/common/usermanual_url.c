@@ -51,14 +51,14 @@ const char *get_lang()
   int lang_index = 0;
   gboolean is_language_supported = FALSE;
 
-  if(darktable.l10n != NULL)
+  if(!IS_NULL_PTR(darktable.l10n))
   {
     dt_l10n_language_t *language = NULL;
 
     if(darktable.l10n->selected != -1)
         language = (dt_l10n_language_t *)g_list_nth(darktable.l10n->languages, darktable.l10n->selected)->data;
 
-    if (language != NULL)
+    if (!IS_NULL_PTR(language))
       lang = language->code;
 
     while(supported_languages[lang_index])
@@ -178,7 +178,6 @@ dt_help_url urls_db[] =
   {"censorize",                  "modules/processing-modules/censorize/"},
   {"channelmixer",               "modules/processing-modules/channel-mixer/"},
   {"channelmixerrgb",            "modules/processing-modules/color-calibration/"},
-  {"clahe",                      NULL}, // deprecated, replaced by bilat.
   {"clipping",                   "modules/processing-modules/crop-rotate/"},
   {"colisa",                     "modules/processing-modules/contrast-brightness-saturation/"},
   {"colorbalance",               "modules/processing-modules/color-balance/"},
@@ -191,14 +190,12 @@ dt_help_url urls_db[] =
   {"colormapping",               "modules/processing-modules/color-mapping/"},
   {"colorout",                   "modules/processing-modules/output-color-profile/"},
   {"colorreconstruct",           "modules/processing-modules/color-reconstruction/"},
-  {"colortransfer",              NULL}, // deprecate
   {"colorzones",                 "modules/processing-modules/color-zones/"},
   {"crop",                       "modules/processing-modules/crop/"},
   {"defringe",                   "modules/processing-modules/defringe/"},
   {"demosaic",                   "modules/processing-modules/demosaic/"},
   {"denoiseprofile",             "modules/processing-modules/denoise-profiled/"},
   {"dither",                     "modules/processing-modules/dithering/"},
-  {"equalizer",                  NULL}, // deprecated, replaced by atrous
   {"exposure",                   "modules/processing-modules/exposure/"},
   {"filmic",                     "modules/processing-modules/filmic-rgb/"},
   {"filmicrgb",                  "modules/processing-modules/filmic-rgb/"},
@@ -247,7 +244,7 @@ dt_help_url urls_db[] =
 
 char *dt_get_help_url(char *name)
 {
-  if(name == NULL) return NULL;
+  if(IS_NULL_PTR(name)) return NULL;
 
   for(int k=0; k< sizeof(urls_db)/2/sizeof(char *); k++)
     if(!strcmp(urls_db[k].name, name))

@@ -56,7 +56,7 @@ dt_imageio_retval_t dt_imageio_open_heif(dt_image_t *img,
   struct heif_image* heif_img = NULL;
 
   struct heif_context* ctx = heif_context_alloc();
-  if(!ctx)
+  if(IS_NULL_PTR(ctx))
   {
     dt_print(DT_DEBUG_IMAGEIO,
              "Unable to allocate HEIF context\n");
@@ -125,10 +125,11 @@ dt_imageio_retval_t dt_imageio_open_heif(dt_image_t *img,
   img->width = width;
   img->height = height;
 
-  img->buf_dsc.channels = 4;
-  img->buf_dsc.datatype = TYPE_FLOAT;
-  img->buf_dsc.cst = IOP_CS_RGB;
-  img->buf_dsc.filters = 0u;
+  img->dsc.channels = 4;
+  img->dsc.datatype = TYPE_FLOAT;
+  img->dsc.bpp = 4 * sizeof(float);
+  img->dsc.cst = IOP_CS_RGB;
+  img->dsc.filters = 0u;
   img->flags &= ~DT_IMAGE_RAW;
   img->flags &= ~DT_IMAGE_S_RAW;
 
@@ -152,14 +153,14 @@ dt_imageio_retval_t dt_imageio_open_heif(dt_image_t *img,
 
   img->loader = LOADER_HEIF;
 
-  if(!mbuf)
+  if(IS_NULL_PTR(mbuf))
   {
     ret = DT_IMAGEIO_OK;
     goto out;
   }
 
   float *mipbuf = (float *)dt_mipmap_cache_alloc(mbuf, img);
-  if(mipbuf == NULL)
+  if(IS_NULL_PTR(mipbuf))
   {
     dt_print(DT_DEBUG_IMAGEIO,
              "Failed to allocate mipmap buffer for HEIF image [%s]\n",
@@ -173,13 +174,7 @@ dt_imageio_retval_t dt_imageio_open_heif(dt_image_t *img,
   float max_channel_f = (float)((1 << decoded_values_bit_depth) - 1);
 
   const uint8_t *const restrict in = (const uint8_t *)data;
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(mipbuf, width, height, in, rowbytes, max_channel_f) \
-  schedule(simd:static) \
-  collapse(2)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(collapse(2))
   for(size_t y = 0; y < height; y++)
   {
     for(size_t x = 0; x < width; x++)
@@ -239,7 +234,7 @@ int dt_imageio_heif_read_profile(const char *filename,
   uint8_t *icc_data = NULL;
 
   struct heif_context* ctx = heif_context_alloc();
-  if(!ctx)
+  if(IS_NULL_PTR(ctx))
   {
     dt_print(DT_DEBUG_IMAGEIO,
              "Unable to allocate HEIF context\n");

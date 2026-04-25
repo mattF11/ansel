@@ -47,9 +47,11 @@
 #pragma once
 
 #include "common/act_on.h"
+#include "common/atomic.h"
 
 #include "common/history.h"
 #include "common/image.h"
+#include "common/dtpthread.h"
 #ifdef HAVE_PRINT
 #include "common/cups_print.h"
 #include "common/printing.h"
@@ -64,13 +66,6 @@
 #include <gui/gtk.h>
 #include <inttypes.h>
 #include <sqlite3.h>
-#ifdef USE_LUA
-#include "lua/call.h"
-#include "lua/events.h"
-#include "lua/modules.h"
-#include "lua/types.h"
-#include "lua/view.h"
-#endif
 
 /** available views flags, a view should return its type and
     is also used in modules flags available in src/libs to
@@ -108,6 +103,37 @@ typedef enum dt_view_surface_value_t
   DT_VIEW_SURFACE_OK = 0,
   DT_VIEW_SURFACE_KO,
 } dt_view_surface_value_t;
+
+typedef struct _dt_job_t dt_job_t;
+
+/**
+ * @brief Track one asynchronous Cairo surface fetch request for a GUI widget.
+ *
+ * The fetcher owns the background job bookkeeping and the current cached surface
+ * metadata. The actual Cairo surface remains owned by the caller through the
+ * `target` pointer passed to dt_view_image_get_surface_async().
+ */
+typedef struct dt_view_image_surface_fetcher_t
+{
+  dt_pthread_mutex_t lock;
+  pthread_cond_t cond;
+  GWeakRef widget_ref;
+  cairo_surface_t **target;
+  int32_t imgid;
+  int width;
+  int height;
+  int zoom;
+  int32_t cached_imgid;
+  int cached_width;
+  int cached_height;
+  int cached_zoom;
+  dt_atomic_int shutdown;
+  guint request_id;
+  guint queued_request_id;
+  gboolean commit_pending;
+  gboolean job_queued;
+  gboolean destroying;
+} dt_view_image_surface_fetcher_t;
 
 #define DT_VIEW_ALL                                                                              \
   (DT_VIEW_LIGHTTABLE | DT_VIEW_DARKROOM | DT_VIEW_TETHERING | DT_VIEW_MAP | DT_VIEW_SLIDESHOW | \
@@ -157,6 +183,12 @@ char* dt_view_extend_modes_str(const char * name, const gboolean is_hdr, const g
 /** expose an image and return a cair0_surface. */
 dt_view_surface_value_t dt_view_image_get_surface(int32_t imgid, int width, int height, cairo_surface_t **surface,
                                                   int zoom);
+void dt_view_image_surface_fetcher_init(dt_view_image_surface_fetcher_t *fetcher);
+void dt_view_image_surface_fetcher_cleanup(dt_view_image_surface_fetcher_t *fetcher);
+void dt_view_image_surface_fetcher_invalidate(dt_view_image_surface_fetcher_t *fetcher, cairo_surface_t **target);
+dt_view_surface_value_t dt_view_image_get_surface_async(dt_view_image_surface_fetcher_t *fetcher, int32_t imgid,
+                                                        int width, int height, cairo_surface_t **target,
+                                                        GtkWidget *widget, int zoom);
 
 
 /**
@@ -226,9 +258,7 @@ typedef struct dt_view_manager_t
       gboolean (*remove_marker)(const dt_view_t *view, dt_geo_map_display_t type, GObject *marker);
       void (*add_location)(const dt_view_t *view, dt_map_location_data_t *p, const guint posid);
       void (*location_action)(const dt_view_t *view, const int action);
-      void (*drag_set_icon)(const dt_view_t *view, GdkDragContext *context, const int32_t imgid, const int count);
       gboolean (*redraw)(gpointer user_data);
-      gboolean (*display_selected)(gpointer user_data);
     } map;
 #endif
 
@@ -287,6 +317,10 @@ gboolean dt_view_active_images_has_imgid(int32_t imgid);
 GList *dt_view_active_images_get_all();
 int32_t dt_view_active_images_get_first();
 
+/** rescale the image surface pending the real updated image availability */
+cairo_surface_t *dt_cairo_rescale_surface(cairo_surface_t *src, int dst_w, int dst_h);
+void dt_cairo_sharpen_surface_rgb24(cairo_surface_t *surface);
+
 /** get the darkroom current layout */
 dt_darkroom_layout_t dt_view_darkroom_get_layout(dt_view_manager_t *vm);
 
@@ -306,7 +340,7 @@ GObject *dt_view_map_add_marker(const dt_view_manager_t *vm, dt_geo_map_display_
 gboolean dt_view_map_remove_marker(const dt_view_manager_t *vm, dt_geo_map_display_t type, GObject *marker);
 void dt_view_map_add_location(const dt_view_manager_t *vm, dt_map_location_data_t *p, const guint posid);
 void dt_view_map_location_action(const dt_view_manager_t *vm, const int action);
-void dt_view_map_drag_set_icon(const dt_view_manager_t *vm, GdkDragContext *context, const int32_t imgid, const int count);
+void dt_view_map_redraw(const dt_view_manager_t *vm);
 #endif
 
 /*

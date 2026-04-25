@@ -46,9 +46,7 @@
 #endif
 #include <gtk/gtk.h>
 #include <stdlib.h>
-#if defined(__SSE__)
-#include <xmmintrin.h>
-#endif
+
 #include "common/colorspaces.h"
 #include "control/control.h"
 #include "develop/imageop.h"
@@ -155,9 +153,15 @@ int flags()
   return IOP_FLAGS_ONE_INSTANCE | IOP_FLAGS_DEPRECATED;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RAW;
+}
+
+void output_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                   dt_iop_buffer_dsc_t *dsc)
+{
+  default_output_format(self, pipe, piece, dsc);
 }
 
 static void gui_update_from_coeffs(dt_iop_module_t *self)
@@ -183,7 +187,7 @@ static void gui_update_from_coeffs(dt_iop_module_t *self)
   gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(g->colorpicker), &color);
 }
 
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
   static dt_aligned_pixel_t old = { 0.0f, 0.0f, 0.0f, 0.0f };
 
@@ -230,12 +234,14 @@ static void colorpicker_callback(GtkColorButton *widget, dt_iop_module_t *self)
   dt_dev_add_history_item(darktable.develop, self, TRUE, TRUE);
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const dt_iop_invert_data_t *const d = (dt_iop_invert_data_t *)piece->data;
 
-  const float *const m = piece->pipe->dsc.processed_maximum;
+  const float *const m = piece->dsc_in.processed_maximum;
 
   const dt_aligned_pixel_t film_rgb_f
       = { d->color[0] * m[0], d->color[1] * m[1], d->color[2] * m[2], d->color[3] * m[3] };
@@ -245,20 +251,15 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   // do nothing
   //   }
 
-  const uint32_t filters = piece->pipe->dsc.filters;
-  const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->pipe->dsc.xtrans;
+  const uint32_t filters = piece->dsc_in.filters;
+  const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->dsc_in.xtrans;
 
   const float *const in = (const float *const)ivoid;
   float *const out = (float *const)ovoid;
 
   if(filters == 9u)
   { // xtrans float mosaiced
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) \
-    dt_omp_firstprivate(film_rgb_f, in, out, roi_out, xtrans) \
-    schedule(static) \
-    collapse(2)
-#endif
+    __OMP_PARALLEL_FOR_SIMD__(collapse(2))
     for(int j = 0; j < roi_out->height; j++)
     {
       for(int i = 0; i < roi_out->width; i++)
@@ -267,18 +268,10 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
         out[p] = CLAMP(film_rgb_f[FCxtrans(j, i, roi_out, xtrans)] - in[p], 0.0f, 1.0f);
       }
     }
-
-    for(int k = 0; k < 4; k++) piece->pipe->dsc.processed_maximum[k] = 1.0f;
   }
   else if(filters)
   { // bayer float mosaiced
-
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) \
-    dt_omp_firstprivate(film_rgb_f, filters, in, out, roi_out) \
-    schedule(static) \
-    collapse(2)
-#endif
+    __OMP_PARALLEL_FOR_SIMD__(collapse(2))
     for(int j = 0; j < roi_out->height; j++)
     {
       for(int i = 0; i < roi_out->width; i++)
@@ -287,19 +280,11 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
         out[p] = CLAMP(film_rgb_f[FC(j + roi_out->y, i + roi_out->x, filters)] - in[p], 0.0f, 1.0f);
       }
     }
-
-    for(int k = 0; k < 4; k++) piece->pipe->dsc.processed_maximum[k] = 1.0f;
   }
   else
   { // non-mosaiced
-    const int ch = piece->colors;
-
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) \
-    dt_omp_firstprivate(ch, d, in, out, roi_out) \
-    schedule(static) \
-    collapse(2)
-#endif
+    const int ch = piece->dsc_in.channels;
+    __OMP_PARALLEL_FOR_SIMD__(collapse(2))
     for(size_t k = 0; k < (size_t)ch * roi_out->width * roi_out->height; k += ch)
     {
       for(int c = 0; c < 3; c++)
@@ -309,7 +294,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
       }
     }
 
-    if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
+    if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
   }
   return 0;
 }
@@ -318,7 +303,7 @@ void reload_defaults(dt_iop_module_t *self)
 {
   dt_iop_invert_gui_data_t *const g = (dt_iop_invert_gui_data_t*)self->gui_data;
 
-  if (g)
+  if (!IS_NULL_PTR(g))
   {
     if(dt_image_is_monochrome(&self->dev->image_storage))
     {
@@ -356,12 +341,15 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *params, dt_dev
   for(int k = 0; k < 4; k++) d->color[k] = p->color[k];
 
   // x-trans images not implemented in OpenCL yet
-  if(pipe->image.buf_dsc.filters == 9u) piece->process_cl_ready = 0;
+  if(pipe->dev->image_storage.dsc.filters == 9u) piece->process_cl_ready = 0;
 
   // 4Bayer images not implemented in OpenCL yet
   if(self->dev->image_storage.flags & DT_IMAGE_4BAYER) piece->process_cl_ready = 0;
 
   if(self->hide_enable_button) piece->enabled = 0;
+
+  if(piece->dsc_in.filters)
+    for(int k = 0; k < 4; k++) piece->dsc_out.processed_maximum[k] = 1.0f;
 }
 
 void init_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)

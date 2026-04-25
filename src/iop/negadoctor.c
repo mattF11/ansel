@@ -53,17 +53,6 @@
 #include <math.h>
 #include <stdlib.h>
 
-#if defined(__GNUC__)
-#pragma GCC optimize ("unroll-loops", "tree-loop-if-convert", \
-                      "tree-loop-distribution", "no-strict-aliasing", \
-                      "loop-interchange", "loop-nest-optimize", "tree-loop-im", \
-                      "unswitch-loops", "tree-loop-ivcanon", "ira-loop-pressure", \
-                      "split-ivs-in-unroller", "variable-expansion-in-unroller", \
-                      "split-loops", "ivopts", "predictive-commoning",\
-                      "tree-loop-linear", "loop-block", "loop-strip-mine", \
-                      "finite-math-only", "fp-contract=fast", "fast-math")
-#endif
-
 /** DOCUMENTATION
  *
  * This module allows to invert scanned negatives and simulate their print on paper, based on Kodak Cineon
@@ -184,7 +173,7 @@ int default_group()
 }
 
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -273,22 +262,16 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
 }
 
 
-int process(struct dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *const piece,
-             const void *const restrict ivoid, void *const restrict ovoid,
-             const dt_iop_roi_t *const restrict roi_in, const dt_iop_roi_t *const restrict roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *const self, const dt_dev_pixelpipe_t *const pipe,
+            const dt_dev_pixelpipe_iop_t *const piece, const void *const restrict ivoid,
+            void *const restrict ovoid)
 {
+  const dt_iop_roi_t *const restrict roi_out = &piece->roi_out;
   const dt_iop_negadoctor_data_t *const d = piece->data;
-  assert(piece->colors = 4);
-
   const float *const restrict in = (float *)ivoid;
   float *const restrict out = (float *)ovoid;
-
-
-#ifdef _OPENMP
-  #pragma omp parallel for simd default(none) \
-    dt_omp_firstprivate(d, in, out, roi_out) \
-    aligned(in, out:64) collapse(2)
-#endif
+  __OMP_FOR_SIMD__(aligned(in, out:64) collapse(2))
   for(size_t k = 0; k < (size_t)roi_out->height * roi_out->width * 4; k += 4)
   {
     for(size_t c = 0; c < 4; c++)
@@ -316,22 +299,23 @@ int process(struct dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *const pi
     }
   }
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
     dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
   return 0;
 }
 
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *const piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const restrict roi_in, const dt_iop_roi_t *const restrict roi_out)
+int process_cl(struct dt_iop_module_t *const self, const dt_dev_pixelpipe_t *const pipe,
+               const dt_dev_pixelpipe_iop_t *const piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const restrict roi_in = &piece->roi_in;
   const dt_iop_negadoctor_data_t *const d = (dt_iop_negadoctor_data_t *)piece->data;
   const dt_iop_negadoctor_global_data_t *const gd = (dt_iop_negadoctor_global_data_t *)self->global_data;
 
   cl_int err = -999;
 
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   const int width = roi_in->width;
   const int height = roi_in->height;
 
@@ -409,7 +393,7 @@ void init_global(dt_iop_module_so_t *module)
 {
   dt_iop_negadoctor_global_data_t *gd
       = (dt_iop_negadoctor_global_data_t *)calloc(1, sizeof(dt_iop_negadoctor_global_data_t));
-  if(!gd) return;
+  if(IS_NULL_PTR(gd)) return;
 
   module->data = gd;
   const int program = 30; // negadoctor.cl, from programs.conf
@@ -831,8 +815,10 @@ static void apply_auto_exposure(dt_iop_module_t *self)
 }
 
 
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
+  (void)pipe;
+  (void)piece;
   if(darktable.gui->reset) return;
   dt_iop_negadoctor_gui_data_t *g = (dt_iop_negadoctor_gui_data_t *)self->gui_data;
 
@@ -1071,7 +1057,7 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
 {
   dt_iop_negadoctor_params_t *p = (dt_iop_negadoctor_params_t *)self->params;
   dt_iop_negadoctor_gui_data_t *g = (dt_iop_negadoctor_gui_data_t *)self->gui_data;
-  if(!w || w == g->film_stock)
+  if(IS_NULL_PTR(w) || w == g->film_stock)
   {
     toggle_stock_controls(self);
     Dmin_picker_update(self);
@@ -1090,12 +1076,12 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
     p->exposure = powf(2.0f, p->exposure);
   }
 
-  if(!w || w == g->wb_high_R || w == g->wb_high_G || w == g->wb_high_B)
+  if(IS_NULL_PTR(w) || w == g->wb_high_R || w == g->wb_high_G || w == g->wb_high_B)
   {
     WB_high_picker_update(self);
   }
 
-  if(!w || w == g->wb_low_R || w == g->wb_low_G || w == g->wb_low_B)
+  if(IS_NULL_PTR(w) || w == g->wb_low_R || w == g->wb_low_G || w == g->wb_low_B)
   {
     WB_low_picker_update(self);
   }

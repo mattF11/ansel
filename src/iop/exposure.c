@@ -180,9 +180,18 @@ int flags()
   return IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_SUPPORTS_BLENDING;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
+}
+
+static void _process_common_setup(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                                  const dt_dev_pixelpipe_iop_t *piece);
+
+void output_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                   dt_iop_buffer_dsc_t *dsc)
+{
+  default_output_format(self, pipe, piece, dsc);
 }
 
 static void _paint_hue(dt_iop_module_t *self);
@@ -327,12 +336,12 @@ static void _deflicker_prepare_histogram(dt_iop_module_t *self, uint32_t **histo
   dt_image_t image = *img;
   dt_image_cache_read_release(darktable.image_cache, img);
 
-  if(image.buf_dsc.channels != 1 || image.buf_dsc.datatype != TYPE_UINT16) return;
+  if(image.dsc.channels != 1 || image.dsc.datatype != TYPE_UINT16) return;
 
   dt_mipmap_buffer_t buf;
   dt_mipmap_cache_get(darktable.mipmap_cache, &buf, self->dev->image_storage.id, DT_MIPMAP_FULL,
                       DT_MIPMAP_BLOCKING, 'r');
-  if(!buf.buf)
+  if(IS_NULL_PTR(buf.buf))
   {
     dt_control_log(_("failed to get raw buffer from image `%s'"), image.filename);
     dt_mipmap_cache_release(darktable.mipmap_cache, &buf);
@@ -375,7 +384,8 @@ static double _raw_to_ev(uint32_t raw, uint32_t black_level, uint32_t white_leve
   return raw_ev;
 }
 
-static void _compute_correction(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_t *pipe,
+static void _compute_correction(dt_iop_module_t *self, dt_iop_params_t *p1,
+                                const dt_dev_pixelpipe_iop_t *piece,
                                 const uint32_t *const histogram,
                                 const dt_dev_histogram_stats_t *const histogram_stats, float *correction)
 {
@@ -383,7 +393,7 @@ static void _compute_correction(dt_iop_module_t *self, dt_iop_params_t *p1, dt_d
 
   *correction = NAN;
 
-  if(histogram == NULL) return;
+  if(IS_NULL_PTR(histogram)) return;
 
   const size_t total = (size_t)histogram_stats->ch * histogram_stats->pixels;
 
@@ -406,12 +416,14 @@ static void _compute_correction(dt_iop_module_t *self, dt_iop_params_t *p1, dt_d
   }
 
   const double ev
-      = _raw_to_ev(raw, (uint32_t)pipe->dsc.rawprepare.raw_black_level, pipe->dsc.rawprepare.raw_white_point);
+      = _raw_to_ev(raw, (uint32_t)piece->dsc_in.rawprepare.raw_black_level,
+                   piece->dsc_in.rawprepare.raw_white_point);
 
   *correction = p->deflicker_target_level - ev;
 }
 
-static void _process_common_setup(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece)
+static void _process_common_setup(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                                  const dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_exposure_gui_data_t *g = (dt_iop_exposure_gui_data_t*)self->gui_data;
   dt_iop_exposure_data_t *d = piece->data;
@@ -421,10 +433,10 @@ static void _process_common_setup(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
 
   if(d->deflicker)
   {
-    if(g)
+    if(!IS_NULL_PTR(g))
     {
       // histogram is precomputed and cached
-      _compute_correction(self, &d->params, piece->pipe, g->deflicker_histogram, &g->deflicker_histogram_stats,
+      _compute_correction(self, &d->params, piece, g->deflicker_histogram, &g->deflicker_histogram_stats,
                          &exposure);
     }
     else
@@ -432,12 +444,12 @@ static void _process_common_setup(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
       uint32_t *histogram = NULL;
       dt_dev_histogram_stats_t histogram_stats;
       _deflicker_prepare_histogram(self, &histogram, &histogram_stats);
-      _compute_correction(self, &d->params, piece->pipe, histogram, &histogram_stats, &exposure);
+      _compute_correction(self, &d->params, piece, histogram, &histogram_stats, &exposure);
       dt_free(histogram);
     }
 
     // second, show computed correction in UI.
-    if(g && dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, NULL))
+    if(!IS_NULL_PTR(g) && dt_dev_pixelpipe_has_preview_output(self->dev, pipe, NULL))
     {
       dt_iop_gui_enter_critical_section(self);
       g->deflicker_computed_exposure = exposure;
@@ -450,16 +462,14 @@ static void _process_common_setup(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
 }
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_exposure_data_t *d = (dt_iop_exposure_data_t *)piece->data;
   dt_iop_exposure_global_data_t *gd = (dt_iop_exposure_global_data_t *)self->global_data;
 
-  _process_common_setup(self, piece);
-
   cl_int err = -999;
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   const int width = roi_in->width;
   const int height = roi_in->height;
 
@@ -472,7 +482,6 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dt_opencl_set_kernel_arg(devid, gd->kernel_exposure, 5, sizeof(float), (void *)&(d->scale));
   err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_exposure, sizes);
   if(err != CL_SUCCESS) goto error;
-  for(int k = 0; k < 3; k++) piece->pipe->dsc.processed_maximum[k] *= d->scale;
 
   return TRUE;
 
@@ -482,57 +491,49 @@ error:
 }
 #endif
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o,
-             const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o)
 {
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const dt_iop_exposure_data_t *const d = (const dt_iop_exposure_data_t *const)piece->data;
 
-  _process_common_setup(self, piece);
-
-  const int ch = piece->colors;
+  const int ch = piece->dsc_in.channels;
 
   const float *const restrict in = (float*)i;
   float *const restrict out = (float*)o;
   const float black = d->black;
   const float scale = d->scale;
   const size_t npixels = (size_t)roi_out->width * roi_out->height;
+  const gboolean use_stream = (ch == 4);
 
   if(ch == 4)
   {
     const dt_aligned_pixel_simd_t black_v = dt_simd_set1(black);
     const dt_aligned_pixel_simd_t scale_v = dt_simd_set1(scale);
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(npixels, black_v, scale_v, in, out) \
-  schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(size_t k = 0; k < npixels; k++)
     {
       const size_t p = 4 * k;
       const dt_aligned_pixel_simd_t in_v = dt_load_simd_aligned(in + p);
-      dt_store_simd_aligned(out + p, (in_v - black_v) * scale_v);
+      dt_store_simd_nontemporal(out + p, (in_v - black_v) * scale_v);
     }
   }
   else
   {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(ch, npixels, black, scale, in, out) \
-  schedule(simd:static) aligned(in, out : 64)
-#endif
+    __OMP_PARALLEL_FOR_SIMD__(aligned(in, out : 64))
     for(size_t k = 0; k < ch * npixels; k++)
     {
       out[k] = (in[k] - black) * scale;
     }
   }
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
+  if(use_stream) dt_omploop_sfence();  // ensure streamed RGB writes complete before alpha copy touches output
+
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
     dt_iop_alpha_copy(i, o, roi_out->width, roi_out->height);
 
-  for(int k = 0; k < 3; k++) piece->pipe->dsc.processed_maximum[k] *= d->scale;
   return 0;
 }
-
 
 static float _get_exposure_bias(const struct dt_iop_module_t *self)
 {
@@ -547,6 +548,45 @@ static float _get_exposure_bias(const struct dt_iop_module_t *self)
     return CLAMP(bias, -5.0f, 5.0f);
   else
     return 0.0f;
+}
+
+void autoset(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, const void *i)
+{
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
+  dt_iop_exposure_params_t *p = (dt_iop_exposure_params_t *)self->params;
+  if(piece->dsc_in.channels != 4) return;
+
+  const dt_iop_order_iccprofile_info_t *const input_profile = dt_ioppr_get_pipe_input_profile_info(pipe);
+  if(IS_NULL_PTR(input_profile)) return;
+
+  const float *const restrict in = (float*)i;
+  float average_luminance = 0.f;
+  const float norm = 1.f / (float)(roi_out->width * roi_out->height);
+
+  __OMP_PARALLEL_FOR__(reduction(+:average_luminance))
+  for(size_t k = 0; k < roi_out->width * roi_out->height * 4; k += 4)
+  {
+    // Convert each input RGB sample to XYZ to average scene luminance in a profile-aware way.
+    dt_aligned_pixel_t XYZ = { 0.f };
+    dt_ioppr_rgb_matrix_to_xyz(in + k, XYZ, input_profile->matrix_in_transposed, input_profile->lut_in,
+                               input_profile->unbounded_coeffs_in, input_profile->lutsize,
+                               input_profile->nonlinearlut);
+    average_luminance += XYZ[1] * norm;
+  }
+
+  // Solve the exposure module transfer so the average input luminance lands on middle grey at the output.
+  const float target_lightness = dt_conf_get_float("darkroom/modules/exposure/lightness");
+  const dt_aligned_pixel_t Lab = { target_lightness, 0.f, 0.f, 0.f };
+  dt_aligned_pixel_t XYZ = { 0.f };
+  dt_Lab_to_XYZ(Lab, XYZ);
+  const float target_luminance = XYZ[1];
+  const float white = p->black + fmaxf(average_luminance - p->black, 1e-6f) / target_luminance;
+  const float exposure = white2exposure(white);
+
+  p->exposure = exposure;
+
+  if(p->compensate_exposure_bias)
+    p->exposure += _get_exposure_bias(self);
 }
 
 
@@ -569,11 +609,14 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
 
   if(p->mode == EXPOSURE_MODE_DEFLICKER
      && dt_image_is_raw(&self->dev->image_storage)
-     && self->dev->image_storage.buf_dsc.channels == 1
-     && self->dev->image_storage.buf_dsc.datatype == TYPE_UINT16)
+     && self->dev->image_storage.dsc.channels == 1
+     && self->dev->image_storage.dsc.datatype == TYPE_UINT16)
   {
     d->deflicker = 1;
   }
+
+  _process_common_setup(self, pipe, piece);
+  for(int k = 0; k < 3; k++) piece->dsc_out.processed_maximum[k] = piece->dsc_in.processed_maximum[k] * d->scale;
 }
 
 void init_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
@@ -599,8 +642,8 @@ void gui_update(struct dt_iop_module_t *self)
   dt_iop_exposure_params_t *p = (dt_iop_exposure_params_t *)self->params;
 
   if(!dt_image_is_raw(&self->dev->image_storage)
-     || self->dev->image_storage.buf_dsc.channels != 1
-     || self->dev->image_storage.buf_dsc.datatype != TYPE_UINT16)
+     || self->dev->image_storage.dsc.channels != 1
+     || self->dev->image_storage.dsc.datatype != TYPE_UINT16)
   {
     gtk_widget_set_sensitive(GTK_WIDGET(g->mode), FALSE);
   }
@@ -713,12 +756,23 @@ static void _auto_set_exposure(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe)
   dt_iop_exposure_params_t *p = (dt_iop_exposure_params_t *)self->params;
 
   // capture gui color picked event.
-  if(self->picked_color_max[0] < self->picked_color_min[0]) return;
+  if(self->picked_color_max[0] < self->picked_color_min[0])
+  {
+    dt_print(DT_DEBUG_DEV, "[picker/exposure] rejected invalid min/max min=%g max=%g\n",
+             self->picked_color_min[0], self->picked_color_max[0]);
+    return;
+  }
   const float *RGB = self->picked_color;
+  dt_print(DT_DEBUG_DEV, "[picker/exposure] RGB=(%g,%g,%g) pipe=%p\n",
+           RGB[0], RGB[1], RGB[2], (void *)pipe);
 
   // Get input profile, assuming we are before colorin
   const dt_iop_order_iccprofile_info_t *const input_profile = dt_ioppr_get_pipe_input_profile_info(pipe);
-  if(input_profile == NULL) return;
+  if(IS_NULL_PTR(input_profile))
+  {
+    dt_print(DT_DEBUG_DEV, "[picker/exposure] missing input profile\n");
+    return;
+  }
 
   // Convert to XYZ
   dt_aligned_pixel_t XYZ;
@@ -737,6 +791,7 @@ static void _auto_set_exposure(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe)
   ++darktable.gui->reset;
   gtk_label_set_text(GTK_LABEL(g->Lch_origin),
                      g_strdup_printf(_("L : \t%.1f %%"), Lch[0]));
+  gtk_widget_queue_draw(g->origin_spot);
   --darktable.gui->reset;
 
   const dt_spot_mode_t mode = dt_bauhaus_combobox_get(g->spot_mode);
@@ -798,10 +853,13 @@ static void _auto_set_exposure(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe)
 }
 
 
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
+  (void)picker;
+  (void)piece;
   if(darktable.gui->reset) return;
-  _auto_set_exposure(self, piece->pipe);
+  dt_print(DT_DEBUG_DEV, "[picker/exposure] apply picker=%p pipe=%p\n", (void *)picker, (void *)pipe);
+  _auto_set_exposure(self, pipe);
 }
 
 
@@ -819,8 +877,8 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
       case EXPOSURE_MODE_DEFLICKER:
         _autoexp_disable(self);
         if(!dt_image_is_raw(&self->dev->image_storage)
-           || self->dev->image_storage.buf_dsc.channels != 1
-           || self->dev->image_storage.buf_dsc.datatype != TYPE_UINT16)
+           || self->dev->image_storage.dsc.channels != 1
+           || self->dev->image_storage.dsc.datatype != TYPE_UINT16)
         {
           p->mode = EXPOSURE_MODE_MANUAL;
           dt_bauhaus_combobox_set(g->mode, p->mode);
@@ -995,9 +1053,10 @@ static void _spot_settings_changed_callback(GtkWidget *slider, dt_iop_module_t *
   _paint_hue(self);
   --darktable.gui->reset;
 
-  // Re-run auto compute if color picker active and mode is correct
+  // Re-run auto compute only for the module that currently owns the active picker.
   const dt_spot_mode_t mode = dt_bauhaus_combobox_get(g->spot_mode);
-  if(mode == DT_SPOT_MODE_CORRECT)
+  const gboolean picker_active = dt_iop_color_picker_is_active_module(self);
+  if(mode == DT_SPOT_MODE_CORRECT && picker_active)
     _auto_set_exposure(self, self->dev->pipe);
   // else : just record new values and do nothing
 }

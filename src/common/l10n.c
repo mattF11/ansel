@@ -189,7 +189,7 @@ static void get_language_names(GList *languages)
 
   // go over the json
   JsonNode *root = json_parser_get_root(parser);
-  if(!root)
+  if(IS_NULL_PTR(root))
   {
     fprintf(stderr, "[l10n] error: can't get root node of `%s'\n", filename);
     goto end;
@@ -319,15 +319,15 @@ dt_l10n_t *dt_l10n_init(gboolean init_list)
 
 #if defined(_WIN32)
   // get the default locale if no language preference was specified in the config file
-  if(!ui_lang || !*ui_lang)
+  if(IS_NULL_PTR(ui_lang) || !*ui_lang)
   {
     const wchar_t *wcLocaleName = NULL;
     wcLocaleName = dtwin_get_locale();
-    if(wcLocaleName != NULL)
+    if(!IS_NULL_PTR(wcLocaleName))
     {
       gchar *langLocale;
       langLocale = g_utf16_to_utf8(wcLocaleName, -1, NULL, NULL, NULL);
-      if(langLocale != NULL)
+      if(!IS_NULL_PTR(langLocale))
       {
         dt_free(ui_lang);
         ui_lang = g_strdup(langLocale);
@@ -382,7 +382,7 @@ dt_l10n_t *dt_l10n_init(gboolean init_list)
           }
 
           // check if this is the system default
-          if(sys_default == NULL)
+          if(IS_NULL_PTR(sys_default))
           {
             for(const gchar * const * iter = default_languages; *iter; iter++)
             {
@@ -409,7 +409,7 @@ dt_l10n_t *dt_l10n_init(gboolean init_list)
       fprintf(stderr, "[l10n] error: can't open directory `%s'\n", localedir);
 
     // default to English if no other language matched
-    if(!sys_default)
+    if(IS_NULL_PTR(sys_default))
     {
       sys_default = g_list_last(result->languages)->data;
       sys_default->is_default = TRUE;
@@ -434,7 +434,7 @@ dt_l10n_t *dt_l10n_init(gboolean init_list)
       i++;
     }
 
-    if(selected == NULL)
+    if(IS_NULL_PTR(selected))
       result->selected = result->sys_default;
   }
   else
@@ -447,7 +447,7 @@ dt_l10n_t *dt_l10n_init(gboolean init_list)
 
 const char *dt_l10n_get_name(const dt_l10n_language_t *language)
 {
-  if(!language) return NULL;
+  if(IS_NULL_PTR(language)) return NULL;
 
   return language->name ? language->name : language->code;
 }

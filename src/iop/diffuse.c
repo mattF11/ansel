@@ -31,8 +31,6 @@
    along with Ansel.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "common/extra_optimizations.h"
-
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -122,6 +120,8 @@ typedef struct dt_iop_diffuse_global_data_t
 {
   int kernel_filmic_bspline_vertical;
   int kernel_filmic_bspline_horizontal;
+  int kernel_filmic_bspline_vertical_local;
+  int kernel_filmic_bspline_horizontal_local;
   int kernel_filmic_wavelets_detail;
 
   int kernel_diffuse_build_mask;
@@ -149,9 +149,7 @@ typedef enum dt_isotropy_t
 } dt_isotropy_t;
 
 
-#ifdef _OPENMP
-#pragma omp declare simd
-#endif
+__OMP_DECLARE_SIMD__()
 static inline dt_isotropy_t check_isotropy_mode(const float anisotropy)
 {
   // user param is negative, positive or zero. The sign encodes the direction of diffusion, the magnitude encodes the ratio of anisotropy
@@ -198,7 +196,7 @@ int flags()
   return IOP_FLAGS_INCLUDE_IN_STYLES | IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_ALLOW_TILING;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -306,18 +304,18 @@ void init_presets(dt_iop_module_so_t *self)
   // deblurring presets
   p.sharpness = 0.0f;
   p.threshold = 0.0f;
-  p.variance_threshold = +1.f;
-  p.regularization = 3.f;
+  p.variance_threshold = +0.f;
+  p.regularization = 1.f;
 
-  p.anisotropy_first = +1.f;
+  p.anisotropy_first = +2.f;
   p.anisotropy_second = 0.f;
-  p.anisotropy_third = +1.f;
+  p.anisotropy_third = +2.f;
   p.anisotropy_fourth = 0.f;
 
   p.first = -0.25f;
   p.second = +0.125f;
-  p.third = -0.50f;
-  p.fourth = +0.25f;
+  p.third = -0.125f;
+  p.fourth = +0.0625f;
 
   p.radius = 8;
   p.iterations = 8;
@@ -337,7 +335,7 @@ void init_presets(dt_iop_module_so_t *self)
   p.iterations = 10;
   p.radius = 512;
   p.sharpness = 0.f;
-  p.variance_threshold = 0.25f;
+  p.variance_threshold = 0.f;
   p.regularization = 2.5f;
 
   p.first = -0.20f;
@@ -356,7 +354,7 @@ void init_presets(dt_iop_module_so_t *self)
   p.iterations = 32;
   p.sharpness = 0.f;
   p.threshold = 0.f;
-  p.variance_threshold = -0.25f;
+  p.variance_threshold = -0.f;
   p.regularization = 4.f;
 
   p.anisotropy_first = +2.f;
@@ -491,7 +489,7 @@ void init_presets(dt_iop_module_so_t *self)
   // local contrast
   p.sharpness = 0.0f;
   p.threshold = 0.0f;
-  p.variance_threshold = 1.f;
+  p.variance_threshold = 0.f;
 
   p.anisotropy_first = -2.5f;
   p.anisotropy_second = 0.f;
@@ -504,9 +502,9 @@ void init_presets(dt_iop_module_so_t *self)
   p.fourth = -0.50f;
 
   p.iterations = 10;
-  p.radius = 384;
+  p.radius = 333;
   p.radius_center = 512;
-  p.regularization = 1.f;
+  p.regularization = 0.1f;
   dt_gui_presets_add_generic(_("add local contrast"), self->op, self->version(), &p, sizeof(p), 1,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
@@ -534,8 +532,8 @@ void init_presets(dt_iop_module_so_t *self)
   p.radius = 128;
   p.sharpness = 0.0f;
   p.threshold = 0.0f;
-  p.variance_threshold = 0.25f;
-  p.regularization = 0.25f;
+  p.variance_threshold = 0.f;
+  p.regularization = 0.f;
 
   p.anisotropy_first = 0.f;
   p.anisotropy_second = 0.f;
@@ -555,8 +553,8 @@ void init_presets(dt_iop_module_so_t *self)
   p.radius = 512;
   p.sharpness = 0.0f;
   p.threshold = 0.0f;
-  p.variance_threshold = 0.05f;
-  p.regularization = 0.01f;
+  p.variance_threshold = 0.f;
+  p.regularization = 0.f;
 
 
   p.anisotropy_first = 0.f;
@@ -574,32 +572,22 @@ void init_presets(dt_iop_module_so_t *self)
                              DEVELOP_BLEND_CS_RGB_SCENE);
 }
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_diffuse_data_t *data = (dt_iop_diffuse_data_t *)piece->data;
 
-  // The GUI radii live in full-resolution image pixels. For this module the
-  // relevant ROI scale is the input one, because the PDE works on the current
-  // input grid. However, the thumbnail pipe may start from an already
-  // downsampled mipmap input (for example DT_MIPMAP_F), in which case
-  // roi_in->scale only accounts for the scaling applied after that mipmap was
-  // chosen. Fold both factors together to recover the full-resolution pixel
-  // footprint of one current-grid pixel.
-  const float roi_zoom = fmaxf(1.f / roi_in->scale, 1.f);
-  const float mipmap_zoom = fmaxf(fmaxf((float)piece->pipe->image.width / (float)piece->pipe->iwidth,
-                                        (float)piece->pipe->image.height / (float)piece->pipe->iheight),
-                                  1.f);
-  const float zoom = roi_zoom * mipmap_zoom;
+  const float zoom = fmaxf(dt_dev_get_module_scale(pipe, roi_in), 1.f);
   const float final_radius = (data->radius + data->radius_center) * 2.f / zoom;
   const int diffusion_scales = num_steps_to_reach_equivalent_sigma(B_SPLINE_SIGMA, final_radius);
   const int scales = CLAMP(diffusion_scales, 1, MAX_NUM_SCALES);
   const int max_filter_radius = (1 << scales);
 
-  // in + out + 2 * tmp + 2 * LF + s details + grey mask
-  tiling->factor = 6.25f + scales;
-  tiling->factor_cl = 6.25f + scales;
+  // Account for the exact full-frame buffers kept alive by the CPU/OpenCL paths:
+  // one borrowed input, one output, two temp ping-pong buffers, two low-pass ping-pong
+  // buffers, one stored detail buffer per wavelet scale, and one 8-bit mask.
+  tiling->factor = 6.0625f + scales;
+  tiling->factor_cl = 6.0625f + scales;
 
   tiling->maxbuf = 1.0f;
   tiling->maxbuf_cl = 1.0f;
@@ -610,14 +598,14 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
   return;
 }
 
-static inline void init_reconstruct(float *const restrict reconstructed, const size_t width, const size_t height)
+__DT_CLONE_TARGETS__
+static inline void init_reconstruct(float *const restrict reconstructed, const size_t width,
+                                    const size_t height)
 {
 // init the reconstructed buffer with non-clipped and partially clipped pixels
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) dt_omp_firstprivate(reconstructed, width, height)                 \
-    schedule(simd:static) aligned(reconstructed:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(reconstructed:64))
   for(size_t k = 0; k < height * width * 4; k++) reconstructed[k] = 0.f;
+  
 }
 
 
@@ -626,136 +614,110 @@ static inline void init_reconstruct(float *const restrict reconstructed, const s
 #define KAPPA 0.25f // 0.25 if h = 1, 1 if h = 2
 
 
-#ifdef _OPENMP
-#pragma omp declare simd aligned(pixels:64) aligned(xy:16) uniform(pixels)
-#endif
-static inline void find_gradients(const dt_aligned_pixel_t pixels[9], dt_aligned_pixel_t xy[2])
+static inline __attribute__((always_inline)) void find_gradients(const dt_aligned_pixel_simd_t pixels[9],
+                                                                 dt_aligned_pixel_simd_t xy[2])
 {
   // Compute the gradient with centered finite differences in a 3x3 stencil
   // warning : x is vertical, y is horizontal
-  for_each_channel(c,aligned(pixels:64) aligned(xy))
-  {
-    xy[0][c] = (pixels[7][c] - pixels[1][c]) / 2.f;
-    xy[1][c] = (pixels[5][c] - pixels[3][c]) / 2.f;
-  }
+  const dt_aligned_pixel_simd_t half = dt_simd_set1(0.5f);
+  xy[0] = (pixels[7] - pixels[1]) * half;
+  xy[1] = (pixels[5] - pixels[3]) * half;
 }
 
-#ifdef _OPENMP
-#pragma omp declare simd aligned(pixels:64) aligned(xy:16) uniform(pixels)
-#endif
-static inline void find_laplacians(const dt_aligned_pixel_t pixels[9], dt_aligned_pixel_t xy[2])
+static inline __attribute__((always_inline)) void find_laplacians(const dt_aligned_pixel_simd_t pixels[9],
+                                                                  dt_aligned_pixel_simd_t xy[2])
 {
   // Compute the laplacian with centered finite differences in a 3x3 stencil
   // warning : x is vertical, y is horizontal
-  for_each_channel(c, aligned(xy) aligned(pixels:64))
-  {
-    xy[0][c] = (pixels[7][c] + pixels[1][c]) - 2.f * pixels[4][c];
-    xy[1][c] = (pixels[5][c] + pixels[3][c]) - 2.f * pixels[4][c];
-  }
+  const dt_aligned_pixel_simd_t two = dt_simd_set1(2.f);
+  xy[0] = (pixels[7] + pixels[1]) - two * pixels[4];
+  xy[1] = (pixels[5] + pixels[3]) - two * pixels[4];
 }
 
 
-#ifdef _OPENMP
-#pragma omp declare simd aligned(a, c2, cos_theta_sin_theta, cos_theta2, sin_theta2:16)
-#endif
-static inline void rotation_matrix_isophote(const dt_aligned_pixel_t c2, const dt_aligned_pixel_t cos_theta_sin_theta,
-                                            const dt_aligned_pixel_t cos_theta2,
-                                            const dt_aligned_pixel_t sin_theta2, dt_aligned_pixel_t a[2][2])
+static inline __attribute__((always_inline)) void rotation_matrix_isophote(
+    const dt_aligned_pixel_simd_t c2, const dt_aligned_pixel_simd_t cos_theta_sin_theta,
+    const dt_aligned_pixel_simd_t cos_theta2, const dt_aligned_pixel_simd_t sin_theta2,
+    dt_aligned_pixel_simd_t a[2][2])
 {
   // Write the coefficients of a square symmetrical matrice of rotation of the gradient :
   // [[ a11, a12 ],
   //  [ a12, a22 ]]
   // taken from https://www.researchgate.net/publication/220663968
   // c dampens the gradient direction
-  for_each_channel(c)
-  {
-    a[0][0][c] = cos_theta2[c] + c2[c] * sin_theta2[c];
-    a[1][1][c] = c2[c] * cos_theta2[c] + sin_theta2[c];
-    a[0][1][c] = a[1][0][c] = (c2[c] - 1.0f) * cos_theta_sin_theta[c];
-  }
+  a[0][0] = cos_theta2 + c2 * sin_theta2;
+  a[1][1] = c2 * cos_theta2 + sin_theta2;
+  a[0][1] = a[1][0] = (c2 - dt_simd_set1(1.f)) * cos_theta_sin_theta;
 }
 
-#ifdef _OPENMP
-#pragma omp declare simd aligned(a, c2, cos_theta_sin_theta, cos_theta2, sin_theta2:16)
-#endif
-static inline void rotation_matrix_gradient(const dt_aligned_pixel_t c2, const dt_aligned_pixel_t cos_theta_sin_theta,
-                                            const dt_aligned_pixel_t cos_theta2,
-                                            const dt_aligned_pixel_t sin_theta2, dt_aligned_pixel_t a[2][2])
+static inline __attribute__((always_inline)) void rotation_matrix_gradient(
+    const dt_aligned_pixel_simd_t c2, const dt_aligned_pixel_simd_t cos_theta_sin_theta,
+    const dt_aligned_pixel_simd_t cos_theta2, const dt_aligned_pixel_simd_t sin_theta2,
+    dt_aligned_pixel_simd_t a[2][2])
 {
   // Write the coefficients of a square symmetrical matrice of rotation of the gradient :
   // [[ a11, a12 ],
   //  [ a12, a22 ]]
   // based on https://www.researchgate.net/publication/220663968 and inverted
   // c dampens the isophote direction
-  for_each_channel(c)
-  {
-    a[0][0][c] = c2[c] * cos_theta2[c] + sin_theta2[c];
-    a[1][1][c] = cos_theta2[c] + c2[c] * sin_theta2[c];
-    a[0][1][c] = a[1][0][c] = (1.0f - c2[c]) * cos_theta_sin_theta[c];
-  }
+  a[0][0] = c2 * cos_theta2 + sin_theta2;
+  a[1][1] = cos_theta2 + c2 * sin_theta2;
+  a[0][1] = a[1][0] = (dt_simd_set1(1.f) - c2) * cos_theta_sin_theta;
 }
 
 
-#ifdef _OPENMP
-#pragma omp declare simd aligned(a, kernel: 64)
-#endif
-static inline void build_matrix(const dt_aligned_pixel_t a[2][2], dt_aligned_pixel_t kernel[9])
+static inline __attribute__((always_inline)) void build_matrix(const dt_aligned_pixel_simd_t a[2][2],
+                                                               dt_aligned_pixel_simd_t kernel[9])
 {
-  for_each_channel(c)
-  {
-    const float b11 = a[0][1][c] / 2.0f;
-    const float b13 = -b11;
-    const float b22 = -2.0f * (a[0][0][c] + a[1][1][c]);
+  const dt_aligned_pixel_simd_t half = dt_simd_set1(0.5f);
+  const dt_aligned_pixel_simd_t minus_two = dt_simd_set1(-2.f);
+  const dt_aligned_pixel_simd_t b11 = a[0][1] * half;
+  const dt_aligned_pixel_simd_t b13 = -b11;
+  const dt_aligned_pixel_simd_t b22 = minus_two * (a[0][0] + a[1][1]);
 
-    // build the kernel of rotated anisotropic laplacian
-    // from https://www.researchgate.net/publication/220663968 :
-    // [ [ a12 / 2,  a22,            -a12 / 2 ],
-    //   [ a11,      -2 (a11 + a22), a11      ],
-    //   [ -a12 / 2,   a22,          a12 / 2  ] ]
-    // N.B. we have flipped the signs of the a12 terms
-    // compared to the paper. There's probably a mismatch
-    // of coordinate convention between the paper and the
-    // original derivation of this convolution mask
-    // (Witkin 1991, https://doi.org/10.1145/127719.122750).
-    kernel[0][c] = b11;
-    kernel[1][c] = a[1][1][c];
-    kernel[2][c] = b13;
-    kernel[3][c] = a[0][0][c];
-    kernel[4][c] = b22;
-    kernel[5][c] = a[0][0][c];
-    kernel[6][c] = b13;
-    kernel[7][c] = a[1][1][c];
-    kernel[8][c] = b11;
-  }
+  // build the kernel of rotated anisotropic laplacian
+  // from https://www.researchgate.net/publication/220663968 :
+  // [ [ a12 / 2,  a22,            -a12 / 2 ],
+  //   [ a11,      -2 (a11 + a22), a11      ],
+  //   [ -a12 / 2,   a22,          a12 / 2  ] ]
+  // N.B. we have flipped the signs of the a12 terms
+  // compared to the paper. There's probably a mismatch
+  // of coordinate convention between the paper and the
+  // original derivation of this convolution mask
+  // (Witkin 1991, https://doi.org/10.1145/127719.122750).
+  kernel[0] = b11;
+  kernel[1] = a[1][1];
+  kernel[2] = b13;
+  kernel[3] = a[0][0];
+  kernel[4] = b22;
+  kernel[5] = a[0][0];
+  kernel[6] = b13;
+  kernel[7] = a[1][1];
+  kernel[8] = b11;
 }
 
-#ifdef _OPENMP
-#pragma omp declare simd aligned(kernel: 64)
-#endif
-static inline void isotrope_laplacian(dt_aligned_pixel_t kernel[9])
+static inline __attribute__((always_inline)) void isotrope_laplacian(dt_aligned_pixel_simd_t kernel[9])
 {
   // see in https://eng.aurelienpierre.com/2021/03/rotation-invariant-laplacian-for-2d-grids/#Second-order-isotropic-finite-differences
   // for references (Oono & Puri)
-  for_each_channel(c)
-  {
-    kernel[0][c] = 0.25f;
-    kernel[1][c] = 0.5f;
-    kernel[2][c] = 0.25f;
-    kernel[3][c] = 0.5f;
-    kernel[4][c] = -3.f;
-    kernel[5][c] = 0.5f;
-    kernel[6][c] = 0.25f;
-    kernel[7][c] = 0.5f;
-    kernel[8][c] = 0.25f;
-  }
+  const dt_aligned_pixel_simd_t corner = dt_simd_set1(0.25f);
+  const dt_aligned_pixel_simd_t edge = dt_simd_set1(0.5f);
+  const dt_aligned_pixel_simd_t center = dt_simd_set1(-3.f);
+  kernel[0] = corner;
+  kernel[1] = edge;
+  kernel[2] = corner;
+  kernel[3] = edge;
+  kernel[4] = center;
+  kernel[5] = edge;
+  kernel[6] = corner;
+  kernel[7] = edge;
+  kernel[8] = corner;
 }
 
-#ifdef _OPENMP
-#pragma omp declare simd aligned(kernel, c2: 64) uniform(isotropy_type)
-#endif
-static inline void compute_kernel(const dt_aligned_pixel_t c2, const dt_aligned_pixel_t cos_theta_sin_theta,
-                                  const dt_aligned_pixel_t cos_theta2, const dt_aligned_pixel_t sin_theta2,
-                                  const dt_isotropy_t isotropy_type, dt_aligned_pixel_t kernel[9])
+static inline __attribute__((always_inline)) void compute_kernel(
+    const dt_aligned_pixel_simd_t c2, const dt_aligned_pixel_simd_t cos_theta_sin_theta,
+    const dt_aligned_pixel_simd_t cos_theta2, const dt_aligned_pixel_simd_t sin_theta2,
+    const dt_isotropy_t isotropy_type, dt_aligned_pixel_simd_t kernel[9])
 {
   // Build the matrix of rotation with anisotropy
 
@@ -769,14 +731,14 @@ static inline void compute_kernel(const dt_aligned_pixel_t c2, const dt_aligned_
     }
     case(DT_ISOTROPY_ISOPHOTE):
     {
-      dt_aligned_pixel_t a[2][2] = { { { 0.f } } };
+      dt_aligned_pixel_simd_t a[2][2] = { { dt_simd_set1(0.f) } };
       rotation_matrix_isophote(c2, cos_theta_sin_theta, cos_theta2, sin_theta2, a);
       build_matrix(a, kernel);
       break;
     }
     case(DT_ISOTROPY_GRADIENT):
     {
-      dt_aligned_pixel_t a[2][2] = { { { 0.f } } };
+      dt_aligned_pixel_simd_t a[2][2] = { { dt_simd_set1(0.f) } };
       rotation_matrix_gradient(c2, cos_theta_sin_theta, cos_theta2, sin_theta2, a);
       build_matrix(a, kernel);
       break;
@@ -784,13 +746,16 @@ static inline void compute_kernel(const dt_aligned_pixel_t c2, const dt_aligned_
   }
 }
 
+__DT_CLONE_TARGETS__
 static inline void heat_PDE_diffusion(const float *const restrict high_freq, const float *const restrict low_freq,
                                       const uint8_t *const restrict mask, const int has_mask,
-                                      float *const restrict output, const size_t width, const size_t height,
-                                      const dt_aligned_pixel_t anisotropy, const dt_isotropy_t isotropy_type[4],
+                                      float *const restrict output, const size_t width,
+                                      const size_t height, const dt_aligned_pixel_simd_t anisotropy,
+                                      const dt_isotropy_t isotropy_type[4],
                                       const float variance_threshold, const int mult,
                                       const float normalized_regularization,
-                                      const dt_aligned_pixel_t ABCD, const float strength)
+                                      const dt_aligned_pixel_simd_t ABCD, const float strength,
+                                      const int use_nontemporal)
 {
   // Simultaneous inpainting for image structure and texture using anisotropic heat transfer model
   // https://www.researchgate.net/publication/220663968
@@ -804,13 +769,13 @@ static inline void heat_PDE_diffusion(const float *const restrict high_freq, con
   float *const restrict out = DT_IS_ALIGNED(output);
   const float *const restrict LF = DT_IS_ALIGNED(low_freq);
   const float *const restrict HF = DT_IS_ALIGNED(high_freq);
+  const dt_aligned_pixel_simd_t zero = dt_simd_set1(0.f);
+  const dt_aligned_pixel_simd_t flt_min = dt_simd_set1(1e-8f);
+  const dt_aligned_pixel_simd_t variance_threshold_v = dt_simd_set1(variance_threshold);
+  const dt_aligned_pixel_simd_t normalized_regularization_v = dt_simd_set1(normalized_regularization);
+  const dt_aligned_pixel_simd_t strength_v = dt_simd_set1(strength);
 
-#ifdef _OPENMP
-#pragma omp parallel for default(none)                                                                            \
-    dt_omp_firstprivate(out, mask, HF, LF, height, width, ABCD, has_mask, variance_threshold, anisotropy,         \
-                        normalized_regularization, mult, strength, isotropy_type)                                  \
-    schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t row = 0; row < height; ++row)
   {
     // interleave the order in which we process the rows so that we minimize cache misses
@@ -835,74 +800,94 @@ static inline void heat_PDE_diffusion(const float *const restrict high_freq, con
               MIN((int)(j + mult * H), (int)width - 1) }; // y + mult
 
         // fetch non-local pixels and store them locally and contiguously
-        dt_aligned_pixel_t neighbour_pixel_HF[9];
-        dt_aligned_pixel_t neighbour_pixel_LF[9];
+        dt_aligned_pixel_simd_t neighbour_pixel_HF[9];
+        dt_aligned_pixel_simd_t neighbour_pixel_LF[9];
+        dt_aligned_pixel_simd_t energy = zero;
 
         for(size_t ii = 0; ii < 3; ii++)
           for(size_t jj = 0; jj < 3; jj++)
           {
-            size_t neighbor = 4 * (i_neighbours[ii] + j_neighbours[jj]);
-            for_each_channel(c)
-            {
-              neighbour_pixel_HF[3 * ii + jj][c] = HF[neighbor + c];
-              neighbour_pixel_LF[3 * ii + jj][c] = LF[neighbor + c];
-            }
+            const size_t neighbor = 4 * (i_neighbours[ii] + j_neighbours[jj]);
+            const dt_aligned_pixel_simd_t hf_value = dt_load_simd_aligned(HF + neighbor);
+            const dt_aligned_pixel_simd_t lf_value = dt_load_simd_aligned(LF + neighbor);
+            neighbour_pixel_HF[3 * ii + jj] = hf_value;
+            neighbour_pixel_LF[3 * ii + jj] = lf_value;
+            // Clamp LF to a strictly positive floor to avoid divide-by-zero in
+            // the HF/LF energy estimate without branching per channel.
+            const dt_aligned_pixel_simd_t safe_lf = dt_simd_max_zero(lf_value - flt_min) + flt_min;
+            const dt_aligned_pixel_simd_t ratio = hf_value / safe_lf;
+            energy += ratio * ratio;
           }
 
-        // c² in https://www.researchgate.net/publication/220663968
-        dt_aligned_pixel_t c2[4];
+        // normalized_regularization already folds together the user
+        // regularization, the 3x3-support averaging factor, the physical blur
+        // radius carried by the current wavelet band and its scale normalization.
+        energy = dt_simd_max_zero(variance_threshold_v + energy * normalized_regularization_v - flt_min) + flt_min;
+
         // build the local anisotropic convolution filters for gradients and laplacians
-        dt_aligned_pixel_t gradient[2], laplacian[2]; // x, y for each channel
+        dt_aligned_pixel_simd_t lf_gradient[2], hf_gradient[2]; // x, y for each channel
+        find_gradients(neighbour_pixel_LF, lf_gradient);
+        find_gradients(neighbour_pixel_HF, hf_gradient);
 
-        // FIXME:
-        // Kind of misleading here : the gradient evaluated on LF is called gradient,
-        // the gradient evaluated on HF is called laplacian.
-        find_gradients(neighbour_pixel_LF, gradient);
-        find_gradients(neighbour_pixel_HF, laplacian);
-
-        dt_aligned_pixel_t cos_theta_grad_sq;
-        dt_aligned_pixel_t sin_theta_grad_sq;
-        dt_aligned_pixel_t cos_theta_sin_theta_grad;
+        // c² in https://www.researchgate.net/publication/220663968
+        dt_aligned_pixel_simd_t c2[4];
+        dt_aligned_pixel_simd_t grad_x = lf_gradient[0];
+        dt_aligned_pixel_simd_t grad_y = lf_gradient[1];
+        dt_aligned_pixel_simd_t c2_first = zero;
+        dt_aligned_pixel_simd_t c2_third = zero;
+        dt_aligned_pixel_simd_t cos_theta_grad_sq = zero;
+        dt_aligned_pixel_simd_t sin_theta_grad_sq = zero;
+        dt_aligned_pixel_simd_t cos_theta_sin_theta_grad = zero;
         for_each_channel(c)
         {
-          float magnitude_grad = sqrtf(sqf(gradient[0][c]) + sqf(gradient[1][c]));
-          c2[0][c] = -magnitude_grad * anisotropy[0];
-          c2[2][c] = -magnitude_grad * anisotropy[2];
-          // Compute cos(arg(grad)) = dx / hypot - force arg(grad) = 0 if hypot == 0
-          gradient[0][c] = (magnitude_grad != 0.f) ? gradient[0][c] / magnitude_grad : 1.f; // cos(0)
-          // Compute sin (arg(grad))= dy / hypot - force arg(grad) = 0 if hypot == 0
-          gradient[1][c] = (magnitude_grad != 0.f) ? gradient[1][c] / magnitude_grad : 0.f; // sin(0)
+          const float magnitude_grad = dt_fast_hypotf(grad_x[c], grad_y[c]);
+          c2_first[c] = -magnitude_grad * anisotropy[0];
+          c2_third[c] = -magnitude_grad * anisotropy[2];
+          // Compute cos/sin(arg(grad)) with a branchless normalization, forcing
+          // arg(grad)=0 when magnitude is zero.
+          const float nonzero = (magnitude_grad != 0.f);
+          const float inv_mag = 1.f / (magnitude_grad + (1.f - nonzero));
+          grad_x[c] = grad_x[c] * inv_mag + (1.f - nonzero); // cos(0)
+          grad_y[c] = grad_y[c] * inv_mag;                  // sin(0)
           // Warning : now gradient = { cos(arg(grad)) , sin(arg(grad)) }
-          cos_theta_grad_sq[c] = sqf(gradient[0][c]);
-          sin_theta_grad_sq[c] = sqf(gradient[1][c]);
-          cos_theta_sin_theta_grad[c] = gradient[0][c] * gradient[1][c];
+          cos_theta_grad_sq[c] = sqf(grad_x[c]);
+          sin_theta_grad_sq[c] = sqf(grad_y[c]);
+          cos_theta_sin_theta_grad[c] = grad_x[c] * grad_y[c];
         }
 
-        dt_aligned_pixel_t cos_theta_lapl_sq;
-        dt_aligned_pixel_t sin_theta_lapl_sq;
-        dt_aligned_pixel_t cos_theta_sin_theta_lapl;
+        c2[0] = c2_first;
+        c2[2] = c2_third;
+        dt_aligned_pixel_simd_t lapl_x = hf_gradient[0];
+        dt_aligned_pixel_simd_t lapl_y = hf_gradient[1];
+        dt_aligned_pixel_simd_t c2_second = zero;
+        dt_aligned_pixel_simd_t c2_fourth = zero;
+        dt_aligned_pixel_simd_t cos_theta_lapl_sq = zero;
+        dt_aligned_pixel_simd_t sin_theta_lapl_sq = zero;
+        dt_aligned_pixel_simd_t cos_theta_sin_theta_lapl = zero;
         for_each_channel(c)
         {
-          float magnitude_lapl = sqrtf(sqf(laplacian[0][c]) + sqf(laplacian[1][c]));
-          c2[1][c] = -magnitude_lapl * anisotropy[1];
-          c2[3][c] = -magnitude_lapl * anisotropy[3];
-          // Compute cos(arg(lapl)) = dx / hypot - force arg(lapl) = 0 if hypot == 0
-          laplacian[0][c] = (magnitude_lapl != 0.f) ? laplacian[0][c] / magnitude_lapl : 1.f; // cos(0)
-          // Compute sin (arg(lapl))= dy / hypot - force arg(lapl) = 0 if hypot == 0
-          laplacian[1][c] = (magnitude_lapl != 0.f) ? laplacian[1][c] / magnitude_lapl : 0.f; // sin(0)
+          const float magnitude_lapl = dt_fast_hypotf(lapl_x[c], lapl_y[c]);
+          c2_second[c] = -magnitude_lapl * anisotropy[1];
+          c2_fourth[c] = -magnitude_lapl * anisotropy[3];
+          // Compute cos/sin(arg(lapl)) with a branchless normalization, forcing
+          // arg(lapl)=0 when magnitude is zero.
+          const float nonzero = (magnitude_lapl != 0.f);
+          const float inv_mag = 1.f / (magnitude_lapl + (1.f - nonzero));
+          lapl_x[c] = lapl_x[c] * inv_mag + (1.f - nonzero); // cos(0)
+          lapl_y[c] = lapl_y[c] * inv_mag;                  // sin(0)
           // Warning : now laplacian = { cos(arg(lapl)) , sin(arg(lapl)) }
-          cos_theta_lapl_sq[c] = sqf(laplacian[0][c]);
-          sin_theta_lapl_sq[c] = sqf(laplacian[1][c]);
-          cos_theta_sin_theta_lapl[c] = laplacian[0][c] * laplacian[1][c];
+          cos_theta_lapl_sq[c] = sqf(lapl_x[c]);
+          sin_theta_lapl_sq[c] = sqf(lapl_y[c]);
+          cos_theta_sin_theta_lapl[c] = lapl_x[c] * lapl_y[c];
         }
+        c2[1] = c2_second;
+        c2[3] = c2_fourth;
 
         // elements of c2 need to be expf(mag*anistropy), but we haven't applied the expf() yet.  Do that now.
         for(size_t k = 0; k < 4; k++)
-        {
-          dt_fast_expf_4wide(c2[k], c2[k]);
-        }
+          for_each_channel(c) c2[k][c] = dt_fast_expf(c2[k][c]);
 
-        dt_aligned_pixel_t kern_first[9], kern_second[9], kern_third[9], kern_fourth[9];
+        dt_aligned_pixel_simd_t kern_first[9], kern_second[9], kern_third[9], kern_fourth[9];
         compute_kernel(c2[0], cos_theta_sin_theta_grad, cos_theta_grad_sq, sin_theta_grad_sq, isotropy_type[0],
                        kern_first);
         compute_kernel(c2[1], cos_theta_sin_theta_lapl, cos_theta_lapl_sq, sin_theta_lapl_sq, isotropy_type[1],
@@ -912,8 +897,7 @@ static inline void heat_PDE_diffusion(const float *const restrict high_freq, con
         compute_kernel(c2[3], cos_theta_sin_theta_lapl, cos_theta_lapl_sq, sin_theta_lapl_sq, isotropy_type[3],
                        kern_fourth);
 
-        dt_aligned_pixel_t derivatives[4] = { { 0.f } };
-        dt_aligned_pixel_t energy = { 0.f };
+        dt_aligned_pixel_simd_t derivatives[4] = { zero, zero, zero, zero };
         // Convolve filters and accumulate the local HF band energy over the
         // current 3x3 support. This is not a statistical variance estimator:
         // HF is a band-pass residual, so we normalize each sample by the
@@ -922,43 +906,40 @@ static inline void heat_PDE_diffusion(const float *const restrict high_freq, con
         // wavelet band.
         for(size_t k = 0; k < 9; k++)
         {
-          for_each_channel(c,aligned(derivatives,neighbour_pixel_LF,kern_first,kern_second))
-          {
-            derivatives[0][c] += kern_first[k][c] * neighbour_pixel_LF[k][c];
-            derivatives[1][c] += kern_second[k][c] * neighbour_pixel_LF[k][c];
-            derivatives[2][c] += kern_third[k][c] * neighbour_pixel_HF[k][c];
-            derivatives[3][c] += kern_fourth[k][c] * neighbour_pixel_HF[k][c];
-            energy[c] += sqf(neighbour_pixel_HF[k][c] / fmaxf(neighbour_pixel_LF[k][c], FLT_MIN));
-          }
+          derivatives[0] = kern_first[k] * neighbour_pixel_LF[k] + derivatives[0];
+          derivatives[1] = kern_second[k] * neighbour_pixel_LF[k] + derivatives[1];
+          derivatives[2] = kern_third[k] * neighbour_pixel_HF[k] + derivatives[2];
+          derivatives[3] = kern_fourth[k] * neighbour_pixel_HF[k] + derivatives[3];
         }
-        // Scale-normalize the summed HF/LF energy ratio with the physical
-        // variance increment of the current wavelet band.
-        for_each_channel(c, aligned(energy))
-        {
-          energy[c] = variance_threshold + energy[c] * normalized_regularization;
-        }
+
         // compute the update
-        dt_aligned_pixel_t acc = { 0.f };
-        for(size_t k = 0; k < 4; k++)
-        {
-          for_each_channel(c, aligned(acc,derivatives,ABCD))
-            acc[c] += derivatives[k][c] * ABCD[k];
-        }
-        for_each_channel(c, aligned(acc,HF,LF,energy,out))
-        {
-          acc[c] = (HF[index + c] * strength + acc[c] / energy[c]);
-          // update the solution
-          out[index + c] = fmaxf(acc[c] + LF[index + c], 0.f);
-        }
+        dt_aligned_pixel_simd_t update = derivatives[0] * ABCD[0];
+        update = derivatives[1] * ABCD[1] + update;
+        update = derivatives[2] * ABCD[2] + update;
+        update = derivatives[3] * ABCD[3] + update;
+        const dt_aligned_pixel_simd_t acc = neighbour_pixel_HF[4] * strength_v + update / energy;
+
+        if(use_nontemporal)
+          dt_store_simd_nontemporal(out + index, dt_simd_max_zero(acc + neighbour_pixel_LF[4]));
+        else
+          dt_store_simd_aligned(out + index, dt_simd_max_zero(acc + neighbour_pixel_LF[4]));
       }
       else
       {
         // only copy input to output, do nothing
-        for_each_channel(c, aligned(out, HF, LF : 64))
-          out[index + c] = fmaxf(HF[index + c] + LF[index + c], 0.f);
+        if(use_nontemporal)
+          dt_store_simd_nontemporal(out + index, dt_simd_max_zero(dt_load_simd_aligned(HF + index)
+                                                                  + dt_load_simd_aligned(LF + index)));
+        else
+          dt_store_simd_aligned(out + index, dt_simd_max_zero(dt_load_simd_aligned(HF + index)
+                                                              + dt_load_simd_aligned(LF + index)));
       }
     }
   }
+  
+
+  if(use_nontemporal)
+    dt_omploop_sfence();  // ensure the final nontemporal writeback completes before the caller reads out
 }
 
 static inline float compute_anisotropy_factor(const float user_param)
@@ -970,6 +951,7 @@ static inline float compute_anisotropy_factor(const float user_param)
 }
 
 #if DEBUG_DUMP_PFM
+__DT_CLONE_TARGETS__
 static void dump_PFM(const char *filename, const float* out, const uint32_t w, const uint32_t h)
 {
   FILE *f = g_fopen(filename, "wb");
@@ -982,6 +964,7 @@ static void dump_PFM(const char *filename, const float* out, const uint32_t w, c
 }
 #endif
 
+__DT_CLONE_TARGETS__
 static inline int wavelets_process(const float *const restrict in, float *const restrict reconstructed,
                                    const uint8_t *const restrict mask, const size_t width,
                                    const size_t height, const dt_iop_diffuse_data_t *const data,
@@ -991,7 +974,7 @@ static inline int wavelets_process(const float *const restrict in, float *const 
                                    float *const restrict LF_odd,
                                    float *const restrict LF_even)
 {
-  const dt_aligned_pixel_t anisotropy
+  const dt_aligned_pixel_simd_t anisotropy
       = { compute_anisotropy_factor(data->anisotropy_first),
           compute_anisotropy_factor(data->anisotropy_second),
           compute_anisotropy_factor(data->anisotropy_third),
@@ -1013,7 +996,7 @@ static inline int wavelets_process(const float *const restrict in, float *const 
   // allocate a one-row temporary buffer for the decomposition
   size_t padded_size;
   float *const tempbuf = dt_pixelpipe_cache_alloc_perthread_float(4 * width, &padded_size); //TODO: alloc in caller
-  if(tempbuf == NULL) return 1;
+  if(IS_NULL_PTR(tempbuf)) return 1;
 
   for(int s = 0; s < scales; ++s)
   {
@@ -1074,7 +1057,7 @@ static inline int wavelets_process(const float *const restrict in, float *const 
 
     const float norm = expf(-sqf(real_radius - (float)data->radius_center) / sqf(data->radius));
 
-    const dt_aligned_pixel_t ABCD = { data->first * KAPPA * norm,
+    const dt_aligned_pixel_simd_t ABCD = { data->first * KAPPA * norm,
                                       data->second * KAPPA * norm,
                                       data->third * KAPPA * norm,
                                       data->fourth * KAPPA * norm };
@@ -1103,7 +1086,7 @@ static inline int wavelets_process(const float *const restrict in, float *const 
 
     heat_PDE_diffusion(HF[s], buffer_in, mask, has_mask, buffer_out, width, height,
                        anisotropy, isotropy_type, variance_threshold, mult,
-                       normalized_regularization, ABCD, strength);
+                       normalized_regularization, ABCD, strength, (s == 0));
 
     count++;
   }
@@ -1112,29 +1095,26 @@ static inline int wavelets_process(const float *const restrict in, float *const 
 }
 
 
+__DT_CLONE_TARGETS__
 static inline void build_mask(const float *const restrict input, uint8_t *const restrict mask,
                               const float threshold, const size_t width, const size_t height)
 {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) dt_omp_firstprivate(input, mask, height, width, threshold)        \
-    schedule(simd:static) aligned(mask, input : 64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(mask, input : 64))
   for(size_t k = 0; k < height * width * 4; k += 4)
   {
     // TRUE if any channel is above threshold
     mask[k / 4] = (input[k] > threshold || input[k + 1] > threshold || input[k + 2] > threshold);
   }
+  
 }
 
+__DT_CLONE_TARGETS__
 static inline void inpaint_mask(float *const restrict inpainted, const float *const restrict original,
-                                const uint8_t *const restrict mask,
-                                const size_t width, const size_t height)
+                                const uint8_t *const restrict mask, const size_t width,
+                                const size_t height)
 {
   // init the reconstruction with noise inside the masked areas
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(inpainted, original, mask, width, height) schedule(simd:static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < height * width * 4; k += 4)
   {
     if(mask[k / 4])
@@ -1158,18 +1138,22 @@ static inline void inpaint_mask(float *const restrict inpainted, const float *co
         inpainted[k + c] = original[k + c];
     }
   }
+  
 }
 
-int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const restrict ivoid,
-             void *const restrict ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+            const void *const restrict ivoid, void *const restrict ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const dt_iop_diffuse_data_t *const data = (dt_iop_diffuse_data_t *)piece->data;
 
   float *restrict in = DT_IS_ALIGNED((float *const restrict)ivoid);
   float *const restrict out = DT_IS_ALIGNED((float *const restrict)ovoid);
 
-  float *const restrict temp1 = dt_pixelpipe_cache_alloc_align_float((size_t)roi_out->width * roi_out->height * 4, piece->pipe);
-  float *const restrict temp2 = dt_pixelpipe_cache_alloc_align_float((size_t)roi_out->width * roi_out->height * 4, piece->pipe);
+  float *const restrict temp1 = dt_pixelpipe_cache_alloc_align_float((size_t)roi_out->width * roi_out->height * 4, pipe);
+  float *const restrict temp2 = dt_pixelpipe_cache_alloc_align_float((size_t)roi_out->width * roi_out->height * 4, pipe);
 
   float *restrict temp_in = NULL;
   float *restrict temp_out = NULL;
@@ -1177,18 +1161,9 @@ int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *co
 
   uint8_t *const restrict mask = dt_pixelpipe_cache_alloc_align(
       sizeof(uint8_t) * roi_out->width * roi_out->height,
-      piece->pipe);
+      pipe);
 
-  // The relevant scale for a non-geometric module is roi_in->scale, since it
-  // describes the current input grid processed by the PDE. On the thumbnail
-  // pipe this current grid may already come from a reduced mipmap input, so
-  // we also need the ratio between the full image dimensions and the pipe
-  // input dimensions to recover the full-resolution pixel footprint.
-  const float roi_zoom = fmaxf(1.f / roi_in->scale, 1.f);
-  const float mipmap_zoom = fmaxf(fmaxf((float)piece->pipe->image.width / (float)piece->pipe->iwidth,
-                                        (float)piece->pipe->image.height / (float)piece->pipe->iheight),
-                                  1.f);
-  const float zoom = roi_zoom * mipmap_zoom;
+  const float zoom = fmaxf(dt_dev_get_module_scale(pipe, roi_in), 1.f);
   const float final_radius = (data->radius + data->radius_center) * 2.f / zoom;
   // No legacy iteration remap is applied here anymore. The current solver uses
   // the historical a-trous band order and kernel-variance increments exactly,
@@ -1198,22 +1173,22 @@ int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *co
   const int diffusion_scales = num_steps_to_reach_equivalent_sigma(B_SPLINE_SIGMA, final_radius);
   const int scales = CLAMP(diffusion_scales, 1, MAX_NUM_SCALES);
 
-  gboolean out_of_memory = (temp1 == NULL) || (temp2 == NULL);
+  gboolean out_of_memory = (IS_NULL_PTR(temp1)) || (IS_NULL_PTR(temp2));
   // One full-resolution buffer per stored wavelet band.
   float *restrict HF[MAX_NUM_SCALES] = { NULL };
   for(int s = 0; s < scales; s++)
   {
-    HF[s] = dt_pixelpipe_cache_alloc_align_float(roi_out->width * roi_out->height * 4, piece->pipe);
+    HF[s] = dt_pixelpipe_cache_alloc_align_float(roi_out->width * roi_out->height * 4, pipe);
     if(!HF[s]) out_of_memory = TRUE;
   }
   // Two ping-pong low-pass buffers reused by the decomposition/synthesis.
-  float *const restrict LF_odd = dt_pixelpipe_cache_alloc_align_float(roi_out->width * roi_out->height * 4, piece->pipe);
-  float *const restrict LF_even = dt_pixelpipe_cache_alloc_align_float(roi_out->width * roi_out->height * 4, piece->pipe);
+  float *const restrict LF_odd = dt_pixelpipe_cache_alloc_align_float(roi_out->width * roi_out->height * 4, pipe);
+  float *const restrict LF_even = dt_pixelpipe_cache_alloc_align_float(roi_out->width * roi_out->height * 4, pipe);
 
   // PAUSE !
   // check that all buffers exist before processing,
   // because we use a lot of memory here.
-  if(!mask || !temp1 || !temp2 || !LF_odd || !LF_even || out_of_memory)
+  if(IS_NULL_PTR(mask) || IS_NULL_PTR(temp1) || IS_NULL_PTR(temp2) || IS_NULL_PTR(LF_odd) || IS_NULL_PTR(LF_even) || out_of_memory)
   {
     err = 1;
     goto error;
@@ -1285,7 +1260,7 @@ static inline cl_int wavelets_process_cl(const int devid, cl_mem in, cl_mem reco
 {
   cl_int err = -999;
 
-  const dt_aligned_pixel_t anisotropy
+  const dt_aligned_pixel_simd_t anisotropy
       = { compute_anisotropy_factor(data->anisotropy_first),
           compute_anisotropy_factor(data->anisotropy_second),
           compute_anisotropy_factor(data->anisotropy_third),
@@ -1337,22 +1312,80 @@ static inline cl_int wavelets_process_cl(const int devid, cl_mem in, cl_mem reco
 
     // Compute wavelets low-frequency scales
     const int clamp_lf = 1;
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 0, sizeof(cl_mem), (void *)&buffer_in);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 1, sizeof(cl_mem), (void *)&HF[s]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 2, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 3, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 4, sizeof(int), (void *)&mult);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 5, sizeof(int), (void *)&clamp_lf);
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_horizontal, sizes);
+    int hblocksize;
+    dt_opencl_local_buffer_t hlocopt = (dt_opencl_local_buffer_t){ .xoffset = 2 * mult, .xfactor = 1,
+                                                                    .yoffset = 0, .yfactor = 1,
+                                                                    .cellsize = 4 * sizeof(float), .overhead = 0,
+                                                                    .sizex = 1 << 16, .sizey = 1 };
+    if(dt_opencl_local_buffer_opt(devid, gd->kernel_filmic_bspline_horizontal_local, &hlocopt))
+      hblocksize = hlocopt.sizex;
+    else
+      hblocksize = 1;
+
+    // Keep the same separable order as the CPU path: vertical pass first,
+    // store its intermediate into HF[s], then horizontal pass builds LF.
+    int vblocksize;
+    dt_opencl_local_buffer_t vlocopt = (dt_opencl_local_buffer_t){ .xoffset = 0, .xfactor = 1,
+                                                                    .yoffset = 2 * mult, .yfactor = 1,
+                                                                    .cellsize = 4 * sizeof(float), .overhead = 0,
+                                                                    .sizex = 1, .sizey = 1 << 16 };
+    if(dt_opencl_local_buffer_opt(devid, gd->kernel_filmic_bspline_vertical_local, &vlocopt))
+      vblocksize = vlocopt.sizey;
+    else
+      vblocksize = 1;
+
+    if(vblocksize > 1)
+    {
+      const size_t vertical_sizes[3] = { ROUNDUPDWD(width, devid), ROUNDUP(height, vblocksize), 1 };
+      const size_t vertical_local[3] = { 1, vblocksize, 1 };
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical_local, 0, sizeof(cl_mem), (void *)&buffer_in);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical_local, 1, sizeof(cl_mem), (void *)&HF[s]);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical_local, 2, sizeof(int), (void *)&width);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical_local, 3, sizeof(int), (void *)&height);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical_local, 4, sizeof(int), (void *)&mult);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical_local, 5, sizeof(int), (void *)&clamp_lf);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical_local, 6,
+                               (vblocksize + 4 * mult) * 4 * sizeof(float), NULL);
+      err = dt_opencl_enqueue_kernel_2d_with_local(devid, gd->kernel_filmic_bspline_vertical_local,
+                                                   vertical_sizes, vertical_local);
+    }
+    else
+    {
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 0, sizeof(cl_mem), (void *)&buffer_in);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 1, sizeof(cl_mem), (void *)&HF[s]);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 2, sizeof(int), (void *)&width);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 3, sizeof(int), (void *)&height);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 4, sizeof(int), (void *)&mult);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 5, sizeof(int), (void *)&clamp_lf);
+      err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_vertical, sizes);
+    }
     if(err != CL_SUCCESS) return err;
 
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 0, sizeof(cl_mem), (void *)&HF[s]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 1, sizeof(cl_mem), (void *)&buffer_out);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 2, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 3, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 4, sizeof(int), (void *)&mult);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 5, sizeof(int), (void *)&clamp_lf);
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_vertical, sizes);
+    if(hblocksize > 1)
+    {
+      const size_t horizontal_sizes[3] = { ROUNDUP(width, hblocksize), ROUNDUPDHT(height, devid), 1 };
+      const size_t horizontal_local[3] = { hblocksize, 1, 1 };
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal_local, 0, sizeof(cl_mem), (void *)&HF[s]);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal_local, 1, sizeof(cl_mem), (void *)&buffer_out);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal_local, 2, sizeof(int), (void *)&width);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal_local, 3, sizeof(int), (void *)&height);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal_local, 4, sizeof(int), (void *)&mult);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal_local, 5, sizeof(int), (void *)&clamp_lf);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal_local, 6,
+                               (hblocksize + 4 * mult) * 4 * sizeof(float), NULL);
+      err = dt_opencl_enqueue_kernel_2d_with_local(devid, gd->kernel_filmic_bspline_horizontal_local,
+                                                   horizontal_sizes, horizontal_local);
+    }
+    else
+    {
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 0, sizeof(cl_mem), (void *)&HF[s]);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 1, sizeof(cl_mem), (void *)&buffer_out);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 2, sizeof(int), (void *)&width);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 3, sizeof(int), (void *)&height);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 4, sizeof(int), (void *)&mult);
+      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 5, sizeof(int), (void *)&clamp_lf);
+      err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_horizontal, sizes);
+    }
     if(err != CL_SUCCESS) return err;
 
     // Compute wavelets high-frequency scales and backup the maximum of texture over the RGB channels
@@ -1389,7 +1422,7 @@ static inline cl_int wavelets_process_cl(const int devid, cl_mem in, cl_mem reco
 
     const float norm = expf(-sqf(real_radius - (float)data->radius_center) / sqf(data->radius));
 
-    const dt_aligned_pixel_t ABCD = { data->first * KAPPA * norm,
+    const dt_aligned_pixel_simd_t ABCD = { data->first * KAPPA * norm,
                                       data->second * KAPPA * norm,
                                       data->third * KAPPA * norm,
                                       data->fourth * KAPPA * norm };
@@ -1440,9 +1473,10 @@ static inline cl_int wavelets_process_cl(const int devid, cl_mem in, cl_mem reco
   return err;
 }
 
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const dt_iop_diffuse_data_t *const data = (dt_iop_diffuse_data_t *)piece->data;
   dt_iop_diffuse_global_data_t *const gd = (dt_iop_diffuse_global_data_t *)self->global_data;
 
@@ -1450,7 +1484,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   cl_int err = -999;
 
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   const int width = roi_in->width;
   const int height = roi_in->height;
 
@@ -1466,11 +1500,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   cl_mem mask = dt_opencl_alloc_device(devid, sizes[0], sizes[1], sizeof(uint8_t));
 
-  const float roi_zoom = fmaxf(1.f / roi_in->scale, 1.f);
-  const float mipmap_zoom = fmaxf(fmaxf((float)piece->pipe->image.width / (float)piece->pipe->iwidth,
-                                        (float)piece->pipe->image.height / (float)piece->pipe->iheight),
-                                  1.f);
-  const float zoom = roi_zoom * mipmap_zoom;
+  const float zoom = fmaxf(dt_dev_get_module_scale(pipe, roi_in), 1.f);
   const float final_radius = (data->radius + data->radius_center) * 2.f / zoom;
   // See the CPU path above: iterations stay in user space because the current
   // solver already matches the historical a-trous band ordering and kernel
@@ -1492,7 +1522,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   // PAUSE !
   // check that all buffers exist before processing,
   // because we use a lot of memory here.
-  if(!mask || !temp1 || !temp2 || !LF_odd || !LF_even || out_of_memory)
+  if(IS_NULL_PTR(mask) || IS_NULL_PTR(temp1) || IS_NULL_PTR(temp2) || IS_NULL_PTR(LF_odd) || IS_NULL_PTR(LF_even) || out_of_memory)
   {
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto error;
@@ -1581,6 +1611,8 @@ void init_global(dt_iop_module_so_t *module)
   const int wavelets = 35; // bspline.cl, from programs.conf
   gd->kernel_filmic_bspline_horizontal = dt_opencl_create_kernel(wavelets, "blur_2D_Bspline_horizontal");
   gd->kernel_filmic_bspline_vertical = dt_opencl_create_kernel(wavelets, "blur_2D_Bspline_vertical");
+  gd->kernel_filmic_bspline_horizontal_local = dt_opencl_create_kernel(wavelets, "blur_2D_Bspline_horizontal_local");
+  gd->kernel_filmic_bspline_vertical_local = dt_opencl_create_kernel(wavelets, "blur_2D_Bspline_vertical_local");
   gd->kernel_filmic_wavelets_detail = dt_opencl_create_kernel(wavelets, "wavelets_detail_level");
 }
 
@@ -1594,6 +1626,8 @@ void cleanup_global(dt_iop_module_so_t *module)
 
   dt_opencl_free_kernel(gd->kernel_filmic_bspline_vertical);
   dt_opencl_free_kernel(gd->kernel_filmic_bspline_horizontal);
+  dt_opencl_free_kernel(gd->kernel_filmic_bspline_vertical_local);
+  dt_opencl_free_kernel(gd->kernel_filmic_bspline_horizontal_local);
   dt_opencl_free_kernel(gd->kernel_filmic_wavelets_detail);
   dt_free(module->data);
 }

@@ -45,7 +45,6 @@
 #include <string.h>
 
 #include "common/colorspaces_inline_conversions.h"
-#include "common/opencl.h"
 #include "control/control.h"
 #include "develop/develop.h"
 
@@ -67,35 +66,6 @@ typedef struct dt_iop_gamma_params_t
   float gamma, linear;
 } dt_iop_gamma_params_t;
 
-#ifdef HAVE_OPENCL
-typedef struct dt_iop_gamma_global_data_t
-{
-  int kernel_gamma_pack;
-} dt_iop_gamma_global_data_t;
-
-typedef enum dt_iop_gamma_kernel_mode_t
-{
-  DT_IOP_GAMMA_KERNEL_COPY = 0,
-  DT_IOP_GAMMA_KERNEL_MASK = 1,
-  DT_IOP_GAMMA_KERNEL_CHANNEL_MONO = 2,
-  DT_IOP_GAMMA_KERNEL_CHANNEL_FALSE_COLOR = 3
-} dt_iop_gamma_kernel_mode_t;
-
-typedef enum dt_iop_gamma_false_color_t
-{
-  DT_IOP_GAMMA_FALSE_COLOR_MONO = 0,
-  DT_IOP_GAMMA_FALSE_COLOR_A = 1,
-  DT_IOP_GAMMA_FALSE_COLOR_B = 2,
-  DT_IOP_GAMMA_FALSE_COLOR_R = 3,
-  DT_IOP_GAMMA_FALSE_COLOR_G = 4,
-  DT_IOP_GAMMA_FALSE_COLOR_B_CH = 5,
-  DT_IOP_GAMMA_FALSE_COLOR_C = 6,
-  DT_IOP_GAMMA_FALSE_COLOR_LCH_H = 7,
-  DT_IOP_GAMMA_FALSE_COLOR_HSL_H = 8,
-  DT_IOP_GAMMA_FALSE_COLOR_JZ_HZ = 9
-} dt_iop_gamma_false_color_t;
-#endif
-
 const char *name()
 {
   return C_("modulename", "display encoding");
@@ -108,12 +78,20 @@ int default_group()
 
 int flags()
 {
-  return IOP_FLAGS_HIDDEN | IOP_FLAGS_ONE_INSTANCE | IOP_FLAGS_FENCE | IOP_FLAGS_UNSAFE_COPY | IOP_FLAGS_NO_HISTORY_STACK;
+  return IOP_FLAGS_HIDDEN | IOP_FLAGS_ONE_INSTANCE | IOP_FLAGS_UNSAFE_COPY | IOP_FLAGS_NO_HISTORY_STACK;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
-  return IOP_CS_RGB;
+  return IOP_CS_RGB_DISPLAY;
+}
+
+void input_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                  dt_iop_buffer_dsc_t *dsc)
+{
+  default_input_format(self, pipe, piece, dsc);
+  dsc->channels = 4;
+  dsc->datatype = TYPE_FLOAT;
 }
 
 void output_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
@@ -121,13 +99,11 @@ void output_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixel
 {
   dsc->channels = 4;
   dsc->datatype = TYPE_UINT8;
-  dsc->cst = self->output_colorspace(self, pipe, piece);
+  dsc->cst = self->default_colorspace(self, pipe, piece);
 }
 
 
-#ifdef _OPENMP
-#pragma omp declare simd aligned(in, out, mask_color: 16) uniform(mask_color, alpha)
-#endif
+__OMP_DECLARE_SIMD__(aligned(in, out, mask_color: 16) uniform(mask_color, alpha))
 static inline void _write_pixel(const float *const restrict in, uint8_t *const restrict out,
                                 const float *const restrict mask_color, const float alpha)
 {
@@ -145,12 +121,8 @@ static inline void _write_pixel(const float *const restrict in, uint8_t *const r
     out[2 - c] = (uint8_t)(fminf(fmaxf(value, 0.0f), 255.0f));
   }
 }
-
-
-#ifdef _OPENMP
-#pragma omp declare simd aligned(pixel: 16) uniform(norm)
-#endif
-static void _normalize_color(float *const restrict pixel, const float norm)
+__OMP_DECLARE_SIMD__(aligned(pixel: 16) uniform(norm))
+static inline __attribute__((always_inline)) void _normalize_color(float *const restrict pixel, const float norm)
 {
   // color may not be black!
   const float factor = norm / fmaxf(pixel[0], fmaxf(pixel[1], pixel[2]));
@@ -158,38 +130,26 @@ static void _normalize_color(float *const restrict pixel, const float norm)
     pixel[x] *= factor;
 }
 
-#ifdef _OPENMP
-#pragma omp declare simd aligned(XYZ, sRGB: 16) uniform(norm)
-#endif
+__OMP_DECLARE_SIMD__(aligned(XYZ, sRGB: 16) uniform(norm))
 static inline void _XYZ_to_REC_709_normalized(const float *const restrict XYZ, float *const restrict sRGB,
                                                   const float norm)
 {
   dt_XYZ_to_Rec709_D50(XYZ, sRGB);
   _normalize_color(sRGB, norm);
 }
-
-#ifdef _OPENMP
-#pragma omp declare simd aligned(in, out: 64) uniform(buffsize, alpha)
-#endif
+__DT_CLONE_TARGETS__
 static void _channel_display_monochrome(const float *const restrict in, uint8_t *const restrict out,
                                         const size_t buffsize, const float alpha)
 {
   const dt_aligned_pixel_t mask_color = { 1.0f, 1.0f, 0.0f }; // yellow; "unused" element enables vectorization
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) schedule(static) aligned(in, out: 64) aligned(mask_color: 16) \
-    dt_omp_firstprivate(in,out, buffsize, alpha, mask_color)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(in, out: 64) aligned(mask_color: 16))
   for(size_t j = 0; j < buffsize; j += 4)
   {
     dt_aligned_pixel_t pixel = { in[j + 1], in[j + 1], in[j + 1], in[j + 1] };
     _write_pixel(pixel, out + j, mask_color, in[j + 3] * alpha);
   }
 }
-
-#ifdef _OPENMP
-#pragma omp declare simd aligned(in, out: 64) uniform(buffsize, alpha, channel)
-#endif
+__DT_CLONE_TARGETS__
 static void _channel_display_false_color(const float *const restrict in, uint8_t *const restrict out,
                                          const size_t buffsize, const float alpha,
                                          dt_dev_pixelpipe_display_mask_t channel)
@@ -199,43 +159,34 @@ static void _channel_display_false_color(const float *const restrict in, uint8_t
   switch(channel & DT_DEV_PIXELPIPE_DISPLAY_ANY & ~DT_DEV_PIXELPIPE_DISPLAY_OUTPUT)
   {
     case DT_DEV_PIXELPIPE_DISPLAY_a:
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) schedule(static) aligned(in, out: 64) aligned(mask_color: 16) \
-    dt_omp_firstprivate(in, out, buffsize, alpha, mask_color)
-#endif
+      __OMP_PARALLEL_FOR_SIMD__(aligned(in, out: 64) aligned(mask_color: 16))
       for(size_t j = 0; j < buffsize; j += 4)
       {
         dt_aligned_pixel_t xyz;
         dt_aligned_pixel_t pixel;
         // colors with "a" exceeding the range [-56,56] range will yield colors not representable in sRGB
         const float value = fminf(fmaxf(in[j + 1] * 256.0f - 128.0f, -56.0f), 56.0f);
-        const dt_aligned_pixel_t lab = { 79.0f - value * (11.0f / 56.0f), value, 0.0f };
+        const dt_aligned_pixel_t lab = { 79.0f - value * (11.0f / 56.0f), value, 0.0f, 0.0f };
         dt_Lab_to_XYZ(lab, xyz);
         _XYZ_to_REC_709_normalized(xyz, pixel, 0.75f);
         _write_pixel(pixel, out + j, mask_color, in[j + 3] * alpha);
       }
       break;
     case DT_DEV_PIXELPIPE_DISPLAY_b:
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) schedule(static) aligned(in, out: 64) aligned(mask_color: 16) \
-    dt_omp_firstprivate(in, out, buffsize, alpha, mask_color)
-#endif
+      __OMP_PARALLEL_FOR_SIMD__(aligned(in, out: 64) aligned(mask_color: 16))
       for(size_t j = 0; j < buffsize; j += 4)
       {
         dt_aligned_pixel_t xyz, pixel;
         // colors with "b" exceeding the range [-65,65] range will yield colors not representable in sRGB
         const float value = fminf(fmaxf(in[j + 1] * 256.0f - 128.0f, -65.0f), 65.0f);
-        const dt_aligned_pixel_t lab = { 60.0f + value * (2.0f / 65.0f), 0.0f, value };
+        const dt_aligned_pixel_t lab = { 60.0f + value * (2.0f / 65.0f), 0.0f, value, 0.0f };
         dt_Lab_to_XYZ(lab, xyz);
         _XYZ_to_REC_709_normalized(xyz, pixel, 0.75f);
         _write_pixel(pixel, out + j, mask_color, in[j + 3] * alpha);
       }
       break;
     case DT_DEV_PIXELPIPE_DISPLAY_R:
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) schedule(static) aligned(in, out: 64) aligned(mask_color: 16) \
-    dt_omp_firstprivate(in, out, buffsize, alpha, mask_color)
-#endif
+      __OMP_PARALLEL_FOR_SIMD__(aligned(in, out: 64) aligned(mask_color: 16))
       for(size_t j = 0; j < buffsize; j += 4)
       {
         const dt_aligned_pixel_t pixel = { in[j + 1], 0.0f, 0.0f, 0.0f };
@@ -243,10 +194,7 @@ static void _channel_display_false_color(const float *const restrict in, uint8_t
       }
       break;
     case DT_DEV_PIXELPIPE_DISPLAY_G:
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) schedule(static) aligned(in, out: 64) aligned(mask_color: 16) \
-    dt_omp_firstprivate(in, out, buffsize, alpha, mask_color)
-#endif
+      __OMP_PARALLEL_FOR_SIMD__(aligned(in, out: 64) aligned(mask_color: 16))
       for(size_t j = 0; j < buffsize; j += 4)
       {
         const dt_aligned_pixel_t pixel = { 0.0f, in[j + 1], 0.0f, 0.0f };
@@ -254,10 +202,7 @@ static void _channel_display_false_color(const float *const restrict in, uint8_t
       }
       break;
     case DT_DEV_PIXELPIPE_DISPLAY_B:
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) schedule(static) aligned(in, out: 64) aligned(mask_color: 16) \
-    dt_omp_firstprivate(in, out, buffsize, alpha, mask_color)
-#endif
+      __OMP_PARALLEL_FOR_SIMD__(aligned(in, out: 64) aligned(mask_color: 16))
       for(size_t j = 0; j < buffsize; j += 4)
       {
         const dt_aligned_pixel_t pixel = { 0.0f, 0.0f, in[j + 1], 0.0f };
@@ -267,10 +212,7 @@ static void _channel_display_false_color(const float *const restrict in, uint8_t
     case DT_DEV_PIXELPIPE_DISPLAY_LCH_C:
     case DT_DEV_PIXELPIPE_DISPLAY_HSL_S:
     case DT_DEV_PIXELPIPE_DISPLAY_JzCzhz_Cz:
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) schedule(static) aligned(in, out: 64) aligned(mask_color: 16) \
-    dt_omp_firstprivate(in, out, buffsize, alpha, mask_color)
-#endif
+      __OMP_PARALLEL_FOR_SIMD__(aligned(in, out: 64) aligned(mask_color: 16))
       for(size_t j = 0; j < buffsize; j += 4)
       {
         const dt_aligned_pixel_t pixel = { 0.5f, 0.5f * (1.0f - in[j + 1]), 0.5f, 0.0f };
@@ -278,25 +220,20 @@ static void _channel_display_false_color(const float *const restrict in, uint8_t
       }
       break;
     case DT_DEV_PIXELPIPE_DISPLAY_LCH_h:
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) schedule(static) aligned(in, out: 64) aligned(mask_color: 16) \
-    dt_omp_firstprivate(in, out, buffsize, alpha, mask_color)
-#endif
+      __OMP_PARALLEL_FOR_SIMD__(aligned(in, out: 64) aligned(mask_color: 16))
       for(size_t j = 0; j < buffsize; j += 4)
       {
         dt_aligned_pixel_t lch = { 65.0f, 37.0f, in[j + 1], 0.0f };
         dt_aligned_pixel_t lab, xyz, pixel;
         dt_LCH_2_Lab(lch, lab);
+        lab[3] = 0.0f;
         dt_Lab_to_XYZ(lab, xyz);
         _XYZ_to_REC_709_normalized(xyz, pixel, 0.75f);
         _write_pixel(pixel, out + j, mask_color, in[j + 3] * alpha);
       }
       break;
     case DT_DEV_PIXELPIPE_DISPLAY_HSL_H:
-#ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) \
-    dt_omp_firstprivate(in, out, buffsize, alpha, mask_color)
-#endif
+      __OMP_PARALLEL_FOR__()
       for(size_t j = 0; j < buffsize; j += 4)
       {
         dt_aligned_pixel_t hsl = { in[j + 1], 0.5f, 0.5f, 0.0f };
@@ -307,10 +244,7 @@ static void _channel_display_false_color(const float *const restrict in, uint8_t
       }
       break;
     case DT_DEV_PIXELPIPE_DISPLAY_JzCzhz_hz:
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) schedule(static) aligned(in, out: 64) aligned(mask_color: 16) \
-    dt_omp_firstprivate(in, out, buffsize, alpha, mask_color)
-#endif
+      __OMP_PARALLEL_FOR__()
       for(size_t j = 0; j < buffsize; j += 4)
       {
         const dt_aligned_pixel_t JzCzhz = { 0.011f, 0.01f, in[j + 1] };
@@ -333,19 +267,12 @@ static void _channel_display_false_color(const float *const restrict in, uint8_t
       break;
   }
 }
-
-#ifdef _OPENMP
-#pragma omp declare simd aligned(in, out: 64) uniform(buffsize, alpha)
-#endif
+__DT_CLONE_TARGETS__
 static void _mask_display(const float *const restrict in, uint8_t *const restrict out, const size_t buffsize,
                           const float alpha)
 {
   const dt_aligned_pixel_t mask_color = { 1.0f, 1.0f, 0.0f, 0.0f };
-
-  #ifdef _OPENMP
-  #pragma omp parallel for simd default(none) schedule(static) aligned(in, out: 64) aligned(mask_color: 16) \
-      dt_omp_firstprivate(in, out, buffsize, alpha, mask_color)
-  #endif
+    __OMP_PARALLEL_FOR_SIMD__(aligned(in, out: 64) aligned(mask_color: 16))
     for(size_t j = 0; j < buffsize; j+= 4)
     {
       const float gray = 0.3f * in[j + 0] + 0.59f * in[j + 1] + 0.11f * in[j + 2];
@@ -354,41 +281,25 @@ static void _mask_display(const float *const restrict in, uint8_t *const restric
       _write_pixel(pixel, out + j, mask_color, hide);
     }
 }
-
-#ifdef _OPENMP
-#pragma omp declare simd aligned(in, out: 64) uniform(buffsize)
-#endif
+__DT_CLONE_TARGETS__
 static void _copy_output(const float *const restrict in, uint8_t *const restrict out, const size_t buffsize)
 {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) schedule(static) aligned(in, out: 64) \
-    dt_omp_firstprivate(in, out, buffsize)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(in, out: 64))
   for(size_t j = 0; j < buffsize; j += 4)
   {
     // the output of this module is BGR(A) instead of RGBA, so we can't use for_each_channel
     for(size_t c = 0; c < 3; c++)
     {
-      out[j + 2 - c] = (uint8_t)(fminf(fmaxf(roundf(255.0f * in[j + c]), 0.0f), 255.0f));
+      out[j + 2 - c] = (uint8_t)(fminf(roundf(255.0f * fmaxf(in[j + c], 0.0f)), 255.0f));
     }
   }
 }
 
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o,
-             const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o)
 {
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
-                                         i, o, roi_in, roi_out))
-    return 0; // image has been copied through to output and module's trouble flag has been updated
-
-  // this module also expects the same size of input image as the output image
-  // This test is overkill since the only thing that could change roi_in/roi_out
-  // is a modify_roi_in/modify_roi_out that this module doesn't implement.
-  if(roi_in->width != roi_out->width || roi_in->height != roi_out->height)
-    return 0;
-
-  const dt_dev_pixelpipe_display_mask_t mask_display = piece->pipe->mask_display;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
+  const dt_dev_pixelpipe_display_mask_t mask_display = pipe->mask_display;
   const gboolean fcolor = dt_conf_is_equal("channel_display", "false color");
 
   const size_t buffsize = (size_t)roi_out->width * roi_out->height * 4;
@@ -417,124 +328,6 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
   return 0;
 }
-
-#ifdef HAVE_OPENCL
-static int _false_color_channel_to_kernel_code(const dt_dev_pixelpipe_display_mask_t mask_display)
-{
-  switch(mask_display & DT_DEV_PIXELPIPE_DISPLAY_ANY & ~DT_DEV_PIXELPIPE_DISPLAY_OUTPUT)
-  {
-    case DT_DEV_PIXELPIPE_DISPLAY_a:
-      return DT_IOP_GAMMA_FALSE_COLOR_A;
-    case DT_DEV_PIXELPIPE_DISPLAY_b:
-      return DT_IOP_GAMMA_FALSE_COLOR_B;
-    case DT_DEV_PIXELPIPE_DISPLAY_R:
-      return DT_IOP_GAMMA_FALSE_COLOR_R;
-    case DT_DEV_PIXELPIPE_DISPLAY_G:
-      return DT_IOP_GAMMA_FALSE_COLOR_G;
-    case DT_DEV_PIXELPIPE_DISPLAY_B:
-      return DT_IOP_GAMMA_FALSE_COLOR_B_CH;
-    case DT_DEV_PIXELPIPE_DISPLAY_LCH_C:
-    case DT_DEV_PIXELPIPE_DISPLAY_HSL_S:
-    case DT_DEV_PIXELPIPE_DISPLAY_JzCzhz_Cz:
-      return DT_IOP_GAMMA_FALSE_COLOR_C;
-    case DT_DEV_PIXELPIPE_DISPLAY_LCH_h:
-      return DT_IOP_GAMMA_FALSE_COLOR_LCH_H;
-    case DT_DEV_PIXELPIPE_DISPLAY_HSL_H:
-      return DT_IOP_GAMMA_FALSE_COLOR_HSL_H;
-    case DT_DEV_PIXELPIPE_DISPLAY_JzCzhz_hz:
-      return DT_IOP_GAMMA_FALSE_COLOR_JZ_HZ;
-    case DT_DEV_PIXELPIPE_DISPLAY_L:
-    case DT_DEV_PIXELPIPE_DISPLAY_GRAY:
-    case DT_DEV_PIXELPIPE_DISPLAY_HSL_l:
-    case DT_DEV_PIXELPIPE_DISPLAY_JzCzhz_Jz:
-    default:
-      return DT_IOP_GAMMA_FALSE_COLOR_MONO;
-  }
-}
-
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
-{
-  dt_iop_gamma_global_data_t *gd = (dt_iop_gamma_global_data_t *)self->global_data;
-  const int devid = piece->pipe->devid;
-  cl_int err = CL_SUCCESS;
-
-  if(piece->colors != 4) return FALSE;
-
-  // this module expects the same size of input image as the output image.
-  if(roi_in->width != roi_out->width || roi_in->height != roi_out->height) return FALSE;
-
-  const int width = roi_out->width;
-  const int height = roi_out->height;
-  const int in_bpp = dt_opencl_get_image_element_size(dev_in);
-  const int out_bpp = dt_opencl_get_image_element_size(dev_out);
-  if(in_bpp != (int)(4 * sizeof(float)) || out_bpp != (int)(4 * sizeof(uint8_t)))
-  {
-    dt_print(DT_DEBUG_OPENCL, "[opencl_gamma] unsupported image format in_bpp=%d out_bpp=%d\n",
-             in_bpp, out_bpp);
-    return FALSE;
-  }
-
-  size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
-
-  const dt_dev_pixelpipe_display_mask_t mask_display = piece->pipe->mask_display;
-  const gboolean fcolor = dt_conf_is_equal("channel_display", "false color");
-  int mode = DT_IOP_GAMMA_KERNEL_COPY;
-  int channel = DT_IOP_GAMMA_FALSE_COLOR_MONO;
-  float alpha = (mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) ? 1.0f : 0.0f;
-
-  if((mask_display & DT_DEV_PIXELPIPE_DISPLAY_CHANNEL)
-     && (mask_display & DT_DEV_PIXELPIPE_DISPLAY_ANY))
-  {
-    if(fcolor)
-    {
-      mode = DT_IOP_GAMMA_KERNEL_CHANNEL_FALSE_COLOR;
-      channel = _false_color_channel_to_kernel_code(mask_display);
-    }
-    else
-    {
-      mode = DT_IOP_GAMMA_KERNEL_CHANNEL_MONO;
-    }
-  }
-  else if(mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
-  {
-    mode = DT_IOP_GAMMA_KERNEL_MASK;
-    alpha = 1.0f;
-  }
-  dt_opencl_set_kernel_arg(devid, gd->kernel_gamma_pack, 0, sizeof(cl_mem), (void *)&dev_in);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_gamma_pack, 1, sizeof(cl_mem), (void *)&dev_out);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_gamma_pack, 2, sizeof(int), (void *)&width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_gamma_pack, 3, sizeof(int), (void *)&height);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_gamma_pack, 4, sizeof(int), (void *)&mode);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_gamma_pack, 5, sizeof(int), (void *)&channel);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_gamma_pack, 6, sizeof(float), (void *)&alpha);
-
-  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_gamma_pack, sizes);
-  if(err == CL_SUCCESS) return TRUE;
-
-  dt_print(DT_DEBUG_OPENCL, "[opencl_gamma] couldn't enqueue kernel! %d\n", err);
-  return FALSE;
-}
-#endif
-
-#ifdef HAVE_OPENCL
-void init_global(dt_iop_module_so_t *module)
-{
-  const int program = 2; // basic.cl, from programs.conf
-  dt_iop_gamma_global_data_t *gd = (dt_iop_gamma_global_data_t *)calloc(1, sizeof(dt_iop_gamma_global_data_t));
-  if(!gd) return;
-  module->data = gd;
-  gd->kernel_gamma_pack = dt_opencl_create_kernel(program, "gamma_pack");
-}
-
-void cleanup_global(dt_iop_module_so_t *module)
-{
-  dt_iop_gamma_global_data_t *gd = (dt_iop_gamma_global_data_t *)module->data;
-  dt_opencl_free_kernel(gd->kernel_gamma_pack);
-  dt_free(module->data);
-}
-#endif
-
 void init(dt_iop_module_t *module)
 {
   // module->data = malloc(sizeof(dt_iop_gamma_data_t));
@@ -560,7 +353,7 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *params, dt_dev_pixelp
                    dt_dev_pixelpipe_iop_t *piece)
 {
   // Only GUI pipes return 8 bits unsigned integer BGRA
-  if(piece->pipe->type == DT_DEV_PIXELPIPE_PREVIEW || piece->pipe->type == DT_DEV_PIXELPIPE_FULL)
+  if(pipe->type == DT_DEV_PIXELPIPE_PREVIEW || pipe->type == DT_DEV_PIXELPIPE_FULL)
     piece->enabled = 1;
   else
     piece->enabled = 0;

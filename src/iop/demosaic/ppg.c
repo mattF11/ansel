@@ -18,9 +18,7 @@
 
 
 /** 1:1 demosaic from in to out, in is full buf, out is translated/cropped (scale == 1.0!) */
-#ifdef _OPENMP
-  #pragma omp declare simd aligned(in, out)
-#endif
+__DT_CLONE_TARGETS__
 static int demosaic_ppg(float *const out, const float *const in, const dt_iop_roi_t *const roi_out,
                         const dt_iop_roi_t *const roi_in, const uint32_t filters, const float thrs)
 {
@@ -63,18 +61,13 @@ static int demosaic_ppg(float *const out, const float *const in, const dt_iop_ro
   if(median)
   {
     float *med_in = (float *)dt_pixelpipe_cache_alloc_align_float_cache((size_t)roi_in->height * roi_in->width, 0);
-    if(med_in == NULL) return 1;
+    if(IS_NULL_PTR(med_in)) return 1;
     pre_median(med_in, in, roi_in, filters, 1, thrs);
     input = med_in;
   }
 // for all pixels except those in the 3 pixel border:
 // interpolate green from input into out float array, or copy color.
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(filters, out, roi_in, roi_out) \
-  shared(input) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int j = 3; j < roi_out->height - 3; j++)
   {
     float *buf = out + (size_t)4 * roi_out->width * j + 4 * 3;
@@ -133,14 +126,11 @@ static int demosaic_ppg(float *const out, const float *const in, const dt_iop_ro
       buf_in++;
     }
   }
+  
 
 // for all pixels except the outermost row/column:
 // interpolate colors using out as input into float out array
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(filters, out, roi_out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int j = 1; j < roi_out->height - 1; j++)
   {
     float *buf = out + (size_t)4 * roi_out->width * j + 4;
@@ -213,6 +203,8 @@ static int demosaic_ppg(float *const out, const float *const in, const dt_iop_ro
       buf += 4;
     }
   }
+  
+  
   // _mm_sfence();
   if(median) dt_pixelpipe_cache_free_align(input);
   return 0;

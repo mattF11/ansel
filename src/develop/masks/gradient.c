@@ -51,21 +51,21 @@
 static int _find_border_separator(const float *border, int count)
 {
 
-  if(!border || count <= 0) return -1;
+  if(IS_NULL_PTR(border) || count <= 0) return -1;
 
 #ifdef _OPENMP
   int found = count;
 #pragma omp parallel for reduction(min:found) if(count > 1000)
   for(int i = 0; i < count; i++)
   {
-    if(isinf(border[i * 2]) && isinf(border[i * 2 + 1]))
+    if(!isfinite(border[i * 2]) && !isfinite(border[i * 2 + 1]))
       found = i;
   }
   return (found == count) ? -1 : found;
 #else
   for(int i = 0; i < count; i++)
   {
-    if(isinf(border[i * 2]) && isinf(border[i * 2 + 1]))
+    if(!isfinite(border[i * 2]) && !isfinite(border[i * 2 + 1]))
       return i;
   }
   return -1;
@@ -239,7 +239,7 @@ static void _gradient_get_distance(float x, float y, float dist_mouse, dt_masks_
   const float sqr_dist_mouse = dist_mouse * dist_mouse;
 
   const dt_masks_form_gui_points_t *gpt = (dt_masks_form_gui_points_t *)g_list_nth_data(gui->points, index);
-  if(!gpt) return;
+  if(IS_NULL_PTR(gpt)) return;
 
   float min_dist = FLT_MAX;
 
@@ -388,9 +388,9 @@ static int _init_rotation(dt_masks_form_t *form, const float amount, const dt_ma
 
 static float _gradient_get_interaction_value(const dt_masks_form_t *form, dt_masks_interaction_t interaction)
 {
-  if(!form || !form->points) return NAN;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return NAN;
   const dt_masks_anchor_gradient_t *gradient = (const dt_masks_anchor_gradient_t *)(form->points)->data;
-  if(!gradient) return NAN;
+  if(IS_NULL_PTR(gradient)) return NAN;
 
   switch(interaction)
   {
@@ -405,9 +405,9 @@ static float _gradient_get_interaction_value(const dt_masks_form_t *form, dt_mas
 
 static gboolean _gradient_get_gravity_center(const dt_masks_form_t *form, float center[2], float *area)
 {
-  if(!form || !form->points || !center || !area) return FALSE;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points) || IS_NULL_PTR(center) || IS_NULL_PTR(area)) return FALSE;
   const dt_masks_anchor_gradient_t *gradient = (const dt_masks_anchor_gradient_t *)(form->points)->data;
-  if(!gradient) return FALSE;
+  if(IS_NULL_PTR(gradient)) return FALSE;
   center[0] = gradient->center[0];
   center[1] = gradient->center[1];
   *area = gradient->extent; // pretend it's a rectangle of unit width
@@ -423,7 +423,7 @@ static float _gradient_set_interaction_value(dt_masks_form_t *form, dt_masks_int
                                              dt_masks_increment_t increment, int flow,
                                              dt_masks_form_gui_t *gui, struct dt_iop_module_t *module)
 {
-  if(!form) return NAN;
+  if(IS_NULL_PTR(form)) return NAN;
   const int index = 0;
 
   switch(interaction)
@@ -441,9 +441,9 @@ static float _gradient_set_interaction_value(dt_masks_form_t *form, dt_masks_int
 
 static int _change_extent(dt_masks_form_t *form, dt_masks_form_gui_t *gui, struct dt_iop_module_t *module, int index, const float amount, const dt_masks_increment_t increment, const int flow)
 {
-  if(!form || !form->points) return 0;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 0;
   dt_masks_anchor_gradient_t *gradient = (dt_masks_anchor_gradient_t *)(form->points)->data;
-  if(!gradient) return 0;
+  if(IS_NULL_PTR(gradient)) return 0;
 
   gradient->extent = CLAMPF(dt_masks_apply_increment(gradient->extent, amount, increment, flow),
                             extent_MIN, extent_MAX);
@@ -458,9 +458,9 @@ static int _change_extent(dt_masks_form_t *form, dt_masks_form_gui_t *gui, struc
 
 static int _change_curvature(dt_masks_form_t *form, dt_masks_form_gui_t *gui, struct dt_iop_module_t *module, int index, const float amount, const dt_masks_increment_t increment, const int flow)
 {
-  if(!form || !form->points) return 0;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 0;
   dt_masks_anchor_gradient_t *gradient = (dt_masks_anchor_gradient_t *)(form->points)->data;
-  if(!gradient) return 0;
+  if(IS_NULL_PTR(gradient)) return 0;
 
   // Sanitize
   // do not exceed upper limit of 2.0 and lower limit of -2.0
@@ -485,9 +485,9 @@ static int _change_curvature(dt_masks_form_t *form, dt_masks_form_gui_t *gui, st
 
 static int _change_rotation(dt_masks_form_t *form, dt_masks_form_gui_t *gui, struct dt_iop_module_t *module, int index, const float amount, const dt_masks_increment_t increment, const int flow)
 {
-  if(!form || !form->points) return 0;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 0;
   dt_masks_anchor_gradient_t *gradient = (dt_masks_anchor_gradient_t *)(form->points)->data;
-  if(!gradient) return 0;
+  if(IS_NULL_PTR(gradient)) return 0;
 
   // Rotation
   int flow_increased = (flow > 1) ? (flow - 1) * 5 : flow;
@@ -557,7 +557,7 @@ static int _gradient_events_button_pressed(struct dt_iop_module_t *module, doubl
       dt_iop_module_t *crea_module = gui->creation_module;
       // we create the gradient
       dt_masks_anchor_gradient_t *gradient = (dt_masks_anchor_gradient_t *)(malloc(sizeof(dt_masks_anchor_gradient_t)));
-      if(!gradient) return 0;
+      if(IS_NULL_PTR(gradient)) return 0;
       _gradient_init_new(gui, gradient);
 
       form->points = g_list_append(form->points, gradient);
@@ -578,7 +578,7 @@ static int _gradient_events_button_pressed(struct dt_iop_module_t *module, doubl
     }
 
     const dt_masks_form_gui_points_t *gpt = (dt_masks_form_gui_points_t *)g_list_nth_data(gui->points, index);
-    if(!gpt) return 0;
+    if(IS_NULL_PTR(gpt)) return 0;
 
     else if((gui->form_selected || gui->seg_hovered >= 0 || gui->seg_selected)
             && gui->edit_mode == DT_MASKS_EDIT_FULL)
@@ -619,7 +619,7 @@ static int _gradient_events_button_released(struct dt_iop_module_t *module, doub
   
   
   
-  if(!form || !form->points) return 0;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 0;
 
   if(gui->form_dragging && gui->edit_mode == DT_MASKS_EDIT_FULL)
   {
@@ -637,7 +637,7 @@ static int _gradient_events_button_released(struct dt_iop_module_t *module, doub
   {
     // we get the gradient
     dt_masks_anchor_gradient_t *gradient = (dt_masks_anchor_gradient_t *)((form->points)->data);
-    if(!gradient) return 0;
+    if(IS_NULL_PTR(gradient)) return 0;
     // we end the gradient toggling
     gui->gradient_toggling = FALSE;
 
@@ -675,15 +675,15 @@ static int _gradient_events_mouse_moved(struct dt_iop_module_t *module, double x
     return 1;
   }
 
-  if(!form || !form->points) return 0;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 0;
 
   // we get the gradient
   dt_masks_anchor_gradient_t *gradient = (dt_masks_anchor_gradient_t *)((form->points)->data);
-  if(!gradient) return 0;
+  if(IS_NULL_PTR(gradient)) return 0;
 
   // we need the reference points
   dt_masks_form_gui_points_t *gpt = (dt_masks_form_gui_points_t *)g_list_nth_data(gui->points, index);
-  if(!gpt) return 0;
+  if(IS_NULL_PTR(gpt)) return 0;
 
   if(gui->form_dragging)
   {
@@ -738,7 +738,7 @@ static int _gradient_get_points(dt_develop_t *dev, float x, float y, float rotat
 
   const int count = sqrtf(wd * wd + ht * ht) + 3;
   *points = dt_pixelpipe_cache_alloc_align_float_cache((size_t)2 * count, 0);
-  if(*points == NULL) return 1;
+  if(IS_NULL_PTR(*points)) return 1;
 
   // we set the anchor point
   float center[2] = { x, y };
@@ -764,7 +764,7 @@ static int _gradient_get_points(dt_develop_t *dev, float x, float y, float rotat
   size_t c_padded_size;
   uint32_t *pts_count = dt_pixelpipe_cache_calloc_perthread(nthreads, sizeof(uint32_t), &c_padded_size);
   float *const restrict pts = dt_pixelpipe_cache_alloc_align_float_cache((size_t)2 * count * nthreads, 0);
-  if(pts_count == NULL || pts == NULL)
+  if(IS_NULL_PTR(pts_count) || IS_NULL_PTR(pts))
   {
     dt_pixelpipe_cache_free_align(pts_count);
     dt_pixelpipe_cache_free_align(pts);
@@ -779,11 +779,7 @@ static int _gradient_get_points(dt_develop_t *dev, float x, float y, float rotat
   const float xdelta = -2.0f * xstart / (count - 3);
 
 //  gboolean in_frame = FALSE;
-#ifdef _OPENMP
-#pragma omp parallel for default(none)                                                                       \
-    dt_omp_firstprivate(nthreads, pts, pts_count, count, cosv, sinv, xstart, xdelta, curvature, scale, center_x, \
-                        center_y, wd, ht, c_padded_size, points) schedule(static) if(count > 100)
-#endif
+  __OMP_PARALLEL_FOR__(if(count > 100))
   for(int i = 3; i < count; i++)
   {
     const float xi = xstart + (i - 3) * xdelta;
@@ -887,7 +883,7 @@ static int _gradient_get_pts_border(dt_develop_t *dev, float x, float y, float r
     // Both curves valid - combine them with INFINITY separator
     const int total_points = (points_count1 - 3) + (points_count2 - 3) + 1;
     *points = dt_pixelpipe_cache_alloc_align_float_cache((size_t)2 * total_points, 0);
-    if(*points == NULL) goto cleanup;
+    if(IS_NULL_PTR(*points)) goto cleanup;
     
     *points_count = total_points;
     int k = 0;
@@ -903,7 +899,7 @@ static int _gradient_get_pts_border(dt_develop_t *dev, float x, float y, float r
     // Only first curve valid
     *points_count = points_count1 - 3;
     *points = dt_pixelpipe_cache_alloc_align_float_cache((size_t)2 * (*points_count), 0);
-    if(*points == NULL) goto cleanup;
+    if(IS_NULL_PTR(*points)) goto cleanup;
     
     int k = 0;
     _copy_points(*points, points1, points_count1, &k);
@@ -914,7 +910,7 @@ static int _gradient_get_pts_border(dt_develop_t *dev, float x, float y, float r
     // Only second curve valid
     *points_count = points_count2 - 3;
     *points = dt_pixelpipe_cache_alloc_align_float_cache((size_t)2 * (*points_count), 0);
-    if(*points == NULL) goto cleanup;
+    if(IS_NULL_PTR(*points)) goto cleanup;
     
     int k = 0;
     _copy_points(*points, points2, points_count2, &k);
@@ -1061,7 +1057,7 @@ static void _gradient_events_post_expose(cairo_t *cr, float zoom_scale, dt_masks
   }
 
   const dt_masks_form_gui_points_t *gpt = (dt_masks_form_gui_points_t *)g_list_nth_data(gui->points, index);
-  if(!gpt) return;
+  if(IS_NULL_PTR(gpt)) return;
 
   const gboolean seg_selected = (gui->group_selected == index) && gui->seg_selected;
   const gboolean all_selected = (gui->group_selected == index) && (gui->form_selected || gui->form_dragging); 
@@ -1087,9 +1083,9 @@ static int _gradient_get_points_border(dt_develop_t *dev, dt_masks_form_t *form,
                                        const dt_iop_module_t *module)
 {
     // unused arg, keep compiler from complaining
-  if(!form || !form->points) return 0;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 0;
   dt_masks_anchor_gradient_t *gradient = (dt_masks_anchor_gradient_t *)form->points->data;
-  if(!gradient) return 0;
+  if(IS_NULL_PTR(gradient)) return 0;
   if(_gradient_get_points(dev, gradient->center[0], gradient->center[1], gradient->rotation, gradient->curvature,
                           points, points_count) != 0)
     return 1;
@@ -1100,16 +1096,17 @@ static int _gradient_get_points_border(dt_develop_t *dev, dt_masks_form_t *form,
   return 0;
 }
 
-static int _gradient_get_area(const dt_iop_module_t *const module, const dt_dev_pixelpipe_iop_t *const piece,
+static int _gradient_get_area(const dt_iop_module_t *const module, dt_dev_pixelpipe_t *pipe,
+                              const dt_dev_pixelpipe_iop_t *const piece,
                               dt_masks_form_t *const form,
                               int *width, int *height, int *posx, int *posy)
 {
-  const float wd = piece->pipe->iwidth, ht = piece->pipe->iheight;
+  const float wd = pipe->iwidth, ht = pipe->iheight;
 
   float points[8] = { 0.0f, 0.0f, wd, 0.0f, wd, ht, 0.0f, ht };
 
   // and we transform them with all distorted modules
-  if(!dt_dev_distort_transform_plus(module->dev, piece->pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points, 4))
+  if(!dt_dev_distort_transform_plus(pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points, 4))
     return 1;
 
   // now we search min and max
@@ -1141,15 +1138,16 @@ static inline float dt_gradient_lookup(const float *lut, const float i)
   return lut[bin1] * f + lut[bin0] * (1.0f - f);
 }
 
-static int _gradient_get_mask(const dt_iop_module_t *const module, const dt_dev_pixelpipe_iop_t *const piece,
+static int _gradient_get_mask(const dt_iop_module_t *const module, dt_dev_pixelpipe_t *pipe,
+                              const dt_dev_pixelpipe_iop_t *const piece,
                               dt_masks_form_t *const form,
                               float **buffer, int *width, int *height, int *posx, int *posy)
 {
-  if(!form || !form->points) return 0;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 0;
   double start2 = 0.0;
   if(darktable.unmuted & DT_DEBUG_PERF) start2 = dt_get_wtime();
   // we get the area
-  if(_gradient_get_area(module, piece, form, width, height, posx, posy) != 0) return 1;
+  if(_gradient_get_area(module, pipe, piece, form, width, height, posx, posy) != 0) return 1;
 
   if(darktable.unmuted & DT_DEBUG_PERF)
   {
@@ -1160,7 +1158,7 @@ static int _gradient_get_mask(const dt_iop_module_t *const module, const dt_dev_
 
   // we get the gradient values
   dt_masks_anchor_gradient_t *gradient = (dt_masks_anchor_gradient_t *)((form->points)->data);
-  if(!gradient) return 0;
+  if(IS_NULL_PTR(gradient)) return 0;
   // we create a buffer of grid points for later interpolation. mainly in order to reduce memory footprint
   const int w = *width;
   const int h = *height;
@@ -1171,13 +1169,8 @@ static int _gradient_get_mask(const dt_iop_module_t *const module, const dt_dev_
   const int gh = (h + grid - 1) / grid + 1;
 
   float *points = dt_pixelpipe_cache_alloc_align_float_cache((size_t)2 * gw * gh, 0);
-  if(points == NULL) return 1;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(grid, gh, gw, px, py, points) \
-  schedule(static) collapse(2) if((size_t)gw * gh > 50000)
-#endif
+  if(IS_NULL_PTR(points)) return 1;
+  __OMP_PARALLEL_FOR__(collapse(2) if((size_t)gw * gh > 50000))
   for(int j = 0; j < gh; j++)
     for(int i = 0; i < gw; i++)
     {
@@ -1193,7 +1186,7 @@ static int _gradient_get_mask(const dt_iop_module_t *const module, const dt_dev_
   }
 
   // we backtransform all these points
-  if(!dt_dev_distort_backtransform_plus(module->dev, piece->pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points, (size_t)gw * gh))
+  if(!dt_dev_distort_backtransform_plus(pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points, (size_t)gw * gh))
   {
     dt_pixelpipe_cache_free_align(points);
     return 1;
@@ -1207,8 +1200,8 @@ static int _gradient_get_mask(const dt_iop_module_t *const module, const dt_dev_
   }
 
   // we calculate the mask at grid points and recycle point buffer to store results
-  const float wd = piece->pipe->iwidth;
-  const float ht = piece->pipe->iheight;
+  const float wd = pipe->iwidth;
+  const float ht = pipe->iheight;
   const float hwscale = 1.0f / sqrtf(wd * wd + ht * ht);
   const float ihwscale = 1.0f / hwscale;
   const float v = (-gradient->rotation / 180.0f) * M_PI;
@@ -1224,17 +1217,12 @@ static int _gradient_get_mask(const dt_iop_module_t *const module, const dt_dev_
   const int lutmax = ceilf(4 * extent * ihwscale);
   const int lutsize = 2 * lutmax + 2;
   float *lut = dt_pixelpipe_cache_alloc_align_float_cache((size_t)lutsize, 0);
-  if(lut == NULL)
+  if(IS_NULL_PTR(lut))
   {
     dt_pixelpipe_cache_free_align(points);
     return 1;
   }
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(lutsize, lutmax, hwscale, state, normf, extent, lut) \
-  schedule(static) if(lutsize > 1000) aligned(lut : 64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(if(lutsize > 1000) aligned(lut : 64))
   for(int n = 0; n < lutsize; n++)
   {
     const float distance = (n - lutmax) * hwscale;
@@ -1246,15 +1234,7 @@ static int _gradient_get_mask(const dt_iop_module_t *const module, const dt_dev_
   float *clut = lut + lutmax;
 
 
-#ifdef _OPENMP
-#if !defined(__SUNOS__) && !defined(__NetBSD__)
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(gh, gw, sinv, cosv, xoffset, yoffset, hwscale, ihwscale, curvature, extent, points, clut) \
-  schedule(static) collapse(2) if((size_t)gw * gh > 50000)
-#else
-#pragma omp parallel for dt_omp_firstprivate(points) if((size_t)gw * gh > 50000)
-#endif
-#endif
+  __OMP_PARALLEL_FOR__(collapse(2) if((size_t)gw * gh > 50000))
   for(int j = 0; j < gh; j++)
   {
     for(int i = 0; i < gw; i++)
@@ -1276,7 +1256,7 @@ static int _gradient_get_mask(const dt_iop_module_t *const module, const dt_dev_
 
   // we allocate the buffer
   float *const bufptr = *buffer = dt_pixelpipe_cache_alloc_align_float_cache((size_t)w * h, 0);
-  if(*buffer == NULL)
+  if(IS_NULL_PTR(*buffer))
   {
     dt_pixelpipe_cache_free_align(points);
     return 1;
@@ -1291,11 +1271,7 @@ static int _gradient_get_mask(const dt_iop_module_t *const module, const dt_dev_
   }
 
 // we fill the mask buffer by interpolation
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(h, w, gw, grid, bufptr, points, w0, w1, inv_grid2) \
-  schedule(simd:static) if((size_t)w * h > 50000)
-#endif
+  __OMP_PARALLEL_FOR__(if((size_t)w * h > 50000))
   for(int j = 0; j < h; j++)
   {
     const int jj = j % grid;
@@ -1334,15 +1310,16 @@ static int _gradient_get_mask(const dt_iop_module_t *const module, const dt_dev_
 }
 
 
-static int _gradient_get_mask_roi(const dt_iop_module_t *const module, const dt_dev_pixelpipe_iop_t *const piece,
+static int _gradient_get_mask_roi(const dt_iop_module_t *const module, dt_dev_pixelpipe_t *pipe,
+                                  const dt_dev_pixelpipe_iop_t *const piece,
                                   dt_masks_form_t *const form, const dt_iop_roi_t *roi, float *buffer)
 {
-  if(!form || !form->points) return 0;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points)) return 0;
   double start2 = 0.0;
   if(darktable.unmuted & DT_DEBUG_PERF) start2 = dt_get_wtime();
   // we get the gradient values
   const dt_masks_anchor_gradient_t *gradient = (dt_masks_anchor_gradient_t *)(form->points->data);
-  if(!gradient) return 0;
+  if(IS_NULL_PTR(gradient)) return 0;
 
   // we create a buffer of grid points for later interpolation. mainly in order to reduce memory footprint
   const int w = roi->width;
@@ -1355,13 +1332,8 @@ static int _gradient_get_mask_roi(const dt_iop_module_t *const module, const dt_
   const int gh = (h + grid - 1) / grid + 1;
 
   float *points = dt_pixelpipe_cache_alloc_align_float_cache((size_t)2 * gw * gh, 0);
-  if(points == NULL) return 1;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(iscale, gh, gw, py, px, grid, points) \
-  schedule(static) collapse(2) if((size_t)gw * gh > 50000)
-#endif
+  if(IS_NULL_PTR(points)) return 1;
+  __OMP_PARALLEL_FOR__(collapse(2) if((size_t)gw * gh > 50000))
   for(int j = 0; j < gh; j++)
     for(int i = 0; i < gw; i++)
     {
@@ -1379,7 +1351,7 @@ static int _gradient_get_mask_roi(const dt_iop_module_t *const module, const dt_
   }
 
   // we backtransform all these points
-  if(!dt_dev_distort_backtransform_plus(module->dev, piece->pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points,
+  if(!dt_dev_distort_backtransform_plus(pipe, module->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, points,
                                         (size_t)gw * gh))
   {
     dt_pixelpipe_cache_free_align(points);
@@ -1394,8 +1366,8 @@ static int _gradient_get_mask_roi(const dt_iop_module_t *const module, const dt_
   }
 
   // we calculate the mask at grid points and recycle point buffer to store results
-  const float wd = piece->pipe->iwidth;
-  const float ht = piece->pipe->iheight;
+  const float wd = pipe->iwidth;
+  const float ht = pipe->iheight;
   const float hwscale = 1.0f / sqrtf(wd * wd + ht * ht);
   const float ihwscale = 1.0f / hwscale;
   const float v = (-gradient->rotation / 180.0f) * M_PI;
@@ -1411,17 +1383,12 @@ static int _gradient_get_mask_roi(const dt_iop_module_t *const module, const dt_
   const int lutmax = ceilf(4 * extent * ihwscale);
   const int lutsize = 2 * lutmax + 2;
   float *lut = dt_pixelpipe_cache_alloc_align_float_cache((size_t)lutsize, 0);
-  if(lut == NULL)
+  if(IS_NULL_PTR(lut))
   {
     dt_pixelpipe_cache_free_align(points);
     return 1;
   }
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(lutsize, lutmax, hwscale, state, normf, extent, lut) \
-  schedule(static) if(lutsize > 1000) aligned(lut : 64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(if(lutsize > 1000) aligned(lut : 64))
   for(int n = 0; n < lutsize; n++)
   {
     const float distance = (n - lutmax) * hwscale;
@@ -1432,15 +1399,7 @@ static int _gradient_get_mask_roi(const dt_iop_module_t *const module, const dt_
   // center lut around zero
   float *clut = lut + lutmax;
 
-#ifdef _OPENMP
-#if !defined(__SUNOS__) && !defined(__NetBSD__)
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(gh, gw, sinv, cosv, xoffset, yoffset, hwscale, ihwscale, curvature, extent, points, clut) \
-  schedule(static) collapse(2) if((size_t)gw * gh > 50000)
-#else
-#pragma omp parallel for dt_omp_firstprivate(points) if((size_t)gw * gh > 50000)
-#endif
-#endif
+  __OMP_PARALLEL_FOR__(collapse(2) if((size_t)gw * gh > 50000))
   for(int j = 0; j < gh; j++)
   {
     for(int i = 0; i < gw; i++)
@@ -1469,11 +1428,7 @@ static int _gradient_get_mask_roi(const dt_iop_module_t *const module, const dt_
   }
 
 // we fill the mask buffer by interpolation
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(h, w, grid, gw, buffer, points, w0, w1, inv_grid2) \
-  schedule(simd:static) if((size_t)w * h > 50000)
-#endif
+  __OMP_PARALLEL_FOR__(if((size_t)w * h > 50000))
   for(int j = 0; j < h; j++)
   {
     const int jj = j % grid;

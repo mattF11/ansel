@@ -11,7 +11,7 @@
     Copyright (C) 2019 Andreas Schneider.
     Copyright (C) 2019 Marcus Rückert.
     Copyright (C) 2020 David-Tillmann Schaefer.
-    Copyright (C) 2022-2023, 2025 Aurélien PIERRE.
+    Copyright (C) 2022-2023, 2025-2026 Aurélien PIERRE.
     Copyright (C) 2022 Martin Bařinka.
     Copyright (C) 2023 Alynx Zhou.
     Copyright (C) 2023 Luca Zulberti.
@@ -45,6 +45,13 @@ extern const char darktable_package_version[];
 extern const char darktable_package_string[];
 extern const char darktable_last_commit_year[];
 
+#define DT_BUILD_TYPE "@CMAKE_BUILD_TYPE@"
+#define DT_BUILD_CPU_MODE "@DT_BUILD_CPU_MODE@"
+#define DT_BUILD_C_COMPILER "@CMAKE_C_COMPILER_ID@ @CMAKE_C_COMPILER_VERSION@"
+#define DT_BUILD_CXX_COMPILER "@CMAKE_CXX_COMPILER_ID@ @CMAKE_CXX_COMPILER_VERSION@"
+#define DT_BUILD_C_FLAGS "@CMAKE_C_FLAGS@"
+#define DT_BUILD_CXX_FLAGS "@CMAKE_CXX_FLAGS@"
+
 static const char *dt_supported_extensions[] __attribute__((unused)) = {"@DT_SUPPORTED_EXTENSIONS_STRING@", NULL};
 
 #define GETTEXT_PACKAGE "ansel"
@@ -76,13 +83,6 @@ static const char *dt_supported_extensions[] __attribute__((unused)) = {"@DT_SUP
 #endif
 #endif
 
-#if defined(_OPENMP) && __GNUC_PREREQ(4, 9)
-#define OPENMP_SIMD_
-#define SIMD() simd
-#else
-#define SIMD()
-#endif
-
 // see http://clang.llvm.org/docs/LanguageExtensions.html
 #ifndef __has_feature      // Optional of course.
 #define __has_feature(x) 0 // Compatibility with non-clang compilers.
@@ -101,8 +101,6 @@ static const char *dt_supported_extensions[] __attribute__((unused)) = {"@DT_SUP
 
 #cmakedefine HAVE_CPUID_H 1
 #cmakedefine HAVE___GET_CPUID 1
-
-#cmakedefine HAVE_OMP_FIRSTPRIVATE_WITH_CONST 1
 
 #cmakedefine HAVE_THREAD_RWLOCK_ARCH_T_READERS 1
 

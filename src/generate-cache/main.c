@@ -64,7 +64,7 @@ static int generate_thumbnail_cache(const dt_mipmap_size_t min_mip, const dt_mip
   for(dt_mipmap_size_t k = min_mip; k <= max_mip; k++)
   {
     char dirname[PATH_MAX] = { 0 };
-    snprintf(dirname, sizeof(dirname), "%s.d/%d", darktable.mipmap_cache->cachedir, k);
+    dt_mipmap_get_cache_dir(dirname, darktable.mipmap_cache, k);
 
     fprintf(stderr, _("creating cache directory '%s'\n"), dirname);
     if(g_mkdir_with_parents(dirname, 0750))
@@ -111,12 +111,12 @@ static int generate_thumbnail_cache(const dt_mipmap_size_t min_mip, const dt_mip
     const char *imgfilename = (const char*)sqlite3_column_text(stmt, 1);
 
     counter++;
-    fprintf(stderr, "image %zu/%zu (%.02f%%) (id:%d, file=%s)\n", counter, image_count, 100.0 * counter / (float)image_count, imgid, imgfilename);
+    fprintf(stderr, "image %" G_GSIZE_FORMAT "/%" G_GSIZE_FORMAT " (%.02f%%) (id:%d, file=%s)\n", counter, image_count, 100.0 * counter / (float)image_count, imgid, imgfilename);
 
     for(int k = max_mip; k >= min_mip && k >= 0; k--)
     {
       char filename[PATH_MAX] = { 0 };
-      snprintf(filename, sizeof(filename), "%s.d/%d/%d.jpg", darktable.mipmap_cache->cachedir, k, imgid);
+      dt_mipmap_get_cache_filename(filename, darktable.mipmap_cache, k, imgid);
 
       // if a valid thumbnail file is already on disc - do nothing
       if(dt_util_test_image_file(filename)) continue;
@@ -228,7 +228,7 @@ int main(int argc, char *arg[])
   m_arg[m_argc] = NULL;
 
   // init dt without gui:
-  if(dt_init(m_argc, m_arg, FALSE, TRUE, NULL))
+  if(dt_init(m_argc, m_arg, FALSE, TRUE))
   {
     dt_free(m_arg);
     exit(EXIT_FAILURE);

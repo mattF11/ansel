@@ -39,9 +39,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#if defined(__SSE__)
-#include <xmmintrin.h>
-#endif
 #include <time.h>
 
 typedef struct dt_module_param_t
@@ -70,7 +67,7 @@ static void _iop_toggle_callback(GtkWidget *togglebutton, dt_module_param_t *dat
 // Note: Bauhaus widgets do it internally upon setting label
 static void _add_widget_to_module_list(dt_iop_module_t *self, GtkWidget *widget)
 {
-  if(self && widget)
+  if(!IS_NULL_PTR(self) && !IS_NULL_PTR(widget))
   {
     dt_gui_module_t *mod = (dt_gui_module_t *)self;
     mod->widget_list = g_list_append(mod->widget_list, widget);
@@ -88,7 +85,7 @@ GtkWidget *dt_bauhaus_slider_from_params(dt_iop_module_t *self, const char *para
   const size_t param_length = strlen(param) + 1;
   char *param_name = g_malloc(param_length);
   char *base_name = g_malloc(param_length);
-  if(sscanf(param, "%[^[][%zu]", base_name, &param_index) == 2)
+  if(sscanf(param, "%[^[][%" G_GSIZE_FORMAT "]", base_name, &param_index) == 2)
   {
     sprintf(param_name, "%s[0]", base_name);
     skip_label = TRUE;
@@ -104,7 +101,7 @@ GtkWidget *dt_bauhaus_slider_from_params(dt_iop_module_t *self, const char *para
   GtkWidget *slider = NULL;
   size_t offset = 0;
 
-  if(f)
+  if(!IS_NULL_PTR(f))
   {
     if(f->header.type == DT_INTROSPECTION_TYPE_FLOAT)
     {
@@ -139,7 +136,7 @@ GtkWidget *dt_bauhaus_slider_from_params(dt_iop_module_t *self, const char *para
     else f = NULL;
   }
 
-  if(f)
+  if(!IS_NULL_PTR(f))
   {
     dt_bauhaus_widget_set_field(slider, (uint8_t *)p + offset, f->header.type);
 
@@ -190,7 +187,7 @@ GtkWidget *dt_bauhaus_combobox_from_params(dt_iop_module_t *self, const char *pa
   GtkWidget *combobox = dt_bauhaus_combobox_new(darktable.bauhaus, DT_GUI_MODULE(self));
   gchar *str = NULL;
 
-  if (f && (f->header.type == DT_INTROSPECTION_TYPE_ENUM ||
+  if (!IS_NULL_PTR(f) && (f->header.type == DT_INTROSPECTION_TYPE_ENUM ||
             f->header.type == DT_INTROSPECTION_TYPE_INT  ||
             f->header.type == DT_INTROSPECTION_TYPE_UINT ||
             f->header.type == DT_INTROSPECTION_TYPE_BOOL ))
@@ -254,7 +251,7 @@ GtkWidget *dt_bauhaus_toggle_from_params(dt_iop_module_t *self, const char *para
   GtkWidget *button = NULL;
   gchar *str = NULL;
 
-  if(f && f->header.type == DT_INTROSPECTION_TYPE_BOOL)
+  if(!IS_NULL_PTR(f) && f->header.type == DT_INTROSPECTION_TYPE_BOOL)
   {
     // we do not want to support a context as it break all translations see #5498
     // button = gtk_check_button_new_with_label(g_dpgettext2(NULL, "introspection description", f->header.description));
@@ -294,7 +291,7 @@ GtkWidget *dt_iop_togglebutton_new(dt_iop_module_t *self, const char *section, c
   GtkWidget *w = dtgtk_togglebutton_new(paint, 0, NULL);
   g_signal_connect(G_OBJECT(w), "button-press-event", callback, self);
 
-  if(!ctrl_label)
+  if(IS_NULL_PTR(ctrl_label))
     gtk_widget_set_tooltip_text(w, _(label));
   else
   {
@@ -304,6 +301,29 @@ GtkWidget *dt_iop_togglebutton_new(dt_iop_module_t *self, const char *section, c
   }
 
   _add_widget_to_module_list(self, w);
+
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(w), FALSE);
+  if(GTK_IS_BOX(box)) gtk_box_pack_end(GTK_BOX(box), w, FALSE, FALSE, 0);
+
+  return w;
+}
+
+GtkWidget *dt_iop_togglebutton_new_no_register(dt_iop_module_t *self, const char *section, const gchar *label,
+                                               const gchar *ctrl_label, GCallback callback, gboolean local,
+                                               guint accel_key, GdkModifierType mods,
+                                               DTGTKCairoPaintIconFunc paint, GtkWidget *box)
+{
+  GtkWidget *w = dtgtk_togglebutton_new(paint, 0, NULL);
+  g_signal_connect(G_OBJECT(w), "button-press-event", callback, self);
+
+  if(IS_NULL_PTR(ctrl_label))
+    gtk_widget_set_tooltip_text(w, _(label));
+  else
+  {
+    gchar *tooltip = g_strdup_printf(_("%s\nctrl+click to %s"), _(label), _(ctrl_label));
+    gtk_widget_set_tooltip_text(w, tooltip);
+    dt_free(tooltip);
+  }
 
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(w), FALSE);
   if(GTK_IS_BOX(box)) gtk_box_pack_end(GTK_BOX(box), w, FALSE, FALSE, 0);

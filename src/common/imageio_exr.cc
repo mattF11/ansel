@@ -131,17 +131,18 @@ dt_imageio_retval_t dt_imageio_open_exr(dt_image_t *img, const char *filename, d
   img->height = dw.max.y - dw.min.y + 1;
 
   // Try to allocate image data
-  img->buf_dsc.channels = 4;
-  img->buf_dsc.datatype = TYPE_FLOAT;
-  img->buf_dsc.cst = IOP_CS_RGB;
-  img->buf_dsc.filters = 0u;
+  img->dsc.channels = 4;
+  img->dsc.datatype = TYPE_FLOAT;
+  img->dsc.bpp = 4 * sizeof(float);
+  img->dsc.cst = IOP_CS_RGB;
+  img->dsc.filters = 0u;
   img->flags &= ~DT_IMAGE_RAW;
   img->flags &= ~DT_IMAGE_S_RAW;
   img->flags &= ~DT_IMAGE_LDR;
   img->flags |= DT_IMAGE_HDR;
   img->loader = LOADER_EXR;
 
-  if(!mbuf) return DT_IMAGEIO_OK;
+  if(IS_NULL_PTR(mbuf)) return DT_IMAGEIO_OK;
 
   float *buf = (float *)dt_mipmap_cache_alloc(mbuf, img);
   if(!buf)

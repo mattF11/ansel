@@ -28,6 +28,7 @@
 
 #pragma once
 
+#include "common/atomic.h"
 #include "common/cache.h"
 #include "common/colorspaces.h"
 #include "common/image.h"
@@ -128,6 +129,19 @@ void dt_mipmap_cache_get_with_caller(
     const char *file,
     int line);
 
+#define dt_mipmap_cache_get_with_shutdown(A,B,C,D,E,F,G) \
+  dt_mipmap_cache_get_with_caller_and_shutdown(A,B,C,D,E,F,G,__FILE__,__LINE__)
+void dt_mipmap_cache_get_with_caller_and_shutdown(
+    dt_mipmap_cache_t *cache,
+    dt_mipmap_buffer_t *buf,
+    const int32_t imgid,
+    const dt_mipmap_size_t mip,
+    const dt_mipmap_get_flags_t flags,
+    const char mode,
+    dt_atomic_int *shutdown,
+    const char *file,
+    int line);
+
 // convenience function with fewer params
 #define dt_mipmap_cache_write_get(A,B,C,D) dt_mipmap_cache_write_get_with_caller(A,B,C,D,__FILE__,__LINE__)
 void dt_mipmap_cache_write_get_with_caller(
@@ -156,14 +170,29 @@ void dt_mimap_cache_evict(dt_mipmap_cache_t *cache, const int32_t imgid);
 // depending on the user parameter for the maximum thumbnail dimensions.
 // actual resolution depends on the image and is only known after
 // the thumbnail is loaded.
-dt_mipmap_size_t dt_mipmap_cache_get_matching_size(
-    const dt_mipmap_cache_t *cache,
-    const int32_t width,
-    const int32_t height);
+dt_mipmap_size_t dt_mipmap_cache_get_matching_size( const dt_mipmap_cache_t *cache,
+    const int32_t width, const int32_t height, const uint32_t imgid);
+
+// return the closest mipmap size fitting within the width × height boundary box.
+// Use that to flush a darkroom pipeline output into a cache line
+dt_mipmap_size_t dt_mipmap_cache_get_fitting_size(const dt_mipmap_cache_t *cache, const int32_t width,
+                                                   const int32_t height, const uint32_t imgid);
+
+// Manually swap the image buffer of a mipmap cacheline from an existing uint8_t image
+void dt_mipmap_cache_swap_at_size(dt_mipmap_cache_t *cache, const int32_t imgid, 
+                                  const dt_mipmap_size_t mip, const uint8_t *const buffer, 
+                                  const int32_t width, const int32_t height, dt_colorspaces_color_profile_type_t profile);
 
 // copy over thumbnails. used by file operation that copies raw files, to speed up thumbnail generation.
 // only copies over the jpg backend on disk, doesn't directly affect the in-memory cache.
 void dt_mipmap_cache_copy_thumbnails(const dt_mipmap_cache_t *cache, const uint32_t dst_imgid, const uint32_t src_imgid);
+
+// get the full path of a cached thumbnail
+void dt_mipmap_get_cache_filename(char path[PATH_MAX], const dt_mipmap_cache_t *cache, dt_mipmap_size_t mip, const int32_t imgid);
+
+// get just the dir
+void dt_mipmap_get_cache_dir(char path[PATH_MAX], const dt_mipmap_cache_t *cache, dt_mipmap_size_t mip);
+
 
 #ifdef __cplusplus
 }

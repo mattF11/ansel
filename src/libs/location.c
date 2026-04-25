@@ -231,7 +231,7 @@ static size_t _lib_location_curl_write_data(void *buffer, size_t size, size_t nm
   dt_lib_location_t *lib = (dt_lib_location_t *)userp;
 
   char *newdata = g_malloc0(lib->response_size + nmemb + 1);
-  if(lib->response != NULL) memcpy(newdata, lib->response, lib->response_size);
+  if(!IS_NULL_PTR(lib->response)) memcpy(newdata, lib->response, lib->response_size);
   memcpy(newdata + lib->response_size, buffer, nmemb);
   dt_free(lib->response);
   lib->response = newdata;
@@ -331,7 +331,7 @@ static void _lib_location_search_finish(gpointer user_data)
   dt_lib_location_t *lib = (dt_lib_location_t *)self->data;
 
   /* check if search gave us some result */
-  if(!lib->places) return;
+  if(IS_NULL_PTR(lib->places)) return;
 
   /* for each location found populate the result list */
   for(const GList *item = lib->places; item; item = g_list_next(item))
@@ -374,7 +374,7 @@ static gboolean _lib_location_search(gpointer user_data)
   query = g_strdup_printf(search_url, text, LIMIT_RESULT);
   /* load url */
   curl = curl_easy_init();
-  if(!curl) goto bail_out;
+  if(IS_NULL_PTR(curl)) goto bail_out;
 
   dt_curl_init(curl, FALSE);
 
@@ -396,7 +396,7 @@ static gboolean _lib_location_search(gpointer user_data)
 
   /* add the places into the result list */
   GList *item = lib->places;
-  if(!item) goto bail_out;
+  if(IS_NULL_PTR(item)) goto bail_out;
 
 //   while(item)
 //   {
@@ -441,7 +441,7 @@ void _lib_location_entry_activated(GtkButton *button, gpointer user_data)
   dt_lib_module_t *self = (dt_lib_module_t *)user_data;
   dt_lib_location_t *lib = (dt_lib_location_t *)self->data;
   const gchar *text = gtk_entry_get_text(lib->search);
-  if(!text || text[0] == '\0') return;
+  if(IS_NULL_PTR(text) || text[0] == '\0') return;
 
   /* lock the widget while search job is performing */
   gtk_widget_set_sensitive(GTK_WIDGET(lib->search), FALSE);
@@ -466,7 +466,7 @@ static void _lib_location_parser_start_element(GMarkupParseContext *cxt, const c
 
   /* create new place */
   _lib_location_result_t *place = g_malloc0(sizeof(_lib_location_result_t));
-  if(!place) return;
+  if(IS_NULL_PTR(place)) return;
 
   place->lon = NAN;
   place->lat = NAN;
@@ -676,7 +676,7 @@ void *get_params(dt_lib_module_t *self, int *size)
   _lib_location_result_t *location = lib->selected_location;
 
   // we have nothing to store when the user hasn't picked a search result
-  if(location == NULL) return NULL;
+  if(IS_NULL_PTR(location)) return NULL;
 
   const size_t size_fixed = sizeof(struct params_fixed_t);
   const size_t size_name = strlen(location->name) + 1;

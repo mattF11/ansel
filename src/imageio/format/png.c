@@ -147,20 +147,20 @@ int write_image(dt_imageio_module_data_t *p_tmp, const char *filename, const voi
   dt_imageio_png_t *p = (dt_imageio_png_t *)p_tmp;
   const int width = p->global.width, height = p->global.height;
   FILE *f = g_fopen(filename, "wb");
-  if(!f) return 1;
+  if(IS_NULL_PTR(f)) return 1;
 
   png_structp png_ptr;
   png_infop info_ptr;
 
   png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-  if(!png_ptr)
+  if(IS_NULL_PTR(png_ptr))
   {
     fclose(f);
     return 1;
   }
 
   info_ptr = png_create_info_struct(png_ptr);
-  if(!info_ptr)
+  if(IS_NULL_PTR(info_ptr))
   {
     fclose(f);
     png_destroy_write_struct(&png_ptr, NULL);
@@ -263,7 +263,7 @@ static int __attribute__((__unused__)) read_header(const char *filename, dt_imag
   dt_imageio_png_t *png = (dt_imageio_png_t *)p_tmp;
   png->f = g_fopen(filename, "rb");
 
-  if(!png->f) return 1;
+  if(IS_NULL_PTR(png->f)) return 1;
 
 #define NUM_BYTES_CHECK (8)
 
@@ -279,14 +279,14 @@ static int __attribute__((__unused__)) read_header(const char *filename, dt_imag
 
   png->png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
 
-  if(!png->png_ptr)
+  if(IS_NULL_PTR(png->png_ptr))
   {
     fclose(png->f);
     return 1;
   }
 
   png->info_ptr = png_create_info_struct(png->png_ptr);
-  if(!png->info_ptr)
+  if(IS_NULL_PTR(png->info_ptr))
   {
     fclose(png->f);
     png_destroy_read_struct(&png->png_ptr, NULL, NULL);
@@ -528,11 +528,8 @@ static void compression_level_changed(GtkWidget *slider, gpointer user_data)
 
 void init(dt_imageio_module_format_t *self)
 {
-#ifdef USE_LUA
-  luaA_struct(darktable.lua_state.state, dt_imageio_png_t);
-  dt_lua_register_module_member(darktable.lua_state.state, self, dt_imageio_png_t, bpp, int);
-#endif
 }
+
 void cleanup(dt_imageio_module_format_t *self)
 {
 }

@@ -165,9 +165,7 @@ static inline void dt_iop_estimate_exp(const float *const x, const float *const 
 
 
 /** evaluates the exp fit. */
-#ifdef _OPENMP
-#pragma omp declare simd
-#endif
+__OMP_DECLARE_SIMD__()
 static inline float dt_iop_eval_exp(const float *const coeff, const float x)
 {
   return coeff[1] * powf(x * coeff[0], coeff[2]);
@@ -175,21 +173,14 @@ static inline float dt_iop_eval_exp(const float *const coeff, const float x)
 
 
 /** Copy alpha channel 1:1 from input to output */
-#ifdef _OPENMP
-#pragma omp declare simd uniform(width, height) aligned(ivoid, ovoid:64)
-#endif
+__OMP_DECLARE_SIMD__(uniform(width, height) aligned(ivoid, ovoid:64))
 static inline void dt_iop_alpha_copy(const void *const ivoid,
                                      void *const ovoid,
                                      const size_t width, const size_t height)
 {
   const float *const __restrict__ in = (const float *const)ivoid;
   float *const __restrict__ out = (float *const)ovoid;
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) aligned(out, in:64)\
-  dt_omp_firstprivate(height, width, out, in) \
-  schedule(static)
-#endif
+  __OMP_FOR_SIMD__(aligned(out, in:64) )
   for(size_t k = 3; k < width * height * 4; k += 4)
     out[k] = in[k];
 }
@@ -217,7 +208,7 @@ static inline int FCxtrans(const int row, const int col, const dt_iop_roi_t *con
   int icol = col + 600;
   assert(irow >= 0 && icol >= 0);
 
-  if(roi)
+  if(!IS_NULL_PTR(roi))
   {
     irow += roi->y;
     icol += roi->x;
@@ -227,9 +218,7 @@ static inline int FCxtrans(const int row, const int col, const dt_iop_roi_t *con
 }
 
 
-#ifdef _OPENMP
-#pragma omp declare simd
-#endif
+__OMP_DECLARE_SIMD__()
 static inline int fcol(const int row, const int col, const uint32_t filters, const uint8_t (*const xtrans)[6])
 {
   if(filters == 9)

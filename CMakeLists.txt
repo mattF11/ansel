@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.19)
 
 cmake_policy(SET CMP0011 NEW)
 cmake_policy(SET CMP0025 NEW)
@@ -11,6 +11,12 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/")
 ### Add defaults for cmake
 # These defaults need to be included before the project() call.
 include(DefineCMakeDefaults)
+
+option(DT_MACOS_UNIVERSAL "Build universal macOS binaries" OFF)
+
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND DT_MACOS_UNIVERSAL)
+  set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Build universal Apple binaries" FORCE)
+endif()
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
   message(FATAL_ERROR "In-source builds are not permitted. Make a separate folder for building:\nmkdir build; cd build; cmake ..\nBefore that, remove the files already created:\nrm -rf CMakeCache.txt CMakeFiles")
@@ -124,19 +130,17 @@ else()
 endif()
 
 if(USE_OPENMP)
-  if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
-      CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+  find_package(OpenMP 4.5 REQUIRED)
 
-    # Clang has an option to specify the OpenMP standard to use. Specify it.
-    # FIXME: Implement this in FindOpenMP.cmake
-    set(OPENMP_VERSION_SPECIFIER "-fopenmp-version=50")
-
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OPENMP_VERSION_SPECIFIER}")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OPENMP_VERSION_SPECIFIER}")
+  if(OpenMP_C_FLAGS)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
   endif()
 
-  find_package(OpenMP 4.5 REQUIRED)
-endif()
+  if(OpenMP_CXX_FLAGS)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+  endif()
+
+endif(USE_OPENMP)
 
 # Check for base threading library
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
@@ -158,25 +162,106 @@ else()
   set(SOURCE_PACKAGE 0)
 endif()
 
-if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(AMD64|amd64)|(X86|x86)|(^i.86$)")
-  set(BUILD_SSE2_CODEPATHS OFF)
-endif()
+#
+# Set build flags
+#
 
-if(BUILD_SSE2_CODEPATHS)
-  CHECK_C_COMPILER_FLAG("-msse2" _MSSE2)
-  if(NOT _MSSE2)
-    MESSAGE(WARNING "Building of SSE2-optimized codepaths is enabled, but the compiler does not understand -msse2.")
-    set(BUILD_SSE2_CODEPATHS OFF)
+## Override default CMake build flags
+# Release flags
+set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG" CACHE STRING "" FORCE)
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG" CACHE STRING "" FORCE)
+
+# RelWithDebInfo flags
+set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O3 -g3 -ggdb3 -DNDEBUG" CACHE STRING "" FORCE)
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3 -g3 -ggdb3 -DNDEBUG" CACHE STRING "" FORCE)
+
+# Debug flags
+set(CMAKE_C_FLAGS_DEBUG "-O0 -g3 -ggdb3 -D_DEBUG -fno-omit-frame-pointer -Werror -Wuninitialized -Wno-error=format-truncation" CACHE STRING "" FORCE)
+set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g3 -ggdb3 -D_DEBUG -fno-omit-frame-pointer -Werror -Wuninitialized -Wno-error=format-truncation" CACHE STRING "" FORCE)
+
+if(NOT CUSTOM_CFLAGS)
+
+  include(march-mtune)
+
+  # -------------------------------------------------------------------------
+  # Base flags (shared across all build types)
+  # -------------------------------------------------------------------------
+  # The code uses NAN as a special value meaning "undefined"
+  # in several places. There is no reason to do so, just use binary flags. 
+  # TODO: remove the use of NAN in code as a special "undefined" flag for float values
+  # TODO: no looping over pixels in place, aka input ptr = output ptr
+  set(DT_BASE_C_FLAGS "${MARCH} -Wall -funroll-loops -ftree-vectorize -fno-strict-aliasing")
+  set(DT_BASE_CXX_FLAGS "${MARCH} -Wall -funroll-loops -ftree-vectorize -fno-strict-aliasing")
+
+  # -------------------------------------------------------------------------
+  # Build-type-specific flags
+  # -------------------------------------------------------------------------
+
+  # Release
+  set(DT_RELEASE_FLAGS "-ffast-math -ffp-contract=fast -fno-finite-math-only")
+
+  # RelWithDebInfo (same perf as release, but no dangerous float arithmetics)
+  set(DT_RELWITHDEBINFO_FLAGS "-ffast-math -ffp-contract=fast -fno-finite-math-only")
+
+  # Debug
+  set(DT_DEBUG_FLAGS "")
+
+  # -------------------------------------------------------------------------
+  # Compiler-specific tuning
+  # -------------------------------------------------------------------------
+  if(CMAKE_C_COMPILER_ID MATCHES "GNU")
+    set(DT_BASE_C_FLAGS "${DT_BASE_C_FLAGS} -Wmaybe-uninitialized -Wno-undef -Wimplicit-function-declaration -Winfinite-recursion -fno-semantic-interposition -fno-signaling-nans -floop-nest-optimize -ftree-loop-im -fvariable-expansion-in-unroller -ftree-loop-im -fira-loop-pressure")
+  elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    set(DT_BASE_C_FLAGS "${DT_BASE_C_FLAGS} -fvectorize -fslp-vectorize -ftree-slp-vectorize")
   endif()
-endif()
 
-MESSAGE(STATUS "Building SSE2-optimized codepaths: ${BUILD_SSE2_CODEPATHS}")
+  # -------------------------------------------------------------------------
+  # Apply to C flags
+  # -------------------------------------------------------------------------
+  set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} ${DT_RELEASE_FLAGS}")
+  set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} ${DT_RELWITHDEBINFO_FLAGS}")
+  set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} ${DT_DEBUG_FLAGS}")
+  set(CMAKE_C_FLAGS "${DT_BASE_C_FLAGS} ${CMAKE_C_FLAGS}")
+  
+  # -------------------------------------------------------------------------
+  # Again to C++ flags
+  # -------------------------------------------------------------------------
+  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} ${DT_RELEASE_FLAGS}")
+  set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} ${DT_RELWITHDEBINFO_FLAGS}")
+  set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} ${DT_DEBUG_FLAGS}")
+  set(CMAKE_CXX_FLAGS "${DT_BASE_CXX_FLAGS} ${CMAKE_CXX_FLAGS}")
+
+endif(NOT CUSTOM_CFLAGS)
+
+# ---------------------------------------------------------------------------
+# Final aggregation 
+# ---------------------------------------------------------------------------
+string(TOUPPER "${CMAKE_BUILD_TYPE}" DT_BUILD_TYPE_UPPER)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${DT_BUILD_TYPE_UPPER}}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${DT_BUILD_TYPE_UPPER}}")
+
+message(STATUS "CMAKE_C_FLAGS = ${CMAKE_C_FLAGS}")
+message(STATUS "CMAKE_CXX_FLAGS = ${CMAKE_CXX_FLAGS}")
+
+if(BINARY_PACKAGE_BUILD)
+  set(DT_BUILD_CPU_MODE "generic package")
+else()
+  set(DT_BUILD_CPU_MODE "native/local")
+endif()
 
 #
 # Set platform defaults...
 #
 if(APPLE)
   message("-- Mac OS X build detected, setting default features")
+  message("-- Apple target architectures: ${CMAKE_OSX_ARCHITECTURES}")
+  if(HAVE_APPLE_X86_TARGET_CLONES)
+    message("-- Apple x86_64 target_clones enabled")
+    add_compile_definitions(DT_APPLE_X86_TARGET_CLONES=1)
+  else()
+    message("-- Apple x86_64 target_clones disabled")
+  endif()
+
   find_program(HOMEBREW_EXISTS "brew")
   if(HOMEBREW_EXISTS)
     execute_process(COMMAND brew --prefix OUTPUT_VARIABLE HOMEBREW_PREFIX)
@@ -196,9 +281,6 @@ if(APPLE)
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L/usr/lib")
   set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -L/usr/lib")
   set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -L/usr/lib")
-
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_DARWIN_C_SOURCE")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_DARWIN_C_SOURCE")
   add_definitions("-DOS_OBJECT_USE_OBJC=0")
 endif(APPLE)
 
@@ -527,15 +609,24 @@ if(BUILD_TESTING)
   include_directories(${CMOCKA_INCLUDE_DIR} include)
 endif(BUILD_TESTING)
 
-# we need some specific functions:
-if(NOT WIN32)
-  if(CMAKE_SYSTEM MATCHES "SunOS.*")
-    add_definitions("-D_XOPEN_SOURCE=600")
-  else()
-    add_definitions("-D_XOPEN_SOURCE=700")
-  endif(CMAKE_SYSTEM MATCHES "SunOS.*")
-else()
-  add_definitions("-D_USE_MATH_DEFINES")
+# ---- Windows ----
+if(WIN32)
+  add_compile_definitions(_USE_MATH_DEFINES)
+endif()
+
+# ---- Unix (Linux + macOS) ----
+if(UNIX)
+  add_compile_definitions(_DEFAULT_SOURCE)
+endif()
+
+# ---- Linux-only POSIX level ----
+if(UNIX AND NOT APPLE)
+  add_compile_definitions(_POSIX_C_SOURCE=200809L)
+endif()
+
+# ---- macOS extensions ----
+if(APPLE)
+  add_compile_definitions(_DARWIN_C_SOURCE)
 endif()
 
 # Set default component name - that way external modules like RawSpeed will install their

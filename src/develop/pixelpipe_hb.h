@@ -47,6 +47,7 @@
 struct dt_iop_module_t;
 struct dt_dev_raster_mask_t;
 struct dt_iop_order_iccprofile_info_t;
+struct dt_develop_t;
 
 typedef struct dt_dev_pixelpipe_raster_mask_t
 {
@@ -54,10 +55,46 @@ typedef struct dt_dev_pixelpipe_raster_mask_t
   float *mask;
 } dt_dev_pixelpipe_raster_mask_t;
 
+/**
+ * Runtime representation of one history item instantiated inside a pixelpipe node.
+ *
+ * A piece is the sealed processing contract for one module on one pipe. It is
+ * authored during history -> pipe synchronization and then consumed by the
+ * recursive runtime without recomputing its format contract.
+ *
+ * Contract sealing order:
+ * - the upstream descriptor is copied into #dsc_in,
+ * - module `input_format()` may overwrite the fields it requires on #dsc_in,
+ * - the resulting hard storage contract is sanitized against the actual
+ *   upstream storage format; only bit depth, channel count, and RAW filter
+ *   layout must match,
+ * - #dsc_out is initialized from #dsc_in,
+ * - `commit_params()` may update value-domain metadata that depends on module
+ *   parameters, such as `processed_maximum` or RAW normalization coefficients,
+ * - module `output_format()` may finally overwrite the output storage contract.
+ *
+ * After synchronization:
+ * - #dsc_in and #dsc_out are authoritative and immutable during
+ *   `process()`, `process_cl()`, `process_tiling()`, and blending,
+ * - runtime code may compare the previous piece output descriptor with #dsc_in
+ *   to decide whether a colorspace conversion is needed, but it must not
+ *   rewrite the contract,
+ * - ROI callbacks (`modify_roi_in()` / `modify_roi_out()`) are still allowed
+ *   to mutate the piece because ROI planning happens before processing starts
+ *   and some modules derive descriptor details from the planned crop,
+ * - cache entries published by this piece inherit the descriptor of the
+ *   pixels produced by this stage, namely #dsc_out.
+ *
+ * Mutable lifecycle summary:
+ * - `commit_params()`, `input_format()`, `output_format()`, and ROI planning
+ *   are the only places allowed to author the contract,
+ * - processing code treats the piece as read-only,
+ * - the cache-related fields only track output ownership/reuse hints and do
+ *   not participate in the pixel format contract itself.
+ */
 typedef struct dt_dev_pixelpipe_iop_t
 {
   struct dt_iop_module_t *module;  // the module in the dev operation stack
-  struct dt_dev_pixelpipe_t *pipe; // the pipe this piece belongs to
   void *data;                      // to be used by the module to store stuff per pipe piece
 
   // Memory size of *data upon which we will compute integrity hashes.
@@ -72,12 +109,10 @@ typedef struct dt_dev_pixelpipe_iop_t
 
   void *blendop_data;              // to be used by the module to store blendop per pipe piece
   gboolean enabled; // used to disable parts of the pipe for export, independent on module itself.
+  gboolean detail_mask; // TRUE when the piece blend parameters request detail-mask refinement.
 
   dt_dev_request_flags_t request_histogram;              // (bitwise) set if you want an histogram captured
   dt_dev_histogram_collection_params_t histogram_params; // set histogram generation params
-  uint32_t *histogram; // pointer to histogram data; histogram_bins_count bins with 4 channels each
-  dt_dev_histogram_stats_t histogram_stats; // stats of captured histogram
-  uint32_t histogram_max[4];                // maximum levels in histogram, one per channel
 
   int iwidth, iheight; // width and height of input buffer
 
@@ -93,14 +128,17 @@ typedef struct dt_dev_pixelpipe_iop_t
   uint64_t global_mask_hash;
 
   int bpc;             // bits per channel, 32 means float
-  int colors;          // how many colors per pixel
-  dt_iop_roi_t buf_in,
-      buf_out;                // theoretical full buffer regions of interest, as passed through modify_roi_out
-  dt_iop_roi_t planned_roi_in, planned_roi_out; // sizes planned ahead for cache hash
+  dt_iop_roi_t buf_in, buf_out; // theoretical full buffer regions of interest, as passed through modify_roi_out
+  dt_iop_roi_t roi_in, roi_out; // planned runtime regions of interest after backward ROI propagation
   int process_cl_ready;       // set this to 0 in commit_params to temporarily disable the use of process_cl
   int process_tiling_ready;   // set this to 0 in commit_params to temporarily disable tiling
 
-  // the following are used internally for caching:
+  // Sealed descriptor contract for this module instance.
+  // dsc_in is the module input contract after input_format() sanitized against
+  // the actual upstream storage format.
+  // dsc_out is the authored module output contract after commit_params() and
+  // output_format().
+  // dsc_mask carries the mask-side storage contract when masks are produced.
   dt_iop_buffer_dsc_t dsc_in, dsc_out, dsc_mask;
 
   // bypass the cache for this module
@@ -114,9 +152,10 @@ typedef struct dt_dev_pixelpipe_iop_t
   // fails before producing a valid output for the new hash.
   dt_pixel_cache_entry_t cache_entry;
 
-  // Set to TRUE for modules that should mandatorily cache their output to the RAM
-  // even when running on OpenCL. This is counter-productive for lightweight pixel ops
-  // like scalar operations, due to memory copy overhead. Not for diffuse & sharpen
+  // Set to TRUE for modules that should mandatorily cache their output to RAM
+  // even when running on OpenCL. This is a processing-policy flag authored
+  // during synchronization and then consumed by one recursion step; it does not
+  // change the descriptor contract.
   gboolean force_opencl_cache;
 
   GHashTable *raster_masks; // GList* of dt_dev_pixelpipe_raster_mask_t
@@ -129,16 +168,16 @@ typedef enum dt_dev_pixelpipe_change_t
   DT_DEV_PIPE_REMOVE = 1 << 1,      // possibly elements of the pipe have to be removed
   DT_DEV_PIPE_SYNCH
   = 1 << 2, // all nodes up to end need to be synched, but no removal of module pieces is necessary
-  DT_DEV_PIPE_ZOOMED = 1 << 3 // zoom event, preview pipe does not need changes
+  DT_DEV_PIPE_ZOOMED = 1 << 3, // zoom event, preview pipe does not need changes
+  DT_DEV_PIPE_CACHE_REQUEST = 1 << 4 // GUI requested one cacheline to be materialized on host
 } dt_dev_pixelpipe_change_t;
 
-typedef enum dt_dev_pixelpipe_status_t
+typedef enum dt_dev_pixelpipe_cache_request_t
 {
-  DT_DEV_PIXELPIPE_DIRTY = 0,   // history stack changed or image new
-  DT_DEV_PIXELPIPE_UNDEF = 1,   // pixelpipe computation started and we don't know yet
-  DT_DEV_PIXELPIPE_VALID = 2,   // pixelpipe has finished; valid result
-  DT_DEV_PIXELPIPE_INVALID = 3  // pixelpipe has finished; invalid result
-} dt_dev_pixelpipe_status_t;
+  DT_DEV_PIXELPIPE_CACHE_REQUEST_NONE = 0,
+  DT_DEV_PIXELPIPE_CACHE_REQUEST_BACKBUF = 1,
+  DT_DEV_PIXELPIPE_CACHE_REQUEST_MODULE = 2
+} dt_dev_pixelpipe_cache_request_t;
 
 /**
  * this encapsulates the pixelpipe.
@@ -177,6 +216,9 @@ static inline void dt_dev_backbuf_set_history_hash(dt_backbuf_t *backbuf, const 
 
 typedef struct dt_dev_pixelpipe_t
 {
+  // The development to which this pipeline is attached
+  struct dt_develop_t *dev;
+
   // input image. Will be fetched directly from mipmap cache
   int32_t imgid;
   dt_mipmap_size_t size;
@@ -184,14 +226,13 @@ typedef struct dt_dev_pixelpipe_t
   // width and height of full-resolution input buffer
   int iwidth, iheight;
 
+  // Input scaling between full-resolution source image and
+  // actual pipeline mipmap input. 
+  // = 1.f, unless we take downscaled RAW for thumbnail export.
+  float iscale;
+
   // dimensions of processed buffer assuming we take full-resolution input
   int processed_width, processed_height;
-
-  // this one actually contains the expected output format,
-  // and should be modified by process*(), if necessary.
-  dt_iop_buffer_dsc_t dsc;
-
-  dt_dev_pixelpipe_status_t status;
 
   /** work profile info of the image */
   struct dt_iop_order_iccprofile_info_t *work_profile_info;
@@ -217,9 +258,12 @@ typedef struct dt_dev_pixelpipe_t
 
   dt_pthread_mutex_t busy_mutex;
 
-  // the data for the luminance mask are kept in a buffer written by demosaic or rawprepare
-  // as we have to scale the mask later ke keep roi at that stage
-  float *rawdetail_mask_data;
+  // The hidden detailmask module publishes the full-resolution detail mask in
+  // the global pixelpipe cache under a salted hash derived from its
+  // piece->global_hash. The pipeline keeps only that cache key plus the source
+  // ROI of the published mask so zoom/pan updates can reuse the same payload
+  // exactly like raster masks do.
+  uint64_t rawdetail_mask_hash;
   struct dt_iop_roi_t rawdetail_mask_roi;
   int want_detail_mask;
 
@@ -230,6 +274,11 @@ typedef struct dt_dev_pixelpipe_t
   int running;
   // shutting down?
   dt_atomic_int shutdown;
+  /* Optional caller-owned kill switch used by background thumbnail/surface jobs.
+   * The pipe keeps its own shutdown flag for local teardown, but long-running
+   * non-GUI jobs also need a way to stop as soon as their output target changed
+   * size. Callers own the storage and may flip it from another thread. */
+  dt_atomic_int *shutdown_ext;
   // Best-effort processing mode. When TRUE, the processing path bypasses the
   // early-abort shutdown kill-switch checks that normally stop a stale pipeline
   // as soon as parameters changed. This allows long-running interactive
@@ -257,8 +306,6 @@ typedef struct dt_dev_pixelpipe_t
   dt_imageio_levels_t levels;
   // opencl device that has been locked for this pipe.
   int devid;
-  // image struct as it was when the pixelpipe was initialized. copied to avoid race conditions.
-  dt_image_t image;
   // the user might choose to overwrite the output color space and rendering intent.
   dt_colorspaces_color_profile_type_t icc_type;
   gchar *icc_filename;
@@ -283,6 +330,11 @@ typedef struct dt_dev_pixelpipe_t
   // between pipe and history. This is a local copy of 
   // dev_history_get_hash()
   dt_atomic_uint64 history_hash;
+  // GUI readers can request one extra host-visible cacheline without pretending
+  // history changed. BACKBUF targets the final pipe output, MODULE targets the
+  // output of cache_request_module.
+  dt_atomic_int cache_request;
+  dt_atomic_ptr cache_request_module;
   // Modules can set this to TRUE internally so the pipeline will
   // restart right away, in the same thread.
   // The reentry flag can only be reset (to FALSE) by the same object that captured it.
@@ -312,10 +364,9 @@ typedef struct dt_dev_pixelpipe_t
   // Temporarily pause the infinite loop of pipeline
   gboolean pause;
 
-  // Timeout in usec to delay the start of the pipeline
-  // Use for example if you want to ensure one pipe starts after another.
-  // Timeout is reset to 0 after the pipeline has run.
-  int timeout;
+  // Run a self-setting pipeline that will update history for each module
+  // depending on its input if it implements the autoset() method
+  gboolean autoset;
 
 } dt_dev_pixelpipe_t;
 
@@ -354,6 +405,33 @@ static inline void dt_dev_pixelpipe_or_changed(dt_dev_pixelpipe_t *pipe, const d
   dt_atomic_or_int((dt_atomic_int *)&pipe->changed, (int)flags);
 }
 
+static inline dt_dev_pixelpipe_cache_request_t dt_dev_pixelpipe_get_cache_request(const dt_dev_pixelpipe_t *pipe)
+{
+  return pipe ? (dt_dev_pixelpipe_cache_request_t)dt_atomic_get_int((dt_atomic_int *)&pipe->cache_request)
+              : DT_DEV_PIXELPIPE_CACHE_REQUEST_NONE;
+}
+
+static inline const struct dt_iop_module_t *dt_dev_pixelpipe_get_cache_request_module(const dt_dev_pixelpipe_t *pipe)
+{
+  return pipe ? (const struct dt_iop_module_t *)dt_atomic_get_ptr(&pipe->cache_request_module) : NULL;
+}
+
+static inline void dt_dev_pixelpipe_set_cache_request(dt_dev_pixelpipe_t *pipe,
+                                                      const dt_dev_pixelpipe_cache_request_t request,
+                                                      const struct dt_iop_module_t *module)
+{
+  if(IS_NULL_PTR(pipe)) return;
+  dt_atomic_set_ptr(&pipe->cache_request_module, (void *)module);
+  dt_atomic_set_int((dt_atomic_int *)&pipe->cache_request, (int)request);
+}
+
+static inline void dt_dev_pixelpipe_reset_cache_request(dt_dev_pixelpipe_t *pipe)
+{
+  if(IS_NULL_PTR(pipe)) return;
+  dt_atomic_set_int((dt_atomic_int *)&pipe->cache_request, DT_DEV_PIXELPIPE_CACHE_REQUEST_NONE);
+  dt_atomic_set_ptr(&pipe->cache_request_module, NULL);
+}
+
 struct dt_develop_t;
 
 #ifdef __cplusplus
@@ -363,17 +441,17 @@ extern "C" {
 char *dt_pixelpipe_get_pipe_name(dt_dev_pixelpipe_type_t pipe_type);
 
 // inits the pixelpipe with plain passthrough input/output and empty input and default caching settings.
-int dt_dev_pixelpipe_init(dt_dev_pixelpipe_t *pipe);
+int dt_dev_pixelpipe_init(dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev);
 // inits the preview pixelpipe with plain passthrough input/output and empty input and default caching
 // settings.
-int dt_dev_pixelpipe_init_preview(dt_dev_pixelpipe_t *pipe);
+int dt_dev_pixelpipe_init_preview(dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev);
 // inits the pixelpipe with settings optimized for full-image export (no history stack cache)
-int dt_dev_pixelpipe_init_export(dt_dev_pixelpipe_t *pipe, int levels, gboolean store_masks);
+int dt_dev_pixelpipe_init_export(dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev, int levels, gboolean store_masks);
 // inits the pixelpipe with settings optimized for thumbnail export (no history stack cache)
-int dt_dev_pixelpipe_init_thumbnail(dt_dev_pixelpipe_t *pipe);
+int dt_dev_pixelpipe_init_thumbnail(dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev);
 // inits all but the pixel caches, so you can't actually process an image (just get dimensions and
 // distortions)
-int dt_dev_pixelpipe_init_dummy(dt_dev_pixelpipe_t *pipe);
+int dt_dev_pixelpipe_init_dummy(dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev);
 // inits the pixelpipe
 int dt_dev_pixelpipe_init_cached(dt_dev_pixelpipe_t *pipe);
 // enable/disable best-effort processing mode, bypassing the usual early-abort
@@ -381,9 +459,14 @@ int dt_dev_pixelpipe_init_cached(dt_dev_pixelpipe_t *pipe);
 void dt_dev_pixelpipe_set_realtime(dt_dev_pixelpipe_t *pipe, gboolean state);
 // return whether best-effort processing mode is currently enabled.
 gboolean dt_dev_pixelpipe_get_realtime(const dt_dev_pixelpipe_t *pipe);
+static inline gboolean dt_dev_pixelpipe_has_shutdown(const dt_dev_pixelpipe_t *pipe)
+{
+  return pipe && (dt_atomic_get_int((dt_atomic_int *)&pipe->shutdown)
+                  || (pipe->shutdown_ext && dt_atomic_get_int(pipe->shutdown_ext)));
+}
 // constructs a new input buffer from given RGB float array.
-void dt_dev_pixelpipe_set_input(dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev, int32_t imgid, int width,
-                                int height, dt_mipmap_size_t size);
+void dt_dev_pixelpipe_set_input(dt_dev_pixelpipe_t *pipe, int32_t imgid, int width,
+                                int height, float iscale, dt_mipmap_size_t size);
 // set some metadata for colorout to avoid race conditions.
 void dt_dev_pixelpipe_set_icc(dt_dev_pixelpipe_t *pipe, dt_colorspaces_color_profile_type_t icc_type,
                               const gchar *icc_filename, dt_iop_color_intent_t icc_intent);
@@ -393,15 +476,17 @@ void dt_dev_pixelpipe_cleanup(dt_dev_pixelpipe_t *pipe);
 void dt_dev_pixelpipe_cleanup_nodes(dt_dev_pixelpipe_t *pipe);
 // sync with develop_t history stack from scratch (new node added, have to pop old ones)
 // this should be called with dev->history_mutex locked in read mode
-void dt_dev_pixelpipe_create_nodes(dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev);
+void dt_dev_pixelpipe_create_nodes(dt_dev_pixelpipe_t *pipe);
 // sync with develop_t history stack by just copying the top item params (same op, new params on top)
-void dt_dev_pixelpipe_synch_all_real(dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev, const char *caller_func);
-#define dt_dev_pixelpipe_synch_all(pipe, dev) dt_dev_pixelpipe_synch_all_real(pipe, dev, __FUNCTION__)
+void dt_dev_pixelpipe_synch_all_real(dt_dev_pixelpipe_t *pipe, const char *caller_func);
+#define dt_dev_pixelpipe_synch_all(pipe) dt_dev_pixelpipe_synch_all_real(pipe, __FUNCTION__)
 // adjust output node according to history stack (history pop event)
-void dt_dev_pixelpipe_synch_top(dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev);
+void dt_dev_pixelpipe_synch_top(dt_dev_pixelpipe_t *pipe);
 
 // process region of interest of pixels. returns 1 if pipe was altered during processing.
-int dt_dev_pixelpipe_process(dt_dev_pixelpipe_t *pipe, struct dt_develop_t *dev, dt_iop_roi_t roi);
+int dt_dev_pixelpipe_process(dt_dev_pixelpipe_t *pipe, dt_iop_roi_t roi);
+
+// Refresh GUI samplers from the cachelines already published by a darkroom pipe.
 
 // disable given op and all that comes after it in the pipe:
 void dt_dev_pixelpipe_disable_after(dt_dev_pixelpipe_t *pipe, const char *op);
@@ -417,16 +502,9 @@ float *dt_dev_get_raster_mask(dt_dev_pixelpipe_t *pipe, const struct dt_iop_modu
                               const int raster_mask_id, const struct dt_iop_module_t *target_module,
                               gboolean *free_mask, int *error);
 
-// some helper functions related to the details mask interface
-void dt_dev_clear_rawdetail_mask(dt_dev_pixelpipe_t *pipe);
-
-gboolean dt_dev_write_rawdetail_mask(dt_dev_pixelpipe_iop_t *piece, float *const rgb, const dt_iop_roi_t *const roi_in, const int mode);
-#ifdef HAVE_OPENCL
-gboolean dt_dev_write_rawdetail_mask_cl(dt_dev_pixelpipe_iop_t *piece, cl_mem in, const dt_iop_roi_t *const roi_in, const int mode);
-#endif
-
 // helper function writing the pipe-processed ctmask data to dest
 float *dt_dev_distort_detail_mask(const dt_dev_pixelpipe_t *pipe, float *src, const struct dt_iop_module_t *target_module);
+float *dt_dev_retrieve_rawdetail_mask(const dt_dev_pixelpipe_t *pipe, const struct dt_iop_module_t *target_module);
 
 
 /**

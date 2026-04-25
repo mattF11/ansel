@@ -4,14 +4,6 @@ include(CheckIncludeFile)
 include(CheckSymbolExists)
 include(CheckStructHasMember)
 
-check_include_file(cpuid.h HAVE_CPUID_H)
-
-if (HAVE_CPUID_H)
-    check_symbol_exists(__get_cpuid "cpuid.h" HAVE___GET_CPUID)
-endif()
-
-check_include_file(execinfo.h HAVE_EXECINFO_H)
-
 if (OpenMP_FOUND)
 
 set(CMAKE_REQUIRED_FLAGS ${OpenMP_C_FLAGS})
@@ -41,6 +33,26 @@ int main(void)
 set(CMAKE_REQUIRED_FLAGS)
 set(CMAKE_REQUIRED_LIBRARIES)
 set(CMAKE_REQUIRED_INCLUDES)
+endif()
+
+if(APPLE)
+  check_c_source_compiles("
+  #if defined(__x86_64__)
+  __attribute__((target_clones(\"default\",\"arch=x86-64\",\"arch=x86-64-v2\",\"arch=x86-64-v3\",\"arch=x86-64-v4\")))
+  static int dt_target_clones_probe(void)
+  {
+    return 0;
+  }
+  #endif
+
+  int main(void)
+  {
+  #if defined(__x86_64__)
+    return dt_target_clones_probe();
+  #else
+    return 0;
+  #endif
+  }" HAVE_APPLE_X86_TARGET_CLONES)
 endif()
 
 #
@@ -86,3 +98,13 @@ if(${BIGENDIAN})
 else()
     message(STATUS "Found little endian system. Good.")
 endif(${BIGENDIAN})
+
+check_c_source_compiles("
+static __thread int tls;
+int main(void)
+{
+  return 0;
+}" HAVE_TLS)
+if(NOT HAVE_TLS)
+  MESSAGE(FATAL_ERROR "The compiler does not support Thread-local storage.")
+endif()

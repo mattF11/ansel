@@ -77,7 +77,7 @@ typedef struct _dt_job_t
  */
 static inline int dt_control_job_equal(_dt_job_t *j1, _dt_job_t *j2)
 {
-  if(!j1 || !j2) return 0;
+  if(IS_NULL_PTR(j1) || IS_NULL_PTR(j2)) return 0;
   if(j1->params_size != 0 && j1->params_size == j2->params_size)
     return (j1->execute == j2->execute && j1->state_changed_cb == j2->state_changed_cb
             && j1->queue == j2->queue && (memcmp(j1->params, j2->params, j1->params_size) == 0));
@@ -87,7 +87,7 @@ static inline int dt_control_job_equal(_dt_job_t *j1, _dt_job_t *j2)
 
 static void dt_control_job_set_state(_dt_job_t *job, dt_job_state_t state)
 {
-  if(!job) return;
+  if(IS_NULL_PTR(job)) return;
   dt_pthread_mutex_lock(&job->state_mutex);
   if(state >= DT_JOB_STATE_FINISHED  && job->state != DT_JOB_STATE_RUNNING && job->progress)
   {
@@ -102,7 +102,7 @@ static void dt_control_job_set_state(_dt_job_t *job, dt_job_state_t state)
 
 dt_job_state_t dt_control_job_get_state(_dt_job_t *job)
 {
-  if(!job) return DT_JOB_STATE_DISPOSED;
+  if(IS_NULL_PTR(job)) return DT_JOB_STATE_DISPOSED;
   dt_pthread_mutex_lock(&job->state_mutex);
   dt_job_state_t state = job->state;
   dt_pthread_mutex_unlock(&job->state_mutex);
@@ -111,7 +111,7 @@ dt_job_state_t dt_control_job_get_state(_dt_job_t *job)
 
 void dt_control_job_set_params(_dt_job_t *job, void *params, dt_job_destroy_callback callback)
 {
-  if(!job || dt_control_job_get_state(job) != DT_JOB_STATE_INITIALIZED) return;
+  if(IS_NULL_PTR(job) || dt_control_job_get_state(job) != DT_JOB_STATE_INITIALIZED) return;
   job->params = params;
   job->params_size = 0;
   job->params_destroy = callback;
@@ -120,7 +120,7 @@ void dt_control_job_set_params(_dt_job_t *job, void *params, dt_job_destroy_call
 void dt_control_job_set_params_with_size(dt_job_t *job, void *params, size_t params_size,
                                          dt_job_destroy_callback callback)
 {
-  if(!job || dt_control_job_get_state(job) != DT_JOB_STATE_INITIALIZED) return;
+  if(IS_NULL_PTR(job) || dt_control_job_get_state(job) != DT_JOB_STATE_INITIALIZED) return;
   job->params = params;
   job->params_size = params_size;
   job->params_destroy = callback;
@@ -128,14 +128,14 @@ void dt_control_job_set_params_with_size(dt_job_t *job, void *params, size_t par
 
 void *dt_control_job_get_params(const _dt_job_t *job)
 {
-  if(!job) return NULL;
+  if(IS_NULL_PTR(job)) return NULL;
   return job->params;
 }
 
 dt_job_t *dt_control_job_create(dt_job_execute_callback execute, const char *msg, ...)
 {
   _dt_job_t *job = (_dt_job_t *)calloc(1, sizeof(_dt_job_t));
-  if(!job) return NULL;
+  if(IS_NULL_PTR(job)) return NULL;
 
   va_list ap;
   va_start(ap, msg);
@@ -152,7 +152,7 @@ dt_job_t *dt_control_job_create(dt_job_execute_callback execute, const char *msg
 
 void dt_control_job_dispose(_dt_job_t *job)
 {
-  if(!job) return;
+  if(IS_NULL_PTR(job)) return;
   if(job->progress) dt_control_progress_destroy(darktable.control, job->progress);
   job->progress = NULL;
   dt_control_job_set_state(job, DT_JOB_STATE_DISPOSED);
@@ -166,14 +166,14 @@ void dt_control_job_set_state_callback(_dt_job_t *job, dt_job_state_change_callb
 {
   // once the job got added to the queue it may not be changed from the outside
   if(dt_control_job_get_state(job) != DT_JOB_STATE_INITIALIZED)
-    return; // get_state returns DISPOSED when job == NULL
+    return; // get_state returns DISPOSED when IS_NULL_PTR(job)
   job->state_changed_cb = cb;
 }
 
 
 static void dt_control_job_print(_dt_job_t *job)
 {
-  if(!job) return;
+  if(IS_NULL_PTR(job)) return;
   dt_print(DT_DEBUG_CONTROL, "%s | queue: %d | priority: %d", job->description, job->queue, job->priority);
 }
 
@@ -184,7 +184,7 @@ void dt_control_job_cancel(_dt_job_t *job)
 
 void dt_control_job_wait(_dt_job_t *job)
 {
-  if(!job) return;
+  if(IS_NULL_PTR(job)) return;
   dt_job_state_t state = dt_control_job_get_state(job);
 
   // NOTE: could also use signals.
@@ -214,7 +214,7 @@ static int32_t dt_control_run_job_res(dt_control_t *control, int32_t res)
   }
   control->new_res[res] = 0;
   dt_pthread_mutex_unlock(&control->res_mutex);
-  if(!job) return -1;
+  if(IS_NULL_PTR(job)) return -1;
 
   /* change state to running */
   dt_pthread_mutex_lock(&job->wait_mutex);
@@ -270,7 +270,7 @@ static _dt_job_t *dt_control_schedule_job(dt_control_t *control)
     }
   }
 
-  if(!job)
+  if(IS_NULL_PTR(job))
   {
     dt_pthread_mutex_unlock(&control->queue_mutex);
     return NULL;
@@ -325,7 +325,7 @@ static int32_t dt_control_run_job(dt_control_t *control)
 {
   _dt_job_t *job = dt_control_schedule_job(control);
 
-  if(!job) return -1;
+  if(IS_NULL_PTR(job)) return -1;
 
   /* change state to running */
   dt_pthread_mutex_lock(&job->wait_mutex);
@@ -348,7 +348,7 @@ static int32_t dt_control_run_job(dt_control_t *control)
 
 int32_t dt_control_add_job_res(dt_control_t *control, _dt_job_t *job, int32_t res)
 {
-  if(((unsigned int)res) >= DT_CTL_WORKER_RESERVED || !job)
+  if(((unsigned int)res) >= DT_CTL_WORKER_RESERVED || IS_NULL_PTR(job))
   {
     dt_control_job_dispose(job);
     return 1;
@@ -390,7 +390,7 @@ void dt_control_flush_jobs_queue(dt_control_t *control, dt_job_queue_t queue_id)
   for(int k = 0; k < control->num_threads; k++)
   {
     _dt_job_t *job = (_dt_job_t *)control->job[k];
-    if(job)
+    if(!IS_NULL_PTR(job))
     {
       dt_control_job_cancel(job);
       count++;
@@ -404,7 +404,7 @@ void dt_control_flush_jobs_queue(dt_control_t *control, dt_job_queue_t queue_id)
 
 int dt_control_add_job(dt_control_t *control, dt_job_queue_t queue_id, _dt_job_t *job)
 {
-  if(((unsigned int)queue_id) >= DT_JOB_QUEUE_MAX || !job)
+  if(((unsigned int)queue_id) >= DT_JOB_QUEUE_MAX || IS_NULL_PTR(job))
   {
     dt_control_job_dispose(job);
     return 1;
@@ -430,7 +430,7 @@ int dt_control_add_job(dt_control_t *control, dt_job_queue_t queue_id, _dt_job_t
   GList **queue = &control->queues[queue_id];
   size_t length = control->queue_length[queue_id];
 
-  dt_print(DT_DEBUG_CONTROL, "[add_job] %02ld | ", length);
+  dt_print(DT_DEBUG_CONTROL, "[add_job] %" G_GSIZE_FORMAT " | ", length);
   dt_control_job_print(job);
   dt_print(DT_DEBUG_CONTROL, "\n");
 
@@ -611,7 +611,7 @@ static void *dt_control_work(void *ptr)
 // this allows to show the gui indicator of the job even before it got scheduled
 void dt_control_job_add_progress(dt_job_t *job, const char *message, gboolean cancellable)
 {
-  if(!job) return;
+  if(IS_NULL_PTR(job)) return;
   job->progress = dt_control_progress_create(darktable.control, TRUE, message);
   if(cancellable)
     dt_control_progress_attach_job(darktable.control, job->progress, job);
@@ -619,19 +619,19 @@ void dt_control_job_add_progress(dt_job_t *job, const char *message, gboolean ca
 
 void dt_control_job_set_progress_message(dt_job_t *job, const char *message)
 {
-  if(!job || !job->progress) return;
+  if(IS_NULL_PTR(job) || !job->progress) return;
   dt_control_progress_set_message(darktable.control, job->progress, message);
 }
 
 void dt_control_job_set_progress(dt_job_t *job, double value)
 {
-  if(!job || !job->progress) return;
+  if(IS_NULL_PTR(job) || !job->progress) return;
   dt_control_progress_set_progress(darktable.control, job->progress, value);
 }
 
 double dt_control_job_get_progress(dt_job_t *job)
 {
-  if(!job || !job->progress) return -1.0;
+  if(IS_NULL_PTR(job) || !job->progress) return -1.0;
   return dt_control_progress_get_progress(job->progress);
 }
 

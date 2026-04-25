@@ -40,7 +40,7 @@ typedef struct dt_masks_gui_interaction_slider_t
 
 static void _masks_gui_interaction_apply_value(dt_masks_gui_interaction_slider_t *data, float value)
 {
-  if(!data || !data->form_group) return;
+  if(IS_NULL_PTR(data) || IS_NULL_PTR(data->form_group)) return;
 
   if(data->increment == DT_MASKS_INCREMENT_ABSOLUTE) // aka opacity
   {
@@ -68,10 +68,10 @@ static void _masks_gui_menu_item_block_activate(GtkWidget *widget, gpointer user
 static gboolean _masks_gui_menu_item_forward_event(GtkWidget *widget, GdkEvent *event, gpointer user_data)
 {
   dt_masks_gui_interaction_slider_t *data = (dt_masks_gui_interaction_slider_t *)user_data;
-  if(!data || !data->slider) return FALSE;
+  if(IS_NULL_PTR(data) || !data->slider) return FALSE;
 
   GdkEvent *copy = gdk_event_copy(event);
-  if(!copy) return FALSE;
+  if(IS_NULL_PTR(copy)) return FALSE;
 
   double x = 0.0, y = 0.0;
   gboolean has_coords = FALSE;
@@ -143,7 +143,7 @@ static gboolean _masks_gui_menu_item_forward_event(GtkWidget *widget, GdkEvent *
 static void _masks_gui_interaction_slider_changed(GtkWidget *widget, gpointer user_data)
 {
   dt_masks_gui_interaction_slider_t *data = (dt_masks_gui_interaction_slider_t *)user_data;
-  if(!data || !data->form_group) return;
+  if(IS_NULL_PTR(data) || IS_NULL_PTR(data->form_group)) return;
 
   _masks_gui_interaction_apply_value(data, dt_bauhaus_slider_get(widget));
 }
@@ -205,9 +205,9 @@ static GtkWidget *_masks_gui_add_interaction_slider(GtkWidget *menu, const char 
   return menu_item;
 }
 
-static int _masks_gui_confirm_remove_form_dialog(const char *form_name)
+int dt_masks_gui_confirm_delete_form_dialog(const char *form_name)
 {
-  if(!darktable.gui || !darktable.gui->ui) return GTK_RESPONSE_NO;
+  if(IS_NULL_PTR(darktable.gui) || IS_NULL_PTR(darktable.gui->ui)) return GTK_RESPONSE_NO;
 
   GtkWidget *dialog = gtk_message_dialog_new(
       GTK_WINDOW(dt_ui_main_window(darktable.gui->ui)),
@@ -216,10 +216,10 @@ static int _masks_gui_confirm_remove_form_dialog(const char *form_name)
   gtk_message_dialog_format_secondary_text(
       GTK_MESSAGE_DIALOG(dialog), "'%s' %s\n\n%s", form_name,
       _("will no longer be used."),
-      _("Do you want to delete it permanently, or keep it unused?"));
+      _("Do you want to permanently delete it, or keep it unused for potential reuse?"));
 
-  gtk_dialog_add_button(GTK_DIALOG(dialog), _("Keep unused shape"), GTK_RESPONSE_NO);
   gtk_dialog_add_button(GTK_DIALOG(dialog), _("Delete shape"), GTK_RESPONSE_YES);
+  gtk_dialog_add_button(GTK_DIALOG(dialog), _("Keep unused shape"), GTK_RESPONSE_NO);
   gtk_dialog_add_button(GTK_DIALOG(dialog), _("Cancel"), GTK_RESPONSE_CANCEL);
   gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_CANCEL);
 
@@ -229,83 +229,40 @@ static int _masks_gui_confirm_remove_form_dialog(const char *form_name)
   return response;
 }
 
-static int _masks_gui_form_group_use_count(const dt_develop_t *dev, const int formid)
-{
-  if(!dev) return 0;
-
-  int count = 0;
-  for(GList *form_node = dev->forms; form_node; form_node = g_list_next(form_node))
-  {
-    dt_masks_form_t *group_form = (dt_masks_form_t *)form_node->data;
-    if(!group_form || !(group_form->type & DT_MASKS_GROUP)) continue;
-
-    for(GList *group_node = group_form->points; group_node; group_node = g_list_next(group_node))
-    {
-      dt_masks_form_group_t *group_entry = (dt_masks_form_group_t *)group_node->data;
-      if(group_entry && group_entry->formid == formid)
-      {
-        count++;
-        if(count > 1) goto done;
-        break;
-      }
-    }
-  }
-
-done:
-  return count;
-}
-
-static void _masks_gui_remove_form_callback(GtkWidget *menu, gpointer user_data)
+static void _masks_gui_delete_form_callback(GtkWidget *menu, gpointer user_data)
 {
   dt_masks_form_gui_t *gui = (dt_masks_form_gui_t *)user_data;
-  if(!gui) return;
+  if(IS_NULL_PTR(gui)) return;
   dt_masks_form_t *forms = dt_masks_get_visible_form(darktable.develop);
-  if(!forms) return;
+  if(IS_NULL_PTR(forms)) return;
 
   if(gui->group_selected >= 0)
   {
     // Delete shape from current group
     dt_masks_form_group_t *fpt = dt_masks_form_get_selected_group(forms, gui);
-    if(!fpt) return;
+    if(IS_NULL_PTR(fpt)) return;
     dt_iop_module_t *module = darktable.develop->gui_module;
-    if(!module) return;
+    if(IS_NULL_PTR(module)) return;
     dt_masks_form_t *sel = dt_masks_get_from_id(darktable.develop, fpt->formid);
-    if(!sel) return;
+    if(IS_NULL_PTR(sel)) return;
 
     const int parentid = fpt->parentid;
     const int formid = fpt->formid;
-    const int use_count = _masks_gui_form_group_use_count(darktable.develop, formid);
+  
+    dt_masks_remove_or_delete(module, sel, parentid, gui, formid);
 
-    if(use_count <= 1)
-    {
-      const int response = _masks_gui_confirm_remove_form_dialog(sel->name);
-      if(response == GTK_RESPONSE_CANCEL) return;
-      if(response == GTK_RESPONSE_YES)
-      {
-        dt_masks_gui_delete(module, sel, gui, parentid);
-        dt_dev_add_history_item(darktable.develop, module, TRUE, TRUE);
-        DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_MASK_CHANGED, formid, parentid, DT_MASKS_EVENT_DELETE);
-        return;
-      }
-    }
-
-    // Default
-    dt_masks_change_form_gui(NULL);
-    dt_masks_form_remove(module, NULL, sel);
-    dt_dev_add_history_item(darktable.develop, module, TRUE, TRUE);
-    DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_MASK_CHANGED, formid, 0, DT_MASKS_EVENT_REMOVE);
   }
 }
 
 void _masks_gui_delete_node_callback(GtkWidget *menu, gpointer user_data)
 {
   dt_masks_form_gui_t *gui = (dt_masks_form_gui_t *)user_data;
-  if(!gui) return;
+  if(IS_NULL_PTR(gui)) return;
   dt_masks_form_t *forms = dt_masks_get_visible_form(darktable.develop);
-  if(!forms) return;
+  if(IS_NULL_PTR(forms)) return;
 
   dt_iop_module_t *module = darktable.develop->gui_module;
-  if(!module) return;
+  if(IS_NULL_PTR(module)) return;
 
   if(gui->creation)
   {
@@ -325,7 +282,7 @@ void _masks_gui_delete_node_callback(GtkWidget *menu, gpointer user_data)
     // Delete shape from current group
 
     dt_masks_form_group_t *fpt = dt_masks_form_get_selected_group(forms, gui);
-    if(!fpt) return;
+    if(IS_NULL_PTR(fpt)) return;
     dt_masks_form_t *sel = dt_masks_get_from_id(darktable.develop, fpt->formid);
     if(sel)
       dt_masks_remove_node(module, sel, fpt->parentid, gui, gui->group_selected, gui->node_hovered);
@@ -344,18 +301,18 @@ static void _masks_gui_cancel_creation_callback(GtkWidget *menu, gpointer user_d
 static void _masks_move_up_down_callback(gpointer user_data, const int up)
 {
   dt_masks_form_gui_t *gui = (dt_masks_form_gui_t *)user_data;
-  if(!gui) return;
+  if(IS_NULL_PTR(gui)) return;
   if(gui->group_selected < 0) return;
 
   dt_iop_module_t *module = darktable.develop->gui_module;
-  if(!module) return;
+  if(IS_NULL_PTR(module)) return;
 
   dt_masks_form_t *forms = dt_masks_get_visible_form(darktable.develop);
-  if(!forms) return;
+  if(IS_NULL_PTR(forms)) return;
   dt_masks_form_group_t *fpt = dt_masks_form_get_selected_group(forms, gui);
-  if(!fpt) return;
+  if(IS_NULL_PTR(fpt)) return;
   dt_masks_form_t *grp = dt_masks_get_from_id(darktable.develop, fpt->parentid);
-  if(!grp || !(grp->type & DT_MASKS_GROUP)) return;
+  if(IS_NULL_PTR(grp) || !(grp->type & DT_MASKS_GROUP)) return;
 
   dt_masks_form_move(grp, fpt->formid, up);
 
@@ -377,7 +334,7 @@ static void _masks_movedown_callback(GtkWidget *menu, gpointer user_data)
 static void _masks_operation_callback(GtkWidget *menu, gpointer user_data)
 {
   dt_masks_form_gui_t *gui = (dt_masks_form_gui_t *)user_data;
-  if(!gui || !menu) return;
+  if(IS_NULL_PTR(gui) || IS_NULL_PTR(menu)) return;
 
   const guint form_pos = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(menu), "form_pos"));
   const dt_masks_state_t state_op = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(menu), "state_op"));
@@ -389,7 +346,7 @@ static void _masks_operation_callback(GtkWidget *menu, gpointer user_data)
   }
 
   dt_masks_form_group_t *form_op = (dt_masks_form_group_t *)g_object_get_data(G_OBJECT(menu), "op_form");
-  if(!form_op) return;
+  if(IS_NULL_PTR(form_op)) return;
 
   apply_operation(form_op, state_op);
 
@@ -436,7 +393,7 @@ GtkWidget *dt_masks_create_menu(dt_masks_form_gui_t *gui, dt_masks_form_t *form,
   dt_masks_form_t *grp = formgroup ? dt_masks_get_from_id(darktable.develop, formgroup->parentid) : NULL;
   if(grp && (grp->type & DT_MASKS_GROUP))
     op_form = dt_masks_form_group_from_parentid(grp->formid, form->formid);
-  if(!op_form) return NULL;
+  if(IS_NULL_PTR(op_form)) return NULL;
 
   // Find the position of the current form in the group
   guint form_pos = 0;
@@ -565,7 +522,7 @@ GtkWidget *dt_masks_create_menu(dt_masks_form_gui_t *gui, dt_masks_form_t *form,
   }
 
   // Shape specific menu items
-  if(form && form->functions && form->functions->populate_context_menu)
+  if(!IS_NULL_PTR(form) && form->functions && form->functions->populate_context_menu)
     if(form->functions->populate_context_menu(menu, form, gui, pzx, pzy))
     {
       gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
@@ -575,7 +532,7 @@ GtkWidget *dt_masks_create_menu(dt_masks_form_gui_t *gui, dt_masks_form_t *form,
   /* Module specific */
   {
     dt_iop_module_t *module = darktable.develop->gui_module;
-    if(module && module->populate_masks_context_menu)
+    if(!IS_NULL_PTR(module) && module->populate_masks_context_menu)
       if(module->populate_masks_context_menu(module, menu, form->formid, pzx, pzy))
       {
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
@@ -631,7 +588,7 @@ GtkWidget *dt_masks_create_menu(dt_masks_form_gui_t *gui, dt_masks_form_t *form,
     }
     else
     {
-      menu_item = ctx_gtk_menu_item_new_with_markup(_("Remove shape from mask"), menu, _masks_gui_remove_form_callback, gui);
+      menu_item = ctx_gtk_menu_item_new_with_markup(_("Remove shape from mask"), menu, _masks_gui_delete_form_callback, gui);
       menu_item_set_fake_accel(menu_item, GDK_KEY_Delete, 0);
       gtk_widget_set_sensitive(menu_item, gui->form_selected >= 0);
     }

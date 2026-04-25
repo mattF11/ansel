@@ -347,7 +347,7 @@ static void  _dt_style_update_iop_order(const gchar *name, const int id, const i
   // if we update or if the style does not contains an order then the
   // copy must be done using the imgid iop-order.
 
-  if(update_iop_order || iop_list == NULL)
+  if(update_iop_order || IS_NULL_PTR(iop_list))
     iop_list = dt_ioppr_get_iop_order_list(imgid, FALSE);
 
   gchar *iop_list_txt = dt_ioppr_serialize_text_iop_order_list(iop_list);
@@ -590,7 +590,7 @@ void dt_multiple_styles_apply_to_list(GList *styles, const GList *list, gboolean
      do that only in the darkroom as there is nothing to be saved
      when in the lighttable (and it would write over current history stack) */
 
-  if(!styles && !list)
+  if(IS_NULL_PTR(styles) && !list)
   {
     dt_control_log(_("no images nor styles selected!"));
     return;
@@ -638,7 +638,7 @@ void dt_styles_create_from_list(const GList *list)
 
 static const char *_dt_styles_normalize_multi_name(const char *multi_name)
 {
-  if(!multi_name || !*multi_name || !strcmp(multi_name, "0")) return "";
+  if(IS_NULL_PTR(multi_name) || !*multi_name || !strcmp(multi_name, "0")) return "";
   return multi_name;
 }
 
@@ -714,7 +714,7 @@ static dt_iop_module_t *_dt_styles_get_or_create_module_instance(dt_develop_t *d
 static dt_iop_module_t *_dt_styles_tmp_module_from_style_item(dt_develop_t *dev, const dt_style_item_t *style_item)
 {
   dt_iop_module_t *mod_src = dt_iop_get_module_by_op_priority(dev->iop, style_item->operation, -1);
-  if(!mod_src) return NULL;
+  if(IS_NULL_PTR(mod_src)) return NULL;
 
   dt_iop_module_t *module = (dt_iop_module_t *)calloc(1, sizeof(dt_iop_module_t));
   if(dt_iop_load_module(module, mod_src->so, dev))
@@ -741,7 +741,7 @@ static dt_iop_module_t *_dt_styles_tmp_module_from_style_item(dt_develop_t *dev,
 
 static GList *_dt_styles_get_apply_items(const int style_id)
 {
-  if(!_styles_apply_items_stmt)
+  if(IS_NULL_PTR(_styles_apply_items_stmt))
   {
     // clang-format off
     DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
@@ -807,7 +807,7 @@ static GList *_dt_styles_build_mod_list_from_history(dt_develop_t *dev, GHashTab
 
 static void _dt_styles_tmp_module_free(dt_iop_module_t *module)
 {
-  if(!module) return;
+  if(IS_NULL_PTR(module)) return;
   dt_iop_cleanup_module(module);
   dt_free(module);
 }
@@ -840,7 +840,7 @@ static GList *_styles_collect_applied_items(dt_develop_t *dev_src, GList *si_lis
   {
     dt_style_item_t *style_item = (dt_style_item_t *)l->data;
     dt_iop_module_t *module = _dt_styles_get_or_create_module_instance(dev_src, style_item);
-    if(!module) continue;
+    if(IS_NULL_PTR(module)) continue;
 
     const char *multi_name = _dt_styles_normalize_multi_name(style_item->multi_name);
     module->multi_priority = style_item->multi_priority;
@@ -885,10 +885,10 @@ static int _styles_rebuild_history_from_items(dt_develop_t *dev_src, GList *appl
     const char *multi_name = _dt_styles_normalize_multi_name(style_item->multi_name);
     dt_iop_module_t *module
         = dt_dev_get_module_instance(dev_src, style_item->operation, multi_name, style_item->multi_priority);
-    if(!module) continue;
+    if(IS_NULL_PTR(module)) continue;
 
     dt_dev_history_item_t *hist = (dt_dev_history_item_t *)calloc(1, sizeof(dt_dev_history_item_t));
-    if(!hist) return 1;
+    if(IS_NULL_PTR(hist)) return 1;
 
     dev_src->history = g_list_append(dev_src->history, hist);
     if(!dt_dev_history_item_update_from_params(dev_src, hist, module, module->enabled, NULL, 0, NULL, NULL))
@@ -916,7 +916,7 @@ static int _styles_prepare_source_dev(dt_develop_t *dev_src, const char *name, c
   GHashTable *style_ids = g_hash_table_new_full(g_str_hash, g_str_equal, dt_free_gpointer, NULL);
   GList *applied_items = _styles_collect_applied_items(dev_src, si_list, style_ids);
 
-  if(!applied_items)
+  if(IS_NULL_PTR(applied_items))
   {
     g_hash_table_destroy(style_ids);
     g_list_free_full(si_list, dt_style_item_free);
@@ -1180,7 +1180,7 @@ GList *dt_styles_get_item_list(const char *name, gboolean params, int32_t imgid)
 char *dt_styles_get_item_list_as_string(const char *name)
 {
   GList *items = dt_styles_get_item_list(name, FALSE, -1);
-  if(items == NULL) return NULL;
+  if(IS_NULL_PTR(items)) return NULL;
 
   GList *names = NULL;
   for(GList *items_iter = items; items_iter; items_iter = g_list_next(items_iter))
@@ -1236,7 +1236,7 @@ static char *dt_style_encode(sqlite3_stmt *stmt, int row)
 void dt_styles_save_to_file(const char *style_name, const char *filedir, gboolean overwrite)
 {
   char stylesdir[PATH_MAX] = { 0 };
-  if(!filedir)
+  if(IS_NULL_PTR(filedir))
   {
     dt_loc_get_user_config_dir(stylesdir, sizeof(stylesdir));
     g_strlcat(stylesdir, "/styles", sizeof(stylesdir));
@@ -1245,13 +1245,14 @@ void dt_styles_save_to_file(const char *style_name, const char *filedir, gboolea
   }
 
   int rc = 0;
-  char stylename[520];
+  char stylename[PATH_MAX];
   sqlite3_stmt *stmt;
 
   // generate filename based on name of style
   // convert all characters to underscore which are not allowed in filenames
-  char *filename = g_strdup(style_name);
-  snprintf(stylename, sizeof(stylename), "%s/%s.dtstyle", filedir, g_strdelimit(filename, "/<>:\"\\|*?[]", '_'));
+  char *filename = g_strdup_printf("%s.dtstyle", style_name);
+  g_strdelimit(filename, "/<>:\"\\|*?[]", '_');
+  dt_concat_path_file(stylename, filedir, filename);
   dt_free(filename);
 
   // check if file exists
@@ -1275,7 +1276,7 @@ void dt_styles_save_to_file(const char *style_name, const char *filedir, gboolea
   if(!dt_styles_exists(style_name)) return;
 
   xmlTextWriterPtr writer = xmlNewTextWriterFilename(stylename, 0);
-  if(writer == NULL)
+  if(IS_NULL_PTR(writer))
   {
     fprintf(stderr, "[dt_styles_save_to_file] Error creating the xml writer\n, path: %s", stylename);
     return;
@@ -1514,7 +1515,7 @@ static void dt_style_plugin_save(StylePluginData *plugin, gpointer styleId)
 static void dt_style_save(StyleData *style)
 {
   int id = 0;
-  if(style == NULL) return;
+  if(IS_NULL_PTR(style)) return;
 
   /* first create the style header */
   if(!dt_styles_create_style_header(style->info->name->str, style->info->description->str, style->info->iop_list)) return;

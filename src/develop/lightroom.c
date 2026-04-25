@@ -46,6 +46,7 @@
 #include "common/tags.h"
 #include "common/metadata.h"
 #include "control/control.h"
+#include "develop/develop.h"
 
 #include <ctype.h>
 #include <libxml/parser.h>
@@ -269,7 +270,7 @@ char *dt_get_lightroom_xmp(int32_t imgid)
   // Look for extension
   char *pos = strrchr(pathname, '.');
 
-  if(pos == NULL)
+  if(IS_NULL_PTR(pos))
     return NULL;
 
   // If found, replace extension with xmp
@@ -486,7 +487,7 @@ static void _lrop(const dt_develop_t *dev, const xmlDocPtr doc, const int32_t im
     else if(!xmlStrcmp(name, (const xmlChar *)"Orientation"))
     {
       data->orientation = atoi((char *)value);
-      if(dev != NULL && ((dev->image_storage.orientation == ORIENTATION_NONE && data->orientation != EXIF_ORIENTATION_NONE)
+      if(!IS_NULL_PTR(dev) && ((dev->image_storage.orientation == ORIENTATION_NONE && data->orientation != EXIF_ORIENTATION_NONE)
                         || (dev->image_storage.orientation == ORIENTATION_ROTATE_CW_90_DEG && data->orientation != EXIF_ORIENTATION_ROTATE_CW_90_DEG)
                         || (dev->image_storage.orientation == ORIENTATION_ROTATE_CCW_90_DEG && data->orientation != EXIF_ORIENTATION_ROTATE_CCW_90_DEG)))
         data->has_flip = TRUE;
@@ -828,7 +829,7 @@ static void _lrop(const dt_develop_t *dev, const xmlDocPtr doc, const int32_t im
       dt_free(v);
     }
   }
-  if(dev == NULL && (!xmlStrcmp(name, (const xmlChar *)"subject")
+  if(IS_NULL_PTR(dev) && (!xmlStrcmp(name, (const xmlChar *)"subject")
                      || !xmlStrcmp(name, (const xmlChar *)"hierarchicalSubject")))
   {
     xmlNodePtr tagNode = node;
@@ -850,7 +851,7 @@ static void _lrop(const dt_develop_t *dev, const xmlDocPtr doc, const int32_t im
     }
     if(tag_change) DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_TAG_CHANGED);
   }
-  else if(dev != NULL && !xmlStrcmp(name, (const xmlChar *)"RetouchInfo"))
+  else if(!IS_NULL_PTR(dev) && !xmlStrcmp(name, (const xmlChar *)"RetouchInfo"))
   {
     xmlNodePtr riNode = node;
 
@@ -888,7 +889,7 @@ static void _lrop(const dt_develop_t *dev, const xmlDocPtr doc, const int32_t im
       riNode = riNode->next;
     }
   }
-  else if(dev != NULL && !xmlStrcmp(name, (const xmlChar *)"ToneCurvePV2012"))
+  else if(!IS_NULL_PTR(dev) && !xmlStrcmp(name, (const xmlChar *)"ToneCurvePV2012"))
   {
     xmlNodePtr tcNode = node;
 
@@ -906,7 +907,7 @@ static void _lrop(const dt_develop_t *dev, const xmlDocPtr doc, const int32_t im
       tcNode = tcNode->next;
     }
   }
-  else if(dev == NULL && !xmlStrcmp(name, (const xmlChar *)"title"))
+  else if(IS_NULL_PTR(dev) && !xmlStrcmp(name, (const xmlChar *)"title"))
   {
     xmlNodePtr ttlNode = node;
     while(ttlNode)
@@ -920,7 +921,7 @@ static void _lrop(const dt_develop_t *dev, const xmlDocPtr doc, const int32_t im
       ttlNode = ttlNode->next;
     }
   }
-  else if(dev == NULL && !xmlStrcmp(name, (const xmlChar *)"description"))
+  else if(IS_NULL_PTR(dev) && !xmlStrcmp(name, (const xmlChar *)"description"))
   {
     xmlNodePtr desNode = node;
     while(desNode)
@@ -934,7 +935,7 @@ static void _lrop(const dt_develop_t *dev, const xmlDocPtr doc, const int32_t im
       desNode = desNode->next;
     }
   }
-  else if(dev == NULL && !xmlStrcmp(name, (const xmlChar *)"creator"))
+  else if(IS_NULL_PTR(dev) && !xmlStrcmp(name, (const xmlChar *)"creator"))
   {
     xmlNodePtr creNode = node;
     while(creNode)
@@ -948,7 +949,7 @@ static void _lrop(const dt_develop_t *dev, const xmlDocPtr doc, const int32_t im
       creNode = creNode->next;
     }
   }
-  else if(dev == NULL && !xmlStrcmp(name, (const xmlChar *)"rights"))
+  else if(IS_NULL_PTR(dev) && !xmlStrcmp(name, (const xmlChar *)"rights"))
   {
     xmlNodePtr rigNode = node;
     while(rigNode)
@@ -983,7 +984,7 @@ static void _handle_xpath(dt_develop_t *dev, xmlDoc *doc, int32_t imgid, xmlXPat
 {
   xmlXPathObject *xpathObj = xmlXPathEvalExpression(xpath, ctx);
 
-  if (xpathObj != NULL)
+  if (!IS_NULL_PTR(xpathObj))
     {
       const xmlNodeSetPtr xnodes = xpathObj->nodesetval;
       const int n = xnodes->nodeNr;
@@ -1057,7 +1058,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
   // Get full pathname
   char *pathname = dt_get_lightroom_xmp(imgid);
 
-  if(!pathname)
+  if(IS_NULL_PTR(pathname))
   {
     if(!iauto) dt_control_log(_("cannot find lightroom XMP!"));
     return FALSE;
@@ -1072,7 +1073,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
 
   doc = xmlReadFile(pathname, NULL, 0);
 
-  if(doc == NULL)
+  if(IS_NULL_PTR(doc))
   {
     dt_free(pathname);
     return FALSE ;
@@ -1082,7 +1083,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
 
   entryNode = xmlDocGetRootElement(doc);
 
-  if(entryNode == NULL)
+  if(IS_NULL_PTR(entryNode))
   {
     dt_free(pathname);
     xmlFreeDoc(doc);
@@ -1100,7 +1101,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
 
   xmlXPathContextPtr xpathCtx = xmlXPathNewContext(doc);
 
-  if(xpathCtx == NULL)
+  if(IS_NULL_PTR(xpathCtx))
   {
     dt_free(pathname);
     xmlFreeDoc(doc);
@@ -1111,7 +1112,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
 
   xmlXPathObjectPtr xpathObj = xmlXPathEvalExpression((const xmlChar *)"//@stEvt:softwareAgent", xpathCtx);
 
-  if(xpathObj == NULL)
+  if(IS_NULL_PTR(xpathObj))
   {
     if(!iauto) dt_control_log(_("`%s' not a lightroom XMP!"), pathname);
     xmlXPathFreeContext(xpathCtx);
@@ -1122,7 +1123,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
 
   xmlNodeSetPtr xnodes = xpathObj->nodesetval;
 
-  if(xnodes != NULL && xnodes->nodeNr > 0)
+  if(!IS_NULL_PTR(xnodes) && xnodes->nodeNr > 0)
   {
     xmlNodePtr xnode = xnodes->nodeTab[0];
     xmlChar *value = xmlNodeListGetString(doc, xnode->xmlChildrenNode, 1);
@@ -1233,7 +1234,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
 
   //  Integrates into the history all the imported iop
 
-  if(dev != NULL && dt_image_is_raw(&dev->image_storage))
+  if(!IS_NULL_PTR(dev) && dt_image_is_raw(&dev->image_storage))
   {
     // set colorin to cmatrix which is the default from Adobe (so closer to what Lightroom does)
     dt_iop_colorin_params_v1_t pci = (dt_iop_colorin_params_v1_t){ "cmatrix", DT_INTENT_PERCEPTUAL };
@@ -1243,7 +1244,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
     refresh_needed = TRUE;
   }
 
-  if(dev != NULL && data.has_crop)
+  if(!IS_NULL_PTR(dev) && data.has_crop)
   {
     double rangle;
     double cx, cw, cy, ch;
@@ -1309,7 +1310,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
     refresh_needed = TRUE;
   }
 
-  if(dev != NULL && data.has_flip)
+  if(!IS_NULL_PTR(dev) && data.has_flip)
   {
     data.pf.orientation = dt_image_orientation_to_flip_bits(data.orientation);
 
@@ -1318,14 +1319,14 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
     refresh_needed = TRUE;
   }
 
-  if(dev != NULL && data.has_exposure)
+  if(!IS_NULL_PTR(dev) && data.has_exposure)
   {
     dt_add_hist(imgid, "exposure", (dt_iop_params_t *)&data.pe, sizeof(dt_iop_exposure_params_t), imported,
                 sizeof(imported), LRDT_EXPOSURE_VERSION, &n_import);
     refresh_needed = TRUE;
   }
 
-  if(dev != NULL && data.has_grain)
+  if(!IS_NULL_PTR(dev) && data.has_grain)
   {
     data.pg.channel = 0;
 
@@ -1334,7 +1335,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
     refresh_needed = TRUE;
   }
 
-  if(dev != NULL && data.has_vignette)
+  if(!IS_NULL_PTR(dev) && data.has_vignette)
   {
     const float base_ratio = 1.325 / 1.5;
 
@@ -1370,7 +1371,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
     refresh_needed = TRUE;
   }
 
-  if(dev != NULL && data.has_spots)
+  if(!IS_NULL_PTR(dev) && data.has_spots)
   {
     // Check for orientation, rotate when in portrait mode
     if(data.orientation > 4)
@@ -1389,7 +1390,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
     refresh_needed = TRUE;
   }
 
-  if(dev != NULL &&
+  if(!IS_NULL_PTR(dev) &&
      (data.curve_kind != linear
       || data.ptc_value[0] != 0 || data.ptc_value[1] != 0 || data.ptc_value[2] != 0 || data.ptc_value[3] != 0))
   {
@@ -1457,7 +1458,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
     refresh_needed = TRUE;
   }
 
-  if(dev != NULL && data.has_colorzones)
+  if(!IS_NULL_PTR(dev) && data.has_colorzones)
   {
     data.pcz.channel = DT_IOP_COLORZONES_h;
 
@@ -1470,7 +1471,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
     refresh_needed = TRUE;
   }
 
-  if(dev != NULL && data.has_splittoning)
+  if(!IS_NULL_PTR(dev) && data.has_splittoning)
   {
     data.pst.compress = 50.0;
 
@@ -1479,7 +1480,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
     refresh_needed = TRUE;
   }
 
-  if(dev != NULL && data.has_bilat)
+  if(!IS_NULL_PTR(dev) && data.has_bilat)
   {
     data.pbl.sigma_r = 100.0;
     data.pbl.sigma_s = 100.0;
@@ -1496,7 +1497,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
     n_import++;
   }
 
-  if(dev == NULL && data.has_rating)
+  if(IS_NULL_PTR(dev) && data.has_rating)
   {
     dt_ratings_apply_on_image(imgid, data.rating, FALSE, FALSE, FALSE);
 
@@ -1505,7 +1506,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
     n_import++;
   }
 
-  if(dev == NULL && data.has_gps)
+  if(IS_NULL_PTR(dev) && data.has_gps)
   {
     dt_image_geoloc_t geoloc;
     geoloc.longitude = data.lon;
@@ -1521,7 +1522,7 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
     n_import++;
   }
 
-  if(dev == NULL && data.has_colorlabel)
+  if(IS_NULL_PTR(dev) && data.has_colorlabel)
   {
     dt_colorlabels_set_label(imgid, data.color);
 
@@ -1530,14 +1531,14 @@ gboolean dt_lightroom_import(int32_t imgid, dt_develop_t *dev, gboolean iauto)
     n_import++;
   }
 
-  if(dev != NULL && refresh_needed && dev->gui_attached)
+  if(!IS_NULL_PTR(dev) && refresh_needed && dev->gui_attached)
   {
     dt_control_log(ngettext("%s has been imported", "%s have been imported", n_import), imported);
 
     if(!iauto)
     {
       /* signal history changed */
-      dt_dev_write_history(dev);
+      dt_dev_write_history(dev, FALSE);
       dt_dev_reload_history_items(dev, imgid);
       dt_dev_history_gui_update(dev);
       dt_dev_history_pixelpipe_update(dev, TRUE);

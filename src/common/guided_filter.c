@@ -63,7 +63,7 @@
 #endif
 
 // avoid cluttering the scalar codepath with #ifdefs by hiding the dependency on SSE2
-#ifndef __SSE2__
+#if !(defined(__x86_64__) || defined(__i386__))
 # define _mm_prefetch(where,hint)
 #endif
 
@@ -81,10 +81,10 @@ typedef struct color_image
 } color_image;
 
 // allocate space for n-component image of size width x height
-static inline int new_color_image(color_image *img, int width, int height, int ch)
+static inline __attribute__((always_inline)) int new_color_image(color_image *img, int width, int height, int ch)
 {
   img->data = dt_pixelpipe_cache_alloc_align_float_cache((size_t)width * height * ch, 0);
-  if(!img->data) return 1;
+  if(IS_NULL_PTR(img->data)) return 1;
   img->width = width;
   img->height = height;
   img->stride = ch;
@@ -92,7 +92,7 @@ static inline int new_color_image(color_image *img, int width, int height, int c
 }
 
 // free space for n-component image
-static inline void free_color_image(color_image *img_p)
+static inline __attribute__((always_inline)) void free_color_image(color_image *img_p)
 {
   dt_pixelpipe_cache_free_align(img_p->data);
   img_p->data = NULL;
@@ -150,17 +150,14 @@ static int guided_filter_tiling(color_image imgg, gray_image img, gray_image img
   const size_t img_dimen = mean.width;
   size_t img_bak_sz;
   float *img_bak = dt_pixelpipe_cache_alloc_perthread_float(9*img_dimen, &img_bak_sz);
-  if(!img_bak)
+  if(IS_NULL_PTR(img_bak))
   {
     free_color_image(&variance);
     free_color_image(&mean);
     return 1;
   }
   int err = 0;
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static) default(none) shared(img, imgg, mean, variance, img_bak, err) \
-  dt_omp_firstprivate(img_bak_sz, img_dimen, w, guide_weight) dt_omp_sharedconst(source)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int j_imgg = source.lower; j_imgg < source.upper; j_imgg++)
   {
     int j = j_imgg - source.lower;
@@ -189,7 +186,7 @@ static int guided_filter_tiling(color_image imgg, gray_image img, gray_image img
     }
     // apply horizontal pass of box mean filter while the cache is still hot
     float *const restrict scratch = dt_get_perthread(img_bak, img_bak_sz);
-    if(!scratch
+    if(IS_NULL_PTR(scratch)
        || dt_box_mean_horizontal(meanpx, mean.width, 4|BOXFILTER_KAHAN_SUM, w, scratch) != 0
        || dt_box_mean_horizontal(varpx, variance.width, 9|BOXFILTER_KAHAN_SUM, w, scratch) != 0)
     {
@@ -217,10 +214,7 @@ static int guided_filter_tiling(color_image imgg, gray_image img, gray_image img
   #define A_GREEN 1
   #define A_BLUE 2
   #define B 3
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static) default(none) \
-  dt_omp_firstprivate(size, eps) shared(mean, variance, a_b)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t i = 0; i < size; i++)
   {
     const float *meanpx = get_color_pixel(mean, i);
@@ -281,11 +275,7 @@ static int guided_filter_tiling(color_image imgg, gray_image img, gray_image img
     free_color_image(&mean);
     return 1;
   }
-
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static) default(none) \
-  shared(target, imgg, a_b, img_out) dt_omp_sharedconst(source) dt_omp_firstprivate(min, max, width, guide_weight)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int j_imgg = target.lower; j_imgg < target.upper; j_imgg++)
   {
     // index of the left most target pixel in the current row
@@ -307,7 +297,7 @@ static int guided_filter_tiling(color_image imgg, gray_image img, gray_image img
   return 0;
 }
 
-static int compute_tile_height(const int height, const int w)
+static inline __attribute__((always_inline)) int compute_tile_height(const int height, const int w)
 {
   int tile_h = max_i(3 * w, GF_TILE_SIZE);
 #if 0 // enabling the below doesn't make any measureable speed difference, but does cause a handful of pixels
@@ -332,7 +322,7 @@ static int compute_tile_height(const int height, const int w)
   return tile_h;
 }
 
-static int compute_tile_width(const int width, const int w)
+static inline __attribute__((always_inline)) int compute_tile_width(const int width, const int w)
 {
   int tile_w = max_i(3 * w, GF_TILE_SIZE);
 #if 0 // enabling the below doesn't make any measureable speed difference, but does cause a handful of pixels
@@ -357,6 +347,7 @@ static int compute_tile_width(const int width, const int w)
   return tile_w;
 }
 
+__DT_CLONE_TARGETS__
 int guided_filter(const float *const guide, const float *const in, float *const out, const int width,
                   const int height, const int ch,
                   const int w,              // window size
@@ -407,7 +398,7 @@ dt_guided_filter_cl_global_t *dt_guided_filter_init_cl_global()
 
 void dt_guided_filter_free_cl_global(dt_guided_filter_cl_global_t *g)
 {
-  if(!g) return;
+  if(IS_NULL_PTR(g)) return;
   // destroy kernels
   dt_opencl_free_kernel(g->kernel_guided_filter_split_rgb);
   dt_opencl_free_kernel(g->kernel_guided_filter_box_mean_x);
@@ -598,12 +589,12 @@ static int guided_filter_cl_impl(int devid, cl_mem guide, cl_mem in, cl_mem out,
   void *b = temp2;
 
   int err = CL_SUCCESS;
-  if(temp1 == NULL || temp2 == NULL ||                                                        //
-     imgg_mean_r == NULL || imgg_mean_g == NULL || imgg_mean_b == NULL || img_mean == NULL || //
-     cov_imgg_img_r == NULL || cov_imgg_img_g == NULL || cov_imgg_img_b == NULL ||            //
-     var_imgg_rr == NULL || var_imgg_gg == NULL || var_imgg_bb == NULL ||                     //
-     var_imgg_rg == NULL || var_imgg_rb == NULL || var_imgg_gb == NULL ||                     //
-     a_r == NULL || a_g == NULL || a_b == NULL)
+  if(IS_NULL_PTR(temp1) || IS_NULL_PTR(temp2) ||                                                        //
+     IS_NULL_PTR(imgg_mean_r) || IS_NULL_PTR(imgg_mean_g) || IS_NULL_PTR(imgg_mean_b) || IS_NULL_PTR(img_mean) || //
+     IS_NULL_PTR(cov_imgg_img_r) || IS_NULL_PTR(cov_imgg_img_g) || IS_NULL_PTR(cov_imgg_img_b) ||            //
+     IS_NULL_PTR(var_imgg_rr) || IS_NULL_PTR(var_imgg_gg) || IS_NULL_PTR(var_imgg_bb) ||                     //
+     IS_NULL_PTR(var_imgg_rg) || IS_NULL_PTR(var_imgg_rb) || IS_NULL_PTR(var_imgg_gb) ||                     //
+     IS_NULL_PTR(a_r) || IS_NULL_PTR(a_g) || IS_NULL_PTR(a_b))
   {
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto error;
@@ -725,7 +716,7 @@ static int guided_filter_cl_fallback(int devid, cl_mem guide, cl_mem in, cl_mem 
   float *out_host = dt_pixelpipe_cache_alloc_align_float_cache(
       width * height,
       0);
-  if(!guide_host || !in_host || !out_host)
+  if(!guide_host || IS_NULL_PTR(in_host) || IS_NULL_PTR(out_host))
   {
     dt_pixelpipe_cache_free_align(guide_host);
     dt_pixelpipe_cache_free_align(in_host);

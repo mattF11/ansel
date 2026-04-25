@@ -426,13 +426,13 @@ static const dt_dev_history_item_t * _find_previous_history_step(const dt_dev_hi
 
 static gchar *_create_tooltip_text(const dt_dev_history_item_t *hitem)
 {
-  if(!hitem || !hitem->module) return NULL;
+  if(IS_NULL_PTR(hitem) || !hitem->module) return NULL;
 
   const dt_dev_history_item_t *hprev = _find_previous_history_step(hitem);
   dt_iop_params_t *old_params
-      = (hprev == hitem || hprev == NULL) ? hitem->module->default_params : hprev->module->params;
+      = (hprev == hitem || IS_NULL_PTR(hprev)) ? hitem->module->default_params : hprev->module->params;
   dt_develop_blend_params_t *old_blend
-      = (hprev == hitem || hprev == NULL) ? hitem->module->default_blendop_params : hprev->module->blend_params;
+      = (hprev == hitem || IS_NULL_PTR(hprev)) ? hitem->module->default_blendop_params : hprev->module->blend_params;
 
   gchar **change_parts = g_malloc0_n(sizeof(dt_develop_blend_params_t) / (sizeof(float)) + 24, sizeof(char*));
   int num_parts = 0;
@@ -496,7 +496,7 @@ static gchar *_create_tooltip_text(const dt_dev_history_item_t *hitem)
       gboolean first = TRUE;
 
       for(const dt_iop_gui_blendif_channel_t *b = bd ? bd->channel : NULL;
-          b && b->label != NULL;
+          b && !IS_NULL_PTR(b->label);
           b++)
       {
         const dt_develop_blendif_channels_t ch = b->param_channels[in_out];
@@ -548,10 +548,10 @@ static gboolean _changes_tooltip_callback(GtkWidget *widget, gint x, gint y, gbo
                                           GtkTooltip *tooltip)
 {
   const gchar *tooltip_text = g_object_get_data(G_OBJECT(widget), "tooltip-text");
-  if(!tooltip_text || !tooltip_text[0]) return FALSE;
+  if(IS_NULL_PTR(tooltip_text) || !tooltip_text[0]) return FALSE;
 
   static GtkWidget *view = NULL;
-  if(!view)
+  if(IS_NULL_PTR(view))
   {
     view = gtk_text_view_new();
     dt_gui_add_class(view, "dt_transparent_background");
@@ -568,7 +568,7 @@ static gboolean _changes_tooltip_callback(GtkWidget *widget, gint x, gint y, gbo
   for(gchar *line = (gchar *)tooltip_text; *line;)
   {
     gchar *endline = g_strstr_len(line, -1, "\n");
-    if(!endline) endline = line + strlen(line);
+    if(IS_NULL_PTR(endline)) endline = line + strlen(line);
 
     gchar *found_tab1 = g_strstr_len(line, endline - line, "\t");
     if(found_tab1)
@@ -651,14 +651,22 @@ static void _history_apply_history_end(const int history_end)
   dt_dev_set_history_end_ext(dev, history_end);
   dt_dev_pop_history_items_ext(dev);
   dt_pthread_rwlock_unlock(&dev->history_mutex);
+  // Apply the same post-history sync as dt_dev_pop_history_items():
+  // darkroom geometry and the virtual preview pipe must be refreshed only
+  // after releasing history_mutex to avoid lock inversions with GUI users.
+  if(dev->gui_attached) dt_dev_get_thumbnail_size(dev);
   if(darktable.gui && dev->gui_attached) --darktable.gui->reset;
 
   dt_dev_undo_end_record(dev);
 
-  dt_dev_write_history(dev);
+  dt_dev_write_history(dev, FALSE);
+
+  // We have no way of knowing if moving the history end conceptually added
+  // or removed new pipeline nodes ("modules"), so we need to nuke the pipe all the time
+  // and rebuild from scratch
+  dt_dev_history_pixelpipe_update(dev, TRUE);
+
   dt_dev_history_gui_update(dev);
-  dt_dev_history_pixelpipe_update(dev, FALSE);
-  dt_dev_history_notify_change(dev, dev->image_storage.id);
 }
 
 static void _history_show_module_for_end(const int history_end)
@@ -672,7 +680,7 @@ static void _history_show_module_for_end(const int history_end)
   dt_pthread_rwlock_unlock(&darktable.develop->history_mutex);
   if(module)
   {
-    dt_dev_modulegroups_switch(darktable.develop, module);
+    dt_iop_request_focus(module);
     dt_iop_gui_set_expanded(module, TRUE, TRUE);
   }
 }
@@ -706,6 +714,32 @@ static gchar *_history_tooltip_with_hint(const dt_dev_history_item_t *hitem)
 static void _history_store_prepend_item(dt_lib_history_t *d, const dt_dev_history_item_t *hitem, const int history_end)
 {
   const gboolean enabled = (hitem->enabled || (strcmp(hitem->op_name, "mask_manager") == 0));
+  if(!hitem->module)
+  {
+    gchar *label = NULL;
+    if(!hitem->multi_name[0] || strcmp(hitem->multi_name, "0") == 0)
+      label = g_strdup(hitem->op_name);
+    else
+      label = g_strdup_printf("%s %s", hitem->op_name, hitem->multi_name);
+
+    gchar number[10];
+    g_snprintf(number, sizeof(number), "%2d", history_end);
+
+    gchar *tooltip_text = _history_tooltip_with_hint(hitem);
+
+    GtkTreeIter iter;
+    gtk_list_store_insert(d->history_store, &iter, 0);
+    gtk_list_store_set(d->history_store, &iter, DT_HISTORY_VIEW_COL_HISTORY_END, history_end,
+                       DT_HISTORY_VIEW_COL_NUMBER, number, DT_HISTORY_VIEW_COL_LABEL, label,
+                       DT_HISTORY_VIEW_COL_ICON_NAME, _history_icon_name(enabled, FALSE, FALSE, FALSE),
+                       DT_HISTORY_VIEW_COL_ENABLED, enabled, DT_HISTORY_VIEW_COL_TOOLTIP,
+                       tooltip_text ? tooltip_text : "", -1);
+
+    dt_free(tooltip_text);
+    dt_free(label);
+    return;
+  }
+
   const gboolean deprecated = (hitem->module->flags() & IOP_FLAGS_DEPRECATED);
   const char *icon_name = _history_icon_name(enabled, hitem->module->default_enabled, hitem->module->hide_enable_button,
                                              deprecated);
@@ -787,7 +821,7 @@ static void _lib_history_view_selection_changed(GtkTreeSelection *selection, gpo
 {
   dt_lib_module_t *self = (dt_lib_module_t *)user_data;
   dt_lib_history_t *d = (dt_lib_history_t *)self->data;
-  if(!d || d->selection_reset || darktable.gui->reset) return;
+  if(IS_NULL_PTR(d) || d->selection_reset || darktable.gui->reset) return;
 
   GtkTreeModel *model = NULL;
   GtkTreeIter iter;
@@ -802,8 +836,8 @@ static void _lib_history_view_selection_changed(GtkTreeSelection *selection, gpo
 
 static gboolean _lib_history_view_button_press_callback(GtkWidget *widget, GdkEventButton *e, gpointer user_data)
 {
-  // shift-click just shows the corresponding module in modulegroups
-  if(e->button == 1 && dt_modifier_is(e->state, GDK_SHIFT_MASK))
+  // Ctrl-click just shows the corresponding module in modulegroups
+  if(e->button == 1 && dt_modifier_is(e->state, GDK_CONTROL_MASK))
   {
     GtkTreePath *path = NULL;
     if(gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget), (gint)e->x, (gint)e->y, &path, NULL, NULL, NULL))
@@ -856,8 +890,6 @@ void gui_reset(dt_lib_module_t *self)
     dt_history_delete_on_image_ext(imgid, FALSE);
 
     dt_dev_undo_end_record(darktable.develop);
-
-    dt_dev_modulegroups_update_visibility(darktable.develop);
 
     dt_dev_pixelpipe_resync_history_all(darktable.develop);
   }

@@ -94,14 +94,14 @@ static CameraMetaData *meta = NULL;
 static void dt_rawspeed_load_meta()
 {
   /* Load rawspeed cameras.xml meta file once */
-  if(meta == NULL)
+  if(IS_NULL_PTR(meta))
   {
     dt_pthread_mutex_lock(&darktable.plugin_threadsafe);
-    if(meta == NULL)
+    if(IS_NULL_PTR(meta))
     {
       char datadir[PATH_MAX] = { 0 }, camfile[PATH_MAX] = { 0 };
       dt_loc_get_datadir(datadir, sizeof(datadir));
-      snprintf(camfile, sizeof(camfile), "%s/rawspeed/cameras.xml", datadir);
+      dt_concat_path_file(camfile, datadir, "rawspeed/cameras.xml");
       // never cleaned up (only when dt closes)
       meta = new CameraMetaData(camfile);
     }
@@ -160,9 +160,9 @@ static gboolean _ignore_image(const gchar *filename)
 {
   const char *extensions_whitelist[] = { "cr3", NULL };
   char *ext = g_strrstr(filename, ".");
-  if(!ext) return FALSE;
+  if(IS_NULL_PTR(ext)) return FALSE;
   ext++;
-  for(const char **i = extensions_whitelist; *i != NULL; i++)
+  for(const char **i = extensions_whitelist; !IS_NULL_PTR(*i); i++)
     if(!g_ascii_strncasecmp(ext, *i, strlen(*i)))
     {
       return TRUE;
@@ -335,10 +335,10 @@ dt_imageio_retval_t dt_imageio_open_rawspeed(dt_image_t *img,
       // otherwise (e.g. HDRMerge files), let rawprepare normalize as usual.
       if(r->whitePoint == 0x3F800000) img->raw_white_point = 1;
       if(img->raw_white_point == 1)
-        for(int k = 0; k < 4; k++) img->buf_dsc.processed_maximum[k] = 1.0f;
+        for(int k = 0; k < 4; k++) img->dsc.processed_maximum[k] = 1.0f;
     }
 
-    img->buf_dsc.filters = 0u;
+    img->dsc.filters = 0u;
 
     // dimensions of uncropped image
     const iPoint2D dimUncropped = r->getUncroppedDim();
@@ -384,15 +384,17 @@ dt_imageio_retval_t dt_imageio_open_rawspeed(dt_image_t *img,
     const float cpp = r->getCpp();
     if(cpp != 1) return DT_IMAGEIO_LOAD_FAILED;
 
-    img->buf_dsc.channels = 1;
+    img->dsc.channels = 1;
 
     switch(r->getBpp())
     {
       case sizeof(uint16_t):
-        img->buf_dsc.datatype = TYPE_UINT16;
+        img->dsc.datatype = TYPE_UINT16;
+        img->dsc.bpp = sizeof(uint16_t);
         break;
       case sizeof(float):
-        img->buf_dsc.datatype = TYPE_FLOAT;
+        img->dsc.datatype = TYPE_FLOAT;
+        img->dsc.bpp = sizeof(float);
         break;
       default:
         return DT_IMAGEIO_UNSUPPORTED_FEATURE;
@@ -400,17 +402,17 @@ dt_imageio_retval_t dt_imageio_open_rawspeed(dt_image_t *img,
 
     // as the X-Trans filters comments later on states, these are for
     // cropped image, so we need to uncrop them.
-    img->buf_dsc.filters = dt_rawspeed_crop_dcraw_filters(r->cfa.getDcrawFilter(), cropTL.x, cropTL.y);
+    img->dsc.filters = dt_rawspeed_crop_dcraw_filters(r->cfa.getDcrawFilter(), cropTL.x, cropTL.y);
 
-    if(FILTERS_ARE_4BAYER(img->buf_dsc.filters)) img->flags |= DT_IMAGE_4BAYER;
+    if(FILTERS_ARE_4BAYER(img->dsc.filters)) img->flags |= DT_IMAGE_4BAYER;
 
-    if(img->buf_dsc.filters)
+    if(img->dsc.filters)
     {
       img->flags &= ~DT_IMAGE_LDR;
       img->flags |= DT_IMAGE_RAW;
 
       // special handling for x-trans sensors
-      if(img->buf_dsc.filters == 9u)
+      if(img->dsc.filters == 9u)
       {
         // get 6x6 CFA offset from top left of cropped image
         // NOTE: This is different from how things are done with Bayer
@@ -421,20 +423,20 @@ dt_imageio_retval_t dt_imageio_open_rawspeed(dt_image_t *img,
         for(int i = 0; i < 6; ++i)
           for(int j = 0; j < 6; ++j)
           {
-            img->buf_dsc.xtrans[j][i] = (uint8_t)r->cfa.getColorAt(i % 6, j % 6);
+            img->dsc.xtrans[j][i] = (uint8_t)r->cfa.getColorAt(i % 6, j % 6);
           }
       }
     }
     // if buf is NULL, we quit the fct here
     if(!mbuf)
     {
-      img->buf_dsc.cst = IOP_CS_RAW;
+      img->dsc.cst = IOP_CS_RAW;
       img->loader = LOADER_RAWSPEED;
       return DT_IMAGEIO_OK;
     }
 
     void *buf = dt_mipmap_cache_alloc(mbuf, img);
-    if(!buf) return DT_IMAGEIO_CACHE_FULL;
+    if(IS_NULL_PTR(buf)) return DT_IMAGEIO_CACHE_FULL;
 
     /*
      * since we do not want to crop black borders at this stage,
@@ -528,7 +530,7 @@ dt_imageio_retval_t dt_imageio_open_rawspeed(dt_image_t *img,
     return DT_IMAGEIO_FILE_CORRUPTED;
   }
 
-  img->buf_dsc.cst = IOP_CS_RAW;
+  img->dsc.cst = IOP_CS_RAW;
   img->loader = LOADER_RAWSPEED;
 
   return DT_IMAGEIO_OK;
@@ -544,8 +546,9 @@ dt_imageio_retval_t dt_imageio_open_rawspeed_sraw(dt_image_t *img,
   img->flags |= DT_IMAGE_S_RAW;
 
   // actually we want to store full floats here:
-  img->buf_dsc.channels = 4;
-  img->buf_dsc.datatype = TYPE_FLOAT;
+  img->dsc.channels = 4;
+  img->dsc.datatype = TYPE_FLOAT;
+  img->dsc.bpp = 4 * sizeof(float);
 
   if(r->getDataType() != TYPE_USHORT16 && r->getDataType() != TYPE_FLOAT32)
     return DT_IMAGEIO_UNSUPPORTED_FEATURE;
@@ -556,7 +559,7 @@ dt_imageio_retval_t dt_imageio_open_rawspeed_sraw(dt_image_t *img,
   // if buf is NULL, we quit the fct here
   if(!mbuf)
   {
-    img->buf_dsc.cst = IOP_CS_RAW;
+    img->dsc.cst = IOP_CS_RAW;
     img->loader = LOADER_RAWSPEED;
     return DT_IMAGEIO_OK;
   }
@@ -564,7 +567,10 @@ dt_imageio_retval_t dt_imageio_open_rawspeed_sraw(dt_image_t *img,
   if(cpp == 1) img->flags |= DT_IMAGE_MONOCHROME;
 
   void *buf = dt_mipmap_cache_alloc(mbuf, img);
-  if(!buf) return DT_IMAGEIO_CACHE_FULL;
+  if(IS_NULL_PTR(buf)) return DT_IMAGEIO_CACHE_FULL;
+
+  const int height = img->height;
+  const int width = img->width;
 
   if(cpp == 1)
   {
@@ -575,37 +581,35 @@ dt_imageio_retval_t dt_imageio_open_rawspeed_sraw(dt_image_t *img,
 
     if(r->getDataType() == TYPE_USHORT16)
     {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(cpp) shared(r, img, buf)
-#endif
-      for(int j = 0; j < img->height; j++)
+      __OMP_PARALLEL_FOR_CPP__(shared(r) firstprivate(height, width, buf, cpp))
+      for(int j = 0; j < height; j++)
       {
         const Array2DRef<uint16_t> in = r->getU16DataAsUncroppedArray2DRef();
-        float *out = ((float *)buf) + (size_t)4 * j * img->width;
+        float *out = ((float *)buf) + (size_t)4 * j * width;
 
-        for(int i = 0; i < img->width; i++, out += 4)
+        for(int i = 0; i < width; i++, out += 4)
         {
           out[0] = out[1] = out[2] = (float)in(j, cpp * i) / (float)UINT16_MAX;
           out[3] = 0.0f;
         }
       }
+      
     }
     else // r->getDataType() == TYPE_FLOAT32
     {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(cpp) shared(r, img, buf)
-#endif
-      for(int j = 0; j < img->height; j++)
+      __OMP_PARALLEL_FOR_CPP__(shared(r) firstprivate(height, width, buf, cpp))
+      for(int j = 0; j < height; j++)
       {
         const Array2DRef<float> in = r->getF32DataAsUncroppedArray2DRef();
-        float *out = ((float *)buf) + (size_t)4 * j * img->width;
+        float *out = ((float *)buf) + (size_t)4 * j * width;
 
-        for(int i = 0; i < img->width; i++, out += 4)
+        for(int i = 0; i < width; i++, out += 4)
         {
           out[0] = out[1] = out[2] = in(j, cpp * i);
           out[3] = 0.0f;
         }
       }
+      
     }
   }
   else // case cpp == 3 or 4
@@ -617,43 +621,41 @@ dt_imageio_retval_t dt_imageio_open_rawspeed_sraw(dt_image_t *img,
 
     if(r->getDataType() == TYPE_USHORT16)
     {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(cpp) shared(r, img, buf)
-#endif
-      for(int j = 0; j < img->height; j++)
+      __OMP_PARALLEL_FOR_CPP__(shared(r) firstprivate(height, width, buf, cpp))
+      for(int j = 0; j < height; j++)
       {
         const Array2DRef<uint16_t> in = r->getU16DataAsUncroppedArray2DRef();
-        float *out = ((float *)buf) + (size_t)4 * j * img->width;
+        float *out = ((float *)buf) + (size_t)4 * j * width;
 
-        for(int i = 0; i < img->width; i++, out += 4)
+        for(int i = 0; i < width; i++, out += 4)
         {
           for(int k = 0; k < 3; k++)
             out[k] = (float)in(j, cpp * i + k) / (float)UINT16_MAX;
           out[3] = 0.0f;
         }
       }
+      
     }
     else // r->getDataType() == TYPE_FLOAT32
     {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(cpp) shared(r, img, buf)
-#endif
-      for(int j = 0; j < img->height; j++)
+      __OMP_PARALLEL_FOR_CPP__(shared(r) firstprivate(height, width, buf, cpp))
+      for(int j = 0; j < height; j++)
       {
         const Array2DRef<float> in = r->getF32DataAsUncroppedArray2DRef();
-        float *out = ((float *)buf) + (size_t)4 * j * img->width;
+        float *out = ((float *)buf) + (size_t)4 * j * width;
 
-        for(int i = 0; i < img->width; i++, out += 4)
+        for(int i = 0; i < width; i++, out += 4)
         {
           for(int k = 0; k < 3; k++)
             out[k] = in(j, cpp * i + k);
           out[3] = 0.0f;
         }
       }
+      
     }
   }
 
-  img->buf_dsc.cst = IOP_CS_RGB;
+  img->dsc.cst = IOP_CS_RGB;
   img->loader = LOADER_RAWSPEED;
 
   //  Check if the camera is missing samples

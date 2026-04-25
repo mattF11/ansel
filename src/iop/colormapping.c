@@ -181,7 +181,7 @@ int flags()
   return IOP_FLAGS_ONE_INSTANCE | IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_DEPRECATED;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
 }
@@ -237,6 +237,7 @@ static void invert_histogram(const int *hist, float *inv_hist)
   // HISTN-1)]);
 }
 
+__DT_CLONE_TARGETS__
 static void get_cluster_mapping(const int n, float2 *mi, const float *wi, float2 *mo, const float *wo,
                                 const float dominance, int *mapio)
 {
@@ -269,6 +270,7 @@ static void get_cluster_mapping(const int n, float2 *mi, const float *wi, float2
 
 
 // inverse distant weighting according to D. Shepard's method; with power parameter 2.0
+__DT_CLONE_TARGETS__
 static void get_clusters(const float *col, const int n, float2 *mean, float *weight)
 {
   float mdist = FLT_MAX;
@@ -345,12 +347,7 @@ static void kmeans(const float *col, const int width, const int height, const in
   {
     for(int k = 0; k < n; k++) cnt[k] = 0;
 // randomly sample col positions inside roi
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(cnt, height, mean, n, samples, var, width) \
-    shared(col, mean_out) \
-    schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(int s = 0; s < samples; s++)
     {
       const int j = CLAMP(dt_points_get() * height, 0, height - 1);
@@ -449,9 +446,12 @@ static void kmeans(const float *col, const int width, const int height, const in
   }
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_colormapping_data_t *const restrict data = (dt_iop_colormapping_data_t *)piece->data;
   dt_iop_colormapping_gui_data_t *const restrict g = (dt_iop_colormapping_gui_data_t *)self->gui_data;
   float *const restrict in = (float *)ivoid;
@@ -459,16 +459,13 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
   const int width = roi_in->width;
   const int height = roi_in->height;
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
-                                         in, out, roi_in, roi_out))
-    return 0; // image has been copied through to output and module's trouble flag has been updated
 
-  const float scale = 1.f / roi_in->scale;
+  const float scale = dt_dev_get_module_scale(pipe, roi_in);
   const float sigma_s = 50.0f / scale;
   const float sigma_r = 8.0f; // does not depend on scale
 
   // save a copy of preview input buffer so we can get histogram and color statistics out of it
-  if(self->dev->gui_attached && g && dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, roi_out)
+  if(self->dev->gui_attached && !IS_NULL_PTR(g) && dt_dev_pixelpipe_has_preview_output(self->dev, pipe, roi_out)
      && (data->flag & ACQUIRE))
   {
     dt_iop_gui_enter_critical_section(self);
@@ -480,7 +477,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     g->height = height;
     g->ch = 4;
 
-    if(!g->buffer)
+    if(IS_NULL_PTR(g->buffer))
     {
       dt_iop_gui_leave_critical_section(self);
       return 1;
@@ -501,13 +498,13 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
     // get mapping from input clusters to target clusters
     int *const mapio = malloc(sizeof(int) * data->n);
-    if(!mapio) return 1;
+    if(IS_NULL_PTR(mapio)) return 1;
 
     get_cluster_mapping(data->n, data->target_mean, data->target_weight, data->source_mean,
                         data->source_weight, dominance, mapio);
 
     float2 *const var_ratio = malloc(sizeof(float2) * data->n);
-    if(!var_ratio)
+    if(IS_NULL_PTR(var_ratio))
     {
       dt_free(mapio);
       return 1;
@@ -523,12 +520,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
     const size_t npixels = (size_t)height * width;
 // first get delta L of equalized L minus original image L, scaled to fit into [0 .. 100]
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(npixels) \
-    dt_omp_sharedconst(in, out, data, equalization)        \
-    schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(size_t k = 0; k < npixels * 4; k += 4)
     {
       const float L = in[k];
@@ -542,7 +534,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     {
       // bilateral blur of delta L to avoid artifacts caused by limited histogram resolution
       dt_bilateral_t *b = dt_bilateral_init(width, height, sigma_s, sigma_r);
-      if(!b)
+      if(IS_NULL_PTR(b))
       {
         dt_free(var_ratio);
         dt_free(mapio);
@@ -556,25 +548,18 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
     size_t allocsize;
     float *const weight_buf = dt_pixelpipe_cache_alloc_perthread(data->n, sizeof(float), &allocsize);
-    if(weight_buf == NULL)
+    if(IS_NULL_PTR(weight_buf))
     {
       dt_free(var_ratio);
       dt_free(mapio);
       return 1;
     }
-
-#ifdef _OPENMP
-#pragma omp parallel default(none) \
-    dt_omp_firstprivate(npixels, mapio, var_ratio, weight_buf, allocsize) \
-    dt_omp_sharedconst(data, in, out, equalization)
-#endif
+    __OMP_PARALLEL__()
     {
       // get a thread-private scratch buffer; do this before the actual loop so we don't have to look it up for
       // every single pixel
       float *const restrict weight = dt_get_perthread(weight_buf,allocsize);
-#ifdef _OPENMP
-#pragma omp for schedule(static)
-#endif
+      __OMP_FOR__()
       for(size_t j = 0; j < 4*npixels; j += 4)
       {
         const float L = in[j];
@@ -613,17 +598,16 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   return 0;
 }
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
-  const float scale = 1.f / roi_in->scale;
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const float scale = dt_dev_get_module_scale(pipe, roi_in);
   const float sigma_s = 50.0f / scale;
   const float sigma_r = 8.0f; // does not depend on scale
 
   const int width = roi_in->width;
   const int height = roi_in->height;
-  const int channels = piece->colors;
+  const int channels = piece->dsc_in.channels;
 
   const size_t basebuffer = sizeof(float) * channels * width * height;
 
@@ -706,7 +690,7 @@ void reload_defaults(dt_iop_module_t *module)
   dt_iop_colormapping_params_t *d = module->default_params;
 
   dt_iop_colormapping_gui_data_t *g = (dt_iop_colormapping_gui_data_t *)module->gui_data;
-  if(module->dev->gui_attached && g && g->flowback_set)
+  if(module->dev->gui_attached && !IS_NULL_PTR(g) && g->flowback_set)
   {
     memcpy(d->source_ihist, g->flowback.hist, sizeof(float) * HISTN);
     memcpy(d->source_mean, g->flowback.mean, sizeof(float) * MAXN * 2);
@@ -790,7 +774,7 @@ static void process_clusters(gpointer instance, gpointer user_data)
   dt_iop_colormapping_gui_data_t *g = (dt_iop_colormapping_gui_data_t *)self->gui_data;
   int new_source_clusters = 0;
 
-  if(!g || !g->buffer) return;
+  if(IS_NULL_PTR(g) || IS_NULL_PTR(g->buffer)) return;
   if(!(p->flag & ACQUIRE)) return;
 
   ++darktable.gui->reset;
@@ -800,7 +784,7 @@ static void process_clusters(gpointer instance, gpointer user_data)
   const int height = g->height;
   const int ch = g->ch;
   float *const restrict buffer = dt_iop_image_alloc(width, height, ch);
-  if(!buffer)
+  if(IS_NULL_PTR(buffer))
   {
     dt_iop_gui_leave_critical_section(self);
     return;

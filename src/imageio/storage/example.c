@@ -196,7 +196,7 @@ int set_params(dt_imageio_module_storage_t *self, const void *params, const int 
 
 void free_params(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *params)
 {
-  if(!params) return;
+  if(IS_NULL_PTR(params)) return;
   dt_free(params);
 }
 
@@ -228,7 +228,7 @@ void finalize_store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t 
     dt_image_cache_read_release(darktable.image_cache, img);
 
     gchar *imgbody = g_strdup_printf(imageBodyFormat, filename, exif);
-    if (body != NULL) {
+    if (!IS_NULL_PTR(body)) {
       gchar *body_bak = body;
       body = g_strconcat(body_bak, imgbody, NULL);
       dt_free(body_bak);

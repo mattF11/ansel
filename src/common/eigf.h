@@ -81,7 +81,7 @@ static inline int eigf_variance_analysis(const float *const restrict guide, // I
   float *const restrict in = dt_pixelpipe_cache_alloc_align_float_cache(Ndim * 4, 0);
   dt_gaussian_t *g = NULL;
   int err = 0;
-  if(in == NULL)
+  if(IS_NULL_PTR(in))
   {
     err = 1;
     goto error;
@@ -95,13 +95,7 @@ static inline int eigf_variance_analysis(const float *const restrict guide, // I
   float maxg2 = 0.0f;
   float minmg = 10000000.0f;
   float maxmg = 0.0f;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-dt_omp_firstprivate(guide, mask, in, Ndim) \
-  schedule(simd:static) \
-  reduction(max:maxg, maxm, maxg2, maxmg)\
-  reduction(min:ming, minm, ming2, minmg)
-#endif
+  __OMP_PARALLEL_FOR__(reduction(max:maxg, maxm, maxg2, maxmg) reduction(min:ming, minm, ming2, minmg))
   for(size_t k = 0; k < Ndim; k++)
   {
     const float pixelg = guide[k];
@@ -125,18 +119,13 @@ dt_omp_firstprivate(guide, mask, in, Ndim) \
   dt_aligned_pixel_t max = {maxg, maxg2, maxm, maxmg};
   dt_aligned_pixel_t min = {ming, ming2, minm, minmg};
   g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
-  if(g == NULL)
+  if(IS_NULL_PTR(g))
   {
     err = 1;
     goto error;
   }
   dt_gaussian_blur_4c(g, in, out);
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(out, Ndim) \
-  schedule(simd:static) aligned(out:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(out:64))
   for(size_t k = 0; k < Ndim; k++)
   {
     out[4 * k + 1] -= out[4 * k] * out[4 * k];
@@ -162,7 +151,7 @@ static inline int eigf_variance_analysis_no_mask(const float *const restrict gui
   float *const restrict in = dt_pixelpipe_cache_alloc_align_float_cache(Ndim * 2, 0);
   dt_gaussian_t *g = NULL;
   int err = 0;
-  if(in == NULL)
+  if(IS_NULL_PTR(in))
   {
     err = 1;
     goto error;
@@ -172,13 +161,7 @@ static inline int eigf_variance_analysis_no_mask(const float *const restrict gui
   float maxg = 0.0f;
   float ming2 = 10000000.0f;
   float maxg2 = 0.0f;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-dt_omp_firstprivate(guide, in, Ndim) \
-  schedule(simd:static) \
-  reduction(max:maxg, maxg2)\
-  reduction(min:ming, ming2)
-#endif
+  __OMP_PARALLEL_FOR__(reduction(max:maxg, maxg2) reduction(min:ming, ming2))
   for(size_t k = 0; k < Ndim; k++)
   {
     const float pixelg = guide[k];
@@ -194,18 +177,13 @@ dt_omp_firstprivate(guide, in, Ndim) \
   float max[2] = {maxg, maxg2};
   float min[2] = {ming, ming2};
   g = dt_gaussian_init(width, height, 2, max, min, sigma, 0);
-  if(!g)
+  if(IS_NULL_PTR(g))
   {
     err = 1;
     goto error;
   }
   dt_gaussian_blur(g, in, out);
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(out, Ndim) \
-  schedule(simd:static) aligned(out:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(out:64))
   for(size_t k = 0; k < Ndim; k++)
   {
     const float avg = out[2 * k];
@@ -223,11 +201,7 @@ static inline void eigf_blending(float *const restrict image, const float *const
                                  const float *const restrict av, const size_t Ndim,
                                  const dt_iop_guided_filter_blending_t filter, const float feathering)
 {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(image, mask, av, Ndim, feathering, filter) \
-  schedule(simd:static) aligned(image, mask, av:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(image, mask, av:64))
   for(size_t k = 0; k < Ndim; k++)
   {
     const float avg_g = av[k * 4];
@@ -260,11 +234,7 @@ static inline void eigf_blending_no_mask(float *const restrict image, const floa
                                          const size_t Ndim, const dt_iop_guided_filter_blending_t filter,
                                          const float feathering)
 {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(image, av, Ndim, feathering, filter) \
-  schedule(simd:static) aligned(image, av:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(image, av:64))
   for(size_t k = 0; k < Ndim; k++)
   {
     const float avg_g = av[k * 2];
@@ -316,7 +286,7 @@ static inline int fast_eigf_surface_blur(float *const restrict image,
   float *const restrict ds_av = dt_pixelpipe_cache_alloc_align_float_cache(dt_round_size_sse(num_elem_ds * 4), 0);
   float *const restrict av = dt_pixelpipe_cache_alloc_align_float_cache(dt_round_size_sse(num_elem * 4), 0);
 
-  if(!ds_image || !ds_mask || !ds_av || !av || !mask)
+  if(IS_NULL_PTR(ds_image) || IS_NULL_PTR(ds_mask) || IS_NULL_PTR(ds_av) || IS_NULL_PTR(av) || IS_NULL_PTR(mask))
   {
     err = 1;
     goto error;

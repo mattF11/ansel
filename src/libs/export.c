@@ -253,7 +253,7 @@ static void _scale_optim()
   gchar *pdiv = strchr(scale_str, '/');
 
   gchar scale_buf[64] = "";
-  if(pdiv == NULL)
+  if(IS_NULL_PTR(pdiv))
   {
     if(_is_int(num) && num > 0.0)
     {
@@ -392,7 +392,7 @@ static void _scale_changed(GtkEntry *spin, dt_lib_export_t *d)
   for (i = 0; i < len; i++)
   {
     char *val = strchr(validSign, value[i]);
-    if(val == NULL)
+    if(IS_NULL_PTR(val))
     {
       if(idiv==0)
       {
@@ -584,7 +584,7 @@ void gui_reset(dt_lib_module_t *self)
   // set it to none if the var is not set or the style doesn't exist anymore
   gboolean rc = FALSE;
   const char *style = dt_confgen_get(CONFIG_PREFIX "style", DT_DEFAULT);
-  if(style != NULL && strlen(style) > 0)
+  if(!IS_NULL_PTR(style) && strlen(style) > 0)
   {
     rc = dt_bauhaus_combobox_set_from_text(d->style, style);
     if(rc == FALSE) dt_bauhaus_combobox_set(d->style, 0);
@@ -776,7 +776,7 @@ static void set_storage_by_name(dt_lib_export_t *d, const char *name)
   const char *format_name = dt_conf_get_string_const(CONFIG_PREFIX "format_name");
   const dt_imageio_module_format_t *format = dt_imageio_get_format_by_name(format_name);
 
-  if(format == NULL
+  if(IS_NULL_PTR(format)
      || dt_bauhaus_combobox_set_from_text(d->format, format->name()) == FALSE)
     dt_bauhaus_combobox_set(d->format, 0);
 }
@@ -1395,7 +1395,7 @@ void gui_init(dt_lib_module_t *self)
   // set it to none if the var is not set or the style doesn't exist anymore
   gboolean rc = FALSE;
   setting = dt_conf_get_string_const(CONFIG_PREFIX "style");
-  if(setting != NULL && strlen(setting) > 0)
+  if(!IS_NULL_PTR(setting) && strlen(setting) > 0)
   {
     rc = dt_bauhaus_combobox_set_from_text(d->style, setting);
     if(rc == FALSE)
@@ -1824,7 +1824,7 @@ void *get_params(dt_lib_module_t *self, int *size)
   // concat storage and format, size is max + header
   dt_imageio_module_format_t *mformat = dt_imageio_get_format();
   dt_imageio_module_storage_t *mstorage = dt_imageio_get_storage();
-  if(!mformat || !mstorage) return NULL;
+  if(IS_NULL_PTR(mformat) || IS_NULL_PTR(mstorage)) return NULL;
 
   // size will be only as large as needed to remove random pointers from params (stored at the end).
   size_t fsize = mformat->params_size(mformat);
@@ -1835,8 +1835,8 @@ void *get_params(dt_lib_module_t *self, int *size)
   const int32_t sversion = mstorage->version();
   // we allow null pointers (plugin not ready for export in current state), and just don't copy back the
   // settings later:
-  if(!sdata) ssize = 0;
-  if(!fdata) fsize = 0;
+  if(IS_NULL_PTR(sdata)) ssize = 0;
+  if(IS_NULL_PTR(fdata)) fsize = 0;
   if(fdata)
   {
     // clean up format global params (need to set all bytes to reliably detect which preset is active).
@@ -1871,7 +1871,7 @@ void *get_params(dt_lib_module_t *self, int *size)
   }
 
   if(!iccfilename) iccfilename = g_strdup("");
-  if(!metadata_export) metadata_export = g_strdup("");
+  if(IS_NULL_PTR(metadata_export)) metadata_export = g_strdup("");
 
   const char *fname = mformat->plugin_name;
   const char *sname = mstorage->plugin_name;
@@ -1913,12 +1913,12 @@ void *get_params(dt_lib_module_t *self, int *size)
   pos += sizeof(int32_t);
   memcpy(params + pos, &ssize, sizeof(int32_t));
   pos += sizeof(int32_t);
-  if(fdata != NULL) // otherwise fsize == 0, but clang doesn't like it ...
+  if(!IS_NULL_PTR(fdata)) // otherwise fsize == 0, but clang doesn't like it ...
   {
     memcpy(params + pos, fdata, fsize);
     pos += fsize;
   }
-  if(sdata != NULL) // see above
+  if(!IS_NULL_PTR(sdata)) // see above
   {
     memcpy(params + pos, sdata, ssize);
     pos += ssize;

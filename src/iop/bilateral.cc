@@ -118,7 +118,7 @@ int flags()
   return IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_SUPPORTS_BLENDING;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -132,12 +132,15 @@ const char **description(struct dt_iop_module_t *self)
                                       _("linear, RGB, scene-referred"));
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_bilateral_data_t *data = (dt_iop_bilateral_data_t *)piece->data;
 
-  const int ch = piece->colors;
+  const int ch = piece->dsc_in.channels;
   float sigma[5];
   sigma[0] = data->sigma[0] * roi_in->scale;
   sigma[1] = data->sigma[1] * roi_in->scale;
@@ -152,7 +155,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
   // if rad <= 6 use naive version!
   const int rad = (int)(3.0 * fmaxf(sigma[0], sigma[1]) + 1.0);
-  if(rad <= 6 && (piece->pipe->type == DT_DEV_PIXELPIPE_THUMBNAIL))
+  if(rad <= 6 && (pipe->type == DT_DEV_PIXELPIPE_THUMBNAIL))
   {
     // no use denoising the thumbnail. takes ages without permutohedral
     dt_iop_image_copy_by_size((float*)ovoid, (float*)ivoid, roi_out->width, roi_out->height, ch);
@@ -175,14 +178,8 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
     size_t padded_weights_size;
     float *const weights_buf = dt_pixelpipe_cache_alloc_perthread_float(weights_size, &padded_weights_size);
-    if(weights_buf == NULL) return 1;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(ch, ivoid, ovoid, rad, roi_in, roi_out, wd, weights_buf, padded_weights_size) \
-    shared(m, mat, isig2col) \
-    schedule(static)
-#endif
+    if(IS_NULL_PTR(weights_buf)) return 1;
+    __OMP_PARALLEL_FOR_CPP__(firstprivate(isig2col, ivoid, ovoid, roi_in, roi_out, rad, ch, m, wd, weights_buf, padded_weights_size))
     for(int j = rad; j < roi_out->height - rad; j++)
     {
       const float *in = ((float *)ivoid) + ch * ((size_t)j * roi_in->width + rad);
@@ -216,6 +213,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
         in += ch;
       }
     }
+    
 
     dt_pixelpipe_cache_free_align(weights_buf);
 
@@ -243,7 +241,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
 // splat into the lattice
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for 
 #endif
     for(int j = 0; j < roi_in->height; j++)
     {
@@ -266,7 +264,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
 // slice from the lattice
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for 
 #endif
     for(int j = 0; j < roi_in->height; j++)
     {
@@ -282,7 +280,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     }
   }
 
-  if(piece->pipe->mask_display) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
+  if(pipe->mask_display) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
   return 0;
 }
 
@@ -310,10 +308,9 @@ void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev
   piece->data = NULL;
 }
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_bilateral_data_t *data = (dt_iop_bilateral_data_t *)piece->data;
   float sigma[5];
   sigma[0] = data->sigma[0] * roi_in->scale;

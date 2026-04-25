@@ -187,7 +187,7 @@ static void _piwigo_free_account(void *data)
 
 static void _piwigo_load_account(dt_storage_piwigo_gui_data_t *ui)
 {
-  if(!ui->accounts)
+  if(IS_NULL_PTR(ui->accounts))
   {
     g_list_free_full(ui->accounts, _piwigo_free_account);
     ui->accounts = NULL;
@@ -232,7 +232,7 @@ static void _piwigo_load_account(dt_storage_piwigo_gui_data_t *ui)
 
 static _piwigo_account_t *_piwigo_get_account(dt_storage_piwigo_gui_data_t *ui, const gchar *server)
 {
-  if(!server) return NULL;
+  if(IS_NULL_PTR(server)) return NULL;
 
   for(const GList *a = ui->accounts; a; a = g_list_next(a))
   {
@@ -278,7 +278,7 @@ static void _piwigo_set_account(dt_storage_piwigo_gui_data_t *ui)
 /** Set status connection text */
 static void _piwigo_set_status(dt_storage_piwigo_gui_data_t *ui, gchar *message, gchar *color)
 {
-  if(!color) color = "#ffffff";
+  if(IS_NULL_PTR(color)) color = "#ffffff";
   gchar mup[512] = { 0 };
   snprintf(mup, sizeof(mup), "<span foreground=\"%s\" ><small>%s</small></span>", color, message);
   gtk_label_set_markup(ui->status_label, mup);
@@ -471,7 +471,7 @@ static void _piwigo_api_post(_piwigo_api_context_t *ctx, GList *args, char *file
 
 static void _piwigo_authenticate(dt_storage_piwigo_gui_data_t *ui)
 {
-  if(!ui->api) ui->api = _piwigo_ctx_init();
+  if(IS_NULL_PTR(ui->api)) ui->api = _piwigo_ctx_init();
 
   ui->api->server = g_strdup(gtk_entry_get_text(ui->server_entry));
   ui->api->username = g_uri_escape_string(gtk_entry_get_text(ui->user_entry), NULL, FALSE);
@@ -549,7 +549,7 @@ static void _piwigo_album_changed(GtkComboBox *cb, gpointer data)
   const gchar *value = dt_bauhaus_combobox_get_text(ui->album_list);
 
   // early return if the combo is not yet populated
-  if(value == NULL) return;
+  if(IS_NULL_PTR(value)) return;
 
   if(strcmp(value, _("create new album")) == 0)
   {
@@ -584,17 +584,17 @@ static void _piwigo_refresh_albums(dt_storage_piwigo_gui_data_t *ui, const gchar
   gtk_widget_set_sensitive(GTK_WIDGET(ui->album_list), FALSE);
   gtk_widget_set_sensitive(GTK_WIDGET(ui->parent_album_list), FALSE);
 
-  if(ui->api == NULL || ui->api->authenticated == FALSE)
+  if(IS_NULL_PTR(ui->api) || ui->api->authenticated == FALSE)
   {
     _piwigo_authenticate(ui);
-    if(ui->api == NULL || !ui->api->authenticated) return;
+    if(IS_NULL_PTR(ui->api) || !ui->api->authenticated) return;
   }
 
   gchar *to_select;
   int index = 0;
 
   // get the new album name, it will be checked in the
-  if(select_album == NULL)
+  if(IS_NULL_PTR(select_album))
   {
     to_select = g_strdup(dt_bauhaus_combobox_get_text(ui->album_list));
     if(to_select)
@@ -664,8 +664,8 @@ static void _piwigo_refresh_albums(dt_storage_piwigo_gui_data_t *ui, const gchar
         while(*p++) if(*p == ',') indent++;
       }
 
-      snprintf(data, sizeof(data), "%*c%s (%"PRId64")", indent * 3, ' ', new_album->name, new_album->size);
-
+      g_snprintf(data, sizeof(data), "%*c%s (%" PRId64 ")", indent * 3, ' ', new_album->name, new_album->size);
+      
       if(to_select && !strcmp(new_album->name, to_select)) index = i + 1;
 
       g_strlcpy(new_album->label, data, sizeof(new_album->label));
@@ -1007,7 +1007,7 @@ int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, co
     const dt_image_t *img = dt_image_cache_get(darktable.image_cache, imgid, 'r');
   // If title is not existing, then use the filename without extension. If not, then use title instead
     GList *title = dt_metadata_get(img->id, "Xmp.dc.title", NULL);
-    if(title != NULL)
+    if(!IS_NULL_PTR(title))
     {
       caption = g_strdup(title->data);
       g_list_free_full(title, dt_free_gpointer);
@@ -1021,7 +1021,7 @@ int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, co
     }
 
     GList *desc = dt_metadata_get(img->id, "Xmp.dc.description", NULL);
-    if(desc != NULL)
+    if(!IS_NULL_PTR(desc))
     {
       description = g_strdup(desc->data);
       g_list_free_full(desc, dt_free_gpointer);
@@ -1030,7 +1030,7 @@ int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, co
     dt_image_cache_read_release(darktable.image_cache, img);
 
     GList *auth = dt_metadata_get(img->id, "Xmp.dc.creator", NULL);
-    if(auth != NULL)
+    if(!IS_NULL_PTR(auth))
     {
       author = g_strdup(auth->data);
       g_list_free_full(auth, dt_free_gpointer);
@@ -1133,10 +1133,10 @@ static uint64_t _piwigo_album_id(const gchar *name, GList *albums)
 void *get_params(dt_imageio_module_storage_t *self)
 {
   dt_storage_piwigo_gui_data_t *ui = (dt_storage_piwigo_gui_data_t *)self->gui_data;
-  if(!ui) return NULL; // gui not initialized, CLI mode
+  if(IS_NULL_PTR(ui)) return NULL; // gui not initialized, CLI mode
   dt_storage_piwigo_params_t *p = (dt_storage_piwigo_params_t *)g_malloc0(sizeof(dt_storage_piwigo_params_t));
 
-  if(!p) return NULL;
+  if(IS_NULL_PTR(p)) return NULL;
 
   // fill d from controls in ui
   if(ui->api && ui->api->authenticated == TRUE)
@@ -1187,7 +1187,7 @@ void *get_params(dt_imageio_module_storage_t *self)
           p->album = g_strdup(dt_bauhaus_combobox_get_text(ui->album_list));
           p->new_album = FALSE;
 
-          if(p->album == NULL)
+          if(IS_NULL_PTR(p->album))
           {
             // Something went wrong...
             fprintf(stderr, "Something went wrong.. album index %d = NULL\n", index - 2);

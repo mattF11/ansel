@@ -104,18 +104,15 @@ int default_group()
   return IOP_GROUP_EFFECTS;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
 
+__DT_CLONE_TARGETS__
 static inline void make_noise(float *const output, const float noise, const size_t width, const size_t height)
 {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(output, width, height, noise) \
-  schedule(simd:static) aligned(output:64) collapse(2)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(output:64) collapse(2))
   for(size_t i = 0; i < height; i++)
     for(size_t j = 0; j < width; j++)
     {
@@ -139,12 +136,12 @@ static inline void make_noise(float *const output, const float noise, const size
 }
 
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
-                                         ivoid, ovoid, roi_in, roi_out))
-    return 0; // image has been copied through to output and module's trouble flag has been updated
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
 
   dt_iop_censorize_data_t *data = (dt_iop_censorize_data_t *)piece->data;
   const float *const restrict in = DT_IS_ALIGNED((const float *const restrict)ivoid);
@@ -154,15 +151,16 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   const int height = roi_in->height;
   const int ch = 4;
 
-  float *const restrict temp = dt_pixelpipe_cache_alloc_align_float((size_t)width * height * ch, piece->pipe);
-  if(temp == NULL) return 1;
+  float *const restrict temp = dt_pixelpipe_cache_alloc_align_float((size_t)width * height * ch, pipe);
+  if(IS_NULL_PTR(temp)) return 1;
 
-  const float sigma_1 = data->radius_1 * roi_in->scale;
-  const float sigma_2 = data->radius_2 * roi_in->scale;
-  const size_t pixel_radius = data->pixelate * roi_in->scale;
+  const float module_scale = dt_dev_get_module_scale(pipe, roi_in);
+  const float sigma_1 = data->radius_1 / module_scale;
+  const float sigma_2 = data->radius_2 / module_scale;
+  const size_t pixel_radius = data->pixelate / module_scale;
 
   // used to adjuste blur level depending on size. Don't amplify noise if magnified > 100%
-  const float scale = fmaxf(1.f / roi_in->scale, 1.f);
+  const float scale = fmaxf(module_scale, 1.f);
   const float noise = data->noise / scale;
 
   dt_aligned_pixel_t RGBmax, RGBmin;
@@ -179,7 +177,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   if(sigma_1 != 0.f)
   {
     dt_gaussian_t *g = dt_gaussian_init(width, height, ch, RGBmax, RGBmin, sigma_1, 0);
-    if(!g)
+    if(IS_NULL_PTR(g))
     {
       dt_pixelpipe_cache_free_align(temp);
       return 1;
@@ -197,12 +195,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   {
     const size_t pixels_x = width / (2 * pixel_radius);
     const size_t pixels_y = height / (2 * pixel_radius);
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(width, height, ch, input, output, pixel_radius, pixels_y, pixels_x) \
-  schedule(simd:static) collapse(2)
-#endif
+    __OMP_PARALLEL_FOR__(collapse(2))
     for(size_t j = 0; j < pixels_y + 1; j++)
       for(size_t i = 0; i < pixels_x + 1; i++)
       {
@@ -250,7 +243,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
       make_noise(output, noise, width, height);
 
     dt_gaussian_t *g = dt_gaussian_init(width, height, ch, RGBmax, RGBmin, sigma_2, 0);
-    if(!g)
+    if(IS_NULL_PTR(g))
     {
       dt_pixelpipe_cache_free_align(temp);
       return 1;
@@ -267,7 +260,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   if(noise != 0.f)
     make_noise(output, noise, width, height);
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
     dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
 
   dt_pixelpipe_cache_free_align(temp);
@@ -277,18 +270,19 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
 // OpenCL not implemented yet, but the following only needs a slight modification to get it working
 #if FALSE
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_censorize_data_t *d = (dt_iop_censorize_data_t *)piece->data;
   dt_iop_censorize_global_data_t *gd = (dt_iop_censorize_global_data_t *)self->global_data;
 
   cl_int err = -999;
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
 
   const int width = roi_in->width;
   const int height = roi_in->height;
-  const int channels = piece->colors;
+  const int channels = piece->dsc_in.channels;
 
   const float radius_1 = fmax(0.1f, d->radius_1);
   const float sigma = radius_1 * roi_in->scale;
@@ -317,7 +311,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   if(d->lowpass_algo == LOWPASS_ALGO_GAUSSIAN)
   {
     g = dt_gaussian_init_cl(devid, width, height, channels, RGBmax, RGBmin, sigma, order);
-    if(!g) goto error;
+    if(IS_NULL_PTR(g)) goto error;
     err = dt_gaussian_blur_cl(g, dev_in, dev_out);
     if(err != CL_SUCCESS) goto error;
     dt_gaussian_free_cl(g);
@@ -330,7 +324,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
     const float detail = -1.0f; // we want the bilateral base layer
 
     b = dt_bilateral_init_cl(devid, width, height, sigma_s, sigma_r);
-    if(!b) goto error;
+    if(IS_NULL_PTR(b)) goto error;
     err = dt_bilateral_splat_cl(b, dev_in);
     if(err != CL_SUCCESS) goto error;
     err = dt_bilateral_blur_cl(b);
@@ -342,19 +336,19 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   }
 
   dev_tmp = dt_opencl_alloc_device(devid, width, height, 4 * sizeof(float));
-  if(dev_tmp == NULL) goto error;
+  if(IS_NULL_PTR(dev_tmp)) goto error;
 
   dev_cm = dt_opencl_copy_host_to_device(devid, d->ctable, 256, 256, sizeof(float));
-  if(dev_cm == NULL) goto error;
+  if(IS_NULL_PTR(dev_cm)) goto error;
 
   dev_ccoeffs = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 3, d->cunbounded_coeffs);
-  if(dev_ccoeffs == NULL) goto error;
+  if(IS_NULL_PTR(dev_ccoeffs)) goto error;
 
   dev_lm = dt_opencl_copy_host_to_device(devid, d->ltable, 256, 256, sizeof(float));
-  if(dev_lm == NULL) goto error;
+  if(IS_NULL_PTR(dev_lm)) goto error;
 
   dev_lcoeffs = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 3, d->lunbounded_coeffs);
-  if(dev_lcoeffs == NULL) goto error;
+  if(IS_NULL_PTR(dev_lcoeffs)) goto error;
 
   size_t origin[] = { 0, 0, 0 };
   size_t region[] = { width, height, 1 };
@@ -397,10 +391,10 @@ error:
   return FALSE;
 }
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   tiling->factor = 3.0f;
   tiling->factor_cl = 5.0f;
   tiling->maxbuf = 1.0f;

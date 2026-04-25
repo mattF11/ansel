@@ -122,7 +122,7 @@ const char *deprecated_msg()
   return _("this module is deprecated. please use the chromatic aberration module instead.");
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
 }
@@ -136,7 +136,7 @@ const dt_iop_roi_t *roi_out, dt_develop_tiling_t *tiling)
 
   const int width = roi_in->width;
   const int height = roi_in->height;
-  const int channels = piece->colors;
+  const int channels = piece->dsc_in.channels;
   const size_t basebuffer = width*height*channels*sizeof(float);
 
   tiling->factor = 2.0f + (float)dt_gaussian_memory_use(width, height, channels)/basebuffer;
@@ -200,13 +200,15 @@ void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev
   piece->data = NULL;
 }
 
-int process(struct dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, const void *const i,
-             void *const o, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *module, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+            const void *const i,
+             void *const o)
 {
+  (void)pipe;
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_defringe_data_t *const d = (dt_iop_defringe_data_t *)piece->data;
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, module, piece->colors,
-                                         i, o, roi_in, roi_out))
-    return 0; // image has been copied through to output and module's trouble flag has been updated
 
   const int order = 1; // 0,1,2
   int err = 0;
@@ -231,7 +233,7 @@ int process(struct dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, const
 
   dt_gaussian_t *gauss = NULL;
   gauss = dt_gaussian_init(width, height, 4, Labmax, Labmin, sigma, order);
-  if(!gauss)
+  if(IS_NULL_PTR(gauss))
   {
     fprintf(stderr, "Error allocating memory for gaussian blur in: defringe module\n");
     err = 1;
@@ -279,7 +281,7 @@ int process(struct dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, const
 
   xy_avg = malloc(sizeof(int) * 2 * samples_avg);
   xy_small = malloc(sizeof(int) * 2 * samples_small);
-  if(!xy_avg || !xy_small)
+  if(IS_NULL_PTR(xy_avg) || IS_NULL_PTR(xy_small))
   {
     fprintf(stderr, "Error allocating memory for fibonacci lattice in: defringe module\n");
     err = 1;
@@ -303,13 +305,7 @@ int process(struct dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, const
   }
 
   const float use_global_average = MODE_GLOBAL_AVERAGE == d->op_mode;
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(in, out, use_global_average) \
-  dt_omp_sharedconst(width, height) \
-  reduction(+ : avg_edge_chroma) \
-  schedule(simd:static)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(reduction(+ : avg_edge_chroma))
   for(size_t j = 0; j < (size_t)height * width * 4; j += 4)
   {
     // edge-detect on color channels
@@ -340,11 +336,7 @@ int process(struct dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, const
 #ifdef _OPENMP
 // dynamically/guided scheduled due to possible uneven edge-chroma distribution (thanks to rawtherapee code
 // for this hint!)
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, in, out, samples_avg, samples_small) \
-  dt_omp_sharedconst(d, width, height) \
-  shared(xy_small, xy_avg) \
-  firstprivate(thresh, avg_edge_chroma) \
+#pragma omp parallel for default(firstprivate) \
   schedule(dynamic,3)
 #endif
   for(int v = 0; v < height; v++)
@@ -421,9 +413,7 @@ int process(struct dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, const
       }
       else
       {
-        #ifdef _OPENMP
-        #pragma omp simd aligned(in, out)
-        #endif
+        __OMP_SIMD__(aligned(in, out))
         // we can't copy the alpha channel here because it contains info needed by neighboring pixels!
         for(int c = 0; c < 3; c++)
         {
@@ -433,7 +423,7 @@ int process(struct dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, const
     }
   }
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
     dt_iop_alpha_copy(i, o, roi_out->width, roi_out->height);
 
   goto FINISH_PROCESS;

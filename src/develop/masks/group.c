@@ -48,7 +48,7 @@ static dt_masks_form_t *_group_get_child_at(dt_masks_form_t *form, const int gro
                                             dt_masks_form_group_t **group_entry)
 {
   dt_masks_form_group_t *entry = (dt_masks_form_group_t *)g_list_nth_data(form->points, group_index);
-  if(!entry) return NULL;
+  if(IS_NULL_PTR(entry)) return NULL;
   if(group_entry) *group_entry = entry;
   return dt_masks_get_from_id(darktable.develop, entry->formid);
 }
@@ -83,12 +83,11 @@ static int _group_events_button_released(struct dt_iop_module_t *module, double 
 
 static int _group_events_key_pressed(struct dt_iop_module_t *module, GdkEventKey *event, dt_masks_form_t *form, int parentid, dt_masks_form_gui_t *gui, int index)
 {
-  if(!form) return 0;
+  if(IS_NULL_PTR(form)) return 0;
 
   gboolean return_value = FALSE;
 
   // Global key bindings for groups
-  // TODO: map that to context menu
   if(!return_value)
   {
     switch(event->keyval)
@@ -102,11 +101,11 @@ static int _group_events_key_pressed(struct dt_iop_module_t *module, GdkEventKey
       {
         if(gui->group_selected >= 0)
         {
-          // Delete shape from current group
+          // Remove shape from current group
           dt_masks_form_group_t *group_entry = NULL;
           dt_masks_form_t *selected_form = _group_get_selected_child(form, gui, &group_entry);
-          if(!selected_form) return 0;
-          return_value = dt_masks_gui_delete(module, selected_form, gui, group_entry->parentid);
+          if(IS_NULL_PTR(selected_form)) return 0;
+          return_value = dt_masks_gui_remove(module, selected_form, gui, group_entry->parentid);
           break;
         }
       }
@@ -161,7 +160,7 @@ static int _inverse_mask(const dt_iop_module_t *const module, const dt_dev_pixel
   const int wt = piece->iwidth;
   const int ht = piece->iheight;
   float *buf = dt_pixelpipe_cache_alloc_align_float_cache((size_t)ht * wt, 0);
-  if(buf == NULL) return 1;
+  if(IS_NULL_PTR(buf)) return 1;
 
   // we fill this buffer
   const int posx_ = *posx;
@@ -169,23 +168,13 @@ static int _inverse_mask(const dt_iop_module_t *const module, const dt_dev_pixel
   const int width_ = *width;
   const int height_ = *height;
   const float *const src = *buffer;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(buf, wt, ht, posy_) \
-  schedule(static) if(wt * ht > 50000)
-#endif
+  __OMP_PARALLEL_FOR__(if(wt * ht > 50000))
   for(int yy = 0; yy < MIN(posy_, ht); yy++)
   {
     float *const row = buf + (size_t)yy * wt;
     for(int xx = 0; xx < wt; xx++) row[xx] = 1.0f;
   }
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(buf, wt, ht, posy_, posx_, width_, height_, src) \
-  schedule(static) if(wt * ht > 50000)
-#endif
+  __OMP_PARALLEL_FOR__(if(wt * ht > 50000))
   for(int yy = MAX(posy_, 0); yy < MIN(ht, posy_ + height_); yy++)
   {
     float *const row = buf + (size_t)yy * wt;
@@ -197,12 +186,7 @@ static int _inverse_mask(const dt_iop_module_t *const module, const dt_dev_pixel
       row[xx] = 1.0f - src_row[xx - posx_];
     for(int xx = MAX(posx_ + width_, 0); xx < wt; xx++) row[xx] = 1.0f;
   }
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(buf, wt, ht, posy_, height_) \
-  schedule(static) if(wt * ht > 50000)
-#endif
+  __OMP_PARALLEL_FOR__(if(wt * ht > 50000))
   for(int yy = MAX(posy_ + height_, 0); yy < ht; yy++)
   {
     float *const row = buf + (size_t)yy * wt;
@@ -220,7 +204,8 @@ static int _inverse_mask(const dt_iop_module_t *const module, const dt_dev_pixel
   return 0;
 }
 
-static int _group_get_mask(const dt_iop_module_t *const module, const dt_dev_pixelpipe_iop_t *const piece,
+static int _group_get_mask(const dt_iop_module_t *const module, dt_dev_pixelpipe_t *pipe,
+                           const dt_dev_pixelpipe_iop_t *const piece,
                            dt_masks_form_t *const form,
                            float **buffer, int *width, int *height, int *posx, int *posy)
 {
@@ -239,7 +224,7 @@ static int _group_get_mask(const dt_iop_module_t *const module, const dt_dev_pix
   int *py = malloc(sizeof(int) * nb);
   int *states = malloc(sizeof(int) * nb);
   float *op = malloc(sizeof(float) * nb);
-  if(!bufs || !w || !h || !px || !py || !states || !op)
+  if(IS_NULL_PTR(bufs) || IS_NULL_PTR(w) || IS_NULL_PTR(h) || IS_NULL_PTR(px) || IS_NULL_PTR(py) || IS_NULL_PTR(states) || IS_NULL_PTR(op))
   {
     dt_free(op);
     dt_free(states);
@@ -261,7 +246,7 @@ static int _group_get_mask(const dt_iop_module_t *const module, const dt_dev_pix
     dt_masks_form_t *sel = dt_masks_get_from_id(module->dev, fpt->formid);
     if(sel)
     {
-      if(dt_masks_get_mask(module, piece, sel, &bufs[pos], &w[pos], &h[pos], &px[pos], &py[pos]) != 0)
+      if(dt_masks_get_mask(module, pipe, piece, sel, &bufs[pos], &w[pos], &h[pos], &px[pos], &py[pos]) != 0)
       {
         err = 1;
         break;
@@ -307,7 +292,7 @@ static int _group_get_mask(const dt_iop_module_t *const module, const dt_dev_pix
 
   // we allocate the buffer
   *buffer = dt_pixelpipe_cache_alloc_align_float_cache((size_t)(r - l) * (b - t), 0);
-  if(*buffer == NULL)
+  if(IS_NULL_PTR(*buffer))
   {
     err = 1;
     goto cleanup;
@@ -328,11 +313,7 @@ static int _group_get_mask(const dt_iop_module_t *const module, const dt_dev_pix
     const float *const src = bufs[i];
     if(states[i] & DT_MASKS_STATE_UNION)
     {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(dst, dst_w, ox, oy, wi, hi, opacity, src) \
-  schedule(static) if((size_t)wi * hi > 10000)
-#endif
+      __OMP_PARALLEL_FOR__(if((size_t)wi * hi > 10000))
       for(int y = 0; y < hi; y++)
       {
         float *const dst_row = dst + (size_t)(oy + y) * dst_w + ox;
@@ -362,12 +343,7 @@ static int _group_get_mask(const dt_iop_module_t *const module, const dt_dev_pix
         const int col_end = x1 - l;
         const int src_x_offset = x0 - px[i];
         const int src_y_offset = t - py[i];
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(dst, dst_w, dst_h, wi, opacity, src, row_start, row_end, col_start, col_end, src_x_offset, src_y_offset) \
-  schedule(static) if((size_t)dst_w * dst_h > 10000)
-#endif
+        __OMP_PARALLEL_FOR__(if((size_t)dst_w * dst_h > 10000))
         for(int y = 0; y < dst_h; y++)
         {
           float *const dst_row = dst + (size_t)y * dst_w;
@@ -398,11 +374,7 @@ static int _group_get_mask(const dt_iop_module_t *const module, const dt_dev_pix
     }
     else if(states[i] & DT_MASKS_STATE_DIFFERENCE)
     {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(dst, dst_w, ox, oy, wi, hi, opacity, src) \
-  schedule(static) if((size_t)wi * hi > 10000)
-#endif
+      __OMP_PARALLEL_FOR__(if((size_t)wi * hi > 10000))
       for(int y = 0; y < hi; y++)
       {
         float *const dst_row = dst + (size_t)(oy + y) * dst_w + ox;
@@ -417,11 +389,7 @@ static int _group_get_mask(const dt_iop_module_t *const module, const dt_dev_pix
     }
     else if(states[i] & DT_MASKS_STATE_EXCLUSION)
     {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(dst, dst_w, ox, oy, wi, hi, opacity, src) \
-  schedule(static) if((size_t)wi * hi > 10000)
-#endif
+      __OMP_PARALLEL_FOR__(if((size_t)wi * hi > 10000))
       for(int y = 0; y < hi; y++)
       {
         float *const dst_row = dst + (size_t)(oy + y) * dst_w + ox;
@@ -455,12 +423,7 @@ static int _group_get_mask(const dt_iop_module_t *const module, const dt_dev_pix
         const int col_end = x1 - l;
         const int src_x_offset = x0 - px[i];
         const int src_y_offset = t - py[i];
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(dst, dst_w, dst_h, wi, opacity, src, row_start, row_end, col_start, col_end, src_x_offset, src_y_offset) \
-  schedule(static) if((size_t)dst_w * dst_h > 10000)
-#endif
+        __OMP_PARALLEL_FOR__(if((size_t)dst_w * dst_h > 10000))
         for(int y = 0; y < dst_h; y++)
         {
           float *const dst_row = dst + (size_t)y * dst_w;
@@ -506,11 +469,7 @@ static void _combine_masks_union(float *const restrict dest, float *const restri
 {
   if (inverted)
   {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(npixels, opacity, dest, newmask) \
-  aligned(dest, newmask : 64) schedule(simd:static) if(npixels > 10000)
-#endif
+    __OMP_FOR_SIMD__(aligned(dest, newmask : 64)  if(npixels > 10000))
     for(int index = 0; index < npixels; index++)
     {
       const float mask = opacity * (1.0f - newmask[index]);
@@ -519,11 +478,7 @@ static void _combine_masks_union(float *const restrict dest, float *const restri
   }
   else
   {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(npixels, opacity, dest, newmask) \
-  aligned(dest, newmask : 64) schedule(simd:static) if(npixels > 10000)
-#endif
+    __OMP_FOR_SIMD__(aligned(dest, newmask : 64)  if(npixels > 10000))
     for(int index = 0; index < npixels; index++)
     {
       const float mask = opacity * newmask[index];
@@ -537,11 +492,7 @@ static void _combine_masks_intersect(float *const restrict dest, float *const re
 {
   if (inverted)
   {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(npixels, opacity, dest, newmask) \
-  aligned(dest, newmask : 64) schedule(simd:static) if(npixels > 10000)
-#endif
+    __OMP_FOR_SIMD__(aligned(dest, newmask : 64)  if(npixels > 10000))
     for(int index = 0; index < npixels; index++)
     {
       const float mask = opacity * (1.0f - newmask[index]);
@@ -550,11 +501,7 @@ static void _combine_masks_intersect(float *const restrict dest, float *const re
   }
   else
   {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(npixels, opacity, dest, newmask) \
-  aligned(dest, newmask : 64) schedule(simd:static) if(npixels > 10000)
-#endif
+    __OMP_FOR_SIMD__(aligned(dest, newmask : 64)  if(npixels > 10000))
     for(int index = 0; index < npixels; index++)
     {
       const float mask = opacity * newmask[index];
@@ -563,9 +510,7 @@ static void _combine_masks_intersect(float *const restrict dest, float *const re
   }
 }
 
-#ifdef _OPENMP
-#pragma omp declare simd
-#endif
+__OMP_DECLARE_SIMD__()
 static inline int both_positive(const float val1, const float val2)
 {
   // this needs to be a separate inline function to convince the compiler to vectorize
@@ -577,11 +522,7 @@ static void _combine_masks_difference(float *const restrict dest, float *const r
 {
   if (inverted)
   {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(npixels, opacity, dest, newmask) \
-  aligned(dest, newmask : 64) schedule(simd:static) if(npixels > 10000)
-#endif
+    __OMP_FOR_SIMD__(aligned(dest, newmask : 64)  if(npixels > 10000))
     for(int index = 0; index < npixels; index++)
     {
       const float mask = opacity * (1.0f - newmask[index]);
@@ -590,12 +531,8 @@ static void _combine_masks_difference(float *const restrict dest, float *const r
   }
   else
   {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(npixels, opacity, dest, newmask) \
-  aligned(dest, newmask : 64) schedule(simd:static) if(npixels > 10000)
-
-#endif
+__OMP_FOR_SIMD__(aligned(dest, newmask : 64)  if(npixels > 10000)
+)
     for(int index = 0; index < npixels; index++)
     {
       const float mask = opacity * newmask[index];
@@ -609,12 +546,8 @@ static void _combine_masks_exclusion(float *const restrict dest, float *const re
 {
   if (inverted)
   {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(npixels, opacity, dest, newmask) \
-  aligned(dest, newmask : 64) schedule(simd:static) if(npixels > 10000)
-
-#endif
+__OMP_FOR_SIMD__(aligned(dest, newmask : 64)  if(npixels > 10000)
+)
     for(int index = 0; index < npixels; index++)
     {
       const float mask = opacity * (1.0f - newmask[index]);
@@ -626,11 +559,7 @@ static void _combine_masks_exclusion(float *const restrict dest, float *const re
   }
   else
   {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(npixels, opacity, dest, newmask) \
-  aligned(dest, newmask : 64) schedule(simd:static) if(npixels > 10000)
-#endif
+    __OMP_FOR_SIMD__(aligned(dest, newmask : 64)  if(npixels > 10000))
     for(int index = 0; index < npixels; index++)
     {
       const float mask = opacity * newmask[index];
@@ -642,13 +571,13 @@ static void _combine_masks_exclusion(float *const restrict dest, float *const re
   }
 }
 
-static int _group_get_mask_roi(const dt_iop_module_t *const restrict module,
+static int _group_get_mask_roi(const dt_iop_module_t *const restrict module, dt_dev_pixelpipe_t *pipe,
                                const dt_dev_pixelpipe_iop_t *const restrict piece,
                                dt_masks_form_t *const form, const dt_iop_roi_t *const roi,
                                float *const restrict buffer)
 {
   double start = dt_get_wtime();
-  if(!form->points) return 0;
+  if(IS_NULL_PTR(form->points)) return 0;
   int nb_ok = 0;
 
   const int width = roi->width;
@@ -657,7 +586,7 @@ static int _group_get_mask_roi(const dt_iop_module_t *const restrict module,
 
   // we need to allocate a zeroed temporary buffer for intermediate creation of individual shapes
   float *const restrict bufs = dt_pixelpipe_cache_alloc_align_float_cache(npixels, 0);
-  if(bufs == NULL) return 1;
+  if(IS_NULL_PTR(bufs)) return 1;
   int err = 0;
 
   int i = 0;
@@ -671,7 +600,7 @@ static int _group_get_mask_roi(const dt_iop_module_t *const restrict module,
     {
       // ensure that we start with a zeroed buffer regardless of what was previously written into 'bufs'
       memset(bufs, 0, npixels*sizeof(float));
-      const int err_child = dt_masks_get_mask_roi(module, piece, sel, roi, bufs);
+      const int err_child = dt_masks_get_mask_roi(module, pipe, piece, sel, roi, bufs);
       const float op = fpt->opacity;
       // Add a foolproof to ensure that the first shape is no-op
       const int no_op_state = fpt->state & ~(DT_MASKS_STATE_IS_COMBINE_OP) ;
@@ -704,11 +633,7 @@ static int _group_get_mask_roi(const dt_iop_module_t *const restrict module,
         }
         else // if we are here, this mean that we just have to copy the shape and null other parts
         {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-          dt_omp_firstprivate(npixels, op, inverted, buffer, bufs) \
-          schedule(simd:static) aligned(buffer, bufs : 64) if(npixels > 10000)
-#endif
+          __OMP_PARALLEL_FOR_SIMD__(aligned(buffer, bufs : 64) if(npixels > 10000))
           for(int index = 0; index < npixels; index++)
           {
             buffer[index] = op * (inverted ? (1.0f - bufs[index]) : bufs[index]);
@@ -733,13 +658,14 @@ static int _group_get_mask_roi(const dt_iop_module_t *const restrict module,
   return err;
 }
 
-int dt_masks_group_render_roi(dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, dt_masks_form_t *form,
+int dt_masks_group_render_roi(dt_iop_module_t *module, dt_dev_pixelpipe_t *pipe,
+                              const dt_dev_pixelpipe_iop_t *piece, dt_masks_form_t *form,
                               const dt_iop_roi_t *roi, float *buffer)
 {
   const double start = dt_get_wtime();
-  if(!form) return 0;
+  if(IS_NULL_PTR(form)) return 0;
 
-  const int err = dt_masks_get_mask_roi(module, piece, form, roi, buffer);
+  const int err = dt_masks_get_mask_roi(module, pipe, piece, form, roi, buffer);
 
   if(darktable.unmuted & DT_DEBUG_PERF)
     dt_print(DT_DEBUG_MASKS, "[masks] render all masks took %0.04f sec\n", dt_get_wtime() - start);
@@ -764,7 +690,7 @@ static void _group_duplicate_points(dt_develop_t *const dev, dt_masks_form_t *co
 
 static gboolean _group_get_gravity_center(const dt_masks_form_t *form, float center[2], float *area)
 {
-  if(!form || !form->points || !center || !area) return FALSE;
+  if(IS_NULL_PTR(form) || IS_NULL_PTR(form->points) || IS_NULL_PTR(center) || IS_NULL_PTR(area)) return FALSE;
 
   float sum_x = 0.0f;
   float sum_y = 0.0f;
@@ -774,9 +700,9 @@ static gboolean _group_get_gravity_center(const dt_masks_form_t *form, float cen
   for(const GList *l = form->points; l; l = g_list_next(l))
   {
     const dt_masks_form_group_t *pt = (const dt_masks_form_group_t *)l->data;
-    if(!pt) continue;
+    if(IS_NULL_PTR(pt)) continue;
     dt_masks_form_t *child = dt_masks_get_from_id(darktable.develop, pt->formid);
-    if(!child) continue;
+    if(IS_NULL_PTR(child)) continue;
 
     float child_center[2] = { 0.0f, 0.0f };
     float child_area = 0.0f;

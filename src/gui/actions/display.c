@@ -20,8 +20,10 @@
 #include "common/darktable.h"
 #include "common/collection.h"
 #include "control/control.h"
+#include "develop/dev_pixelpipe.h"
 #include "gui/actions/menu.h"
 #include "gui/gtk.h"
+#include "views/view.h"
 
 #include "gui/window_manager.h"
 
@@ -43,8 +45,10 @@ static gboolean full_screen_callback(GtkAccelGroup *group, GObject *acceleratabl
   {
     gtk_window_unfullscreen(GTK_WINDOW(window));
 
+#ifdef GDK_WINDOWING_QUARTZ
     // workaround for GTK Quartz backend bug
     gtk_window_set_title(GTK_WINDOW(window), "Ansel");
+#endif
 
     // Hide window controls
     dt_ui_set_window_buttons_visible(darktable.gui->ui, FALSE);
@@ -53,13 +57,16 @@ static gboolean full_screen_callback(GtkAccelGroup *group, GObject *acceleratabl
   {
     gtk_window_fullscreen(GTK_WINDOW(window));
 
+#ifdef GDK_WINDOWING_QUARTZ
     // workaround for GTK Quartz backend bug
     gtk_window_set_title(GTK_WINDOW(window), "Ansel Preview");
+#endif
 
     // Show window controls
     dt_ui_set_window_buttons_visible(darktable.gui->ui, TRUE);
   }
 
+#ifdef GDK_WINDOWING_QUARTZ
   // Mac OS workaround: always re-anchor the window to the bottom of the screen
   GdkWindow *win = gtk_widget_get_window(window);
   GdkDisplay *display = gtk_widget_get_display(window);
@@ -69,7 +76,8 @@ static gboolean full_screen_callback(GtkAccelGroup *group, GObject *acceleratabl
 
   int w, h;
   gtk_window_get_size(GTK_WINDOW(window), &w, &h);
-  gtk_window_move(GTK_WINDOW(window), geometry.width - geometry.x - w, geometry.height - geometry.y - h);
+  gtk_window_move(GTK_WINDOW(window), geometry.x + geometry.width - w, geometry.y + geometry.height - h);
+#endif
 
   dt_dev_pixelpipe_change_zoom_main(darktable.develop);
 
@@ -126,6 +134,18 @@ void dt_ui_panel_show(dt_ui_t *ui, const dt_ui_panel_t p, gboolean show, gboolea
   {
     gtk_widget_show(ui->panels[p]);
     if(over_panel) gtk_widget_show(over_panel);
+
+    if(p == DT_UI_PANEL_BOTTOM && ui->thumbtable_filmstrip)
+    {
+      const int32_t imgid = dt_view_active_images_get_first();
+      if(imgid > UNKNOWN_IMAGE)
+      {
+        dt_control_set_mouse_over_id(imgid);
+        dt_control_set_keyboard_over_id(imgid);
+        dt_thumbtable_update_parent(ui->thumbtable_filmstrip);
+        g_idle_add((GSourceFunc)dt_thumbtable_scroll_to_selection, ui->thumbtable_filmstrip);
+      }
+    }
   }
   else
   {

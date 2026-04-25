@@ -90,9 +90,6 @@
 #include "develop/imageop_gui.h"
 #include "iop/iop_api.h"
 
-#if defined(__SSE__)
-#include <xmmintrin.h>
-#endif
 #include <assert.h>
 #include <math.h>
 #include <stdlib.h>
@@ -192,38 +189,34 @@ int flags()
   return IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_ONE_INSTANCE | IOP_FLAGS_UNSAFE_COPY;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
 
-int input_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe,
-                     dt_dev_pixelpipe_iop_t *piece)
+static dt_iop_colorspace_type_t _colorin_format_cst(dt_iop_module_t *self)
 {
-  if(piece)
-  {
-    const dt_iop_colorin_data_t *const d = (dt_iop_colorin_data_t *)piece->data;
-    if(d->type == DT_COLORSPACE_LAB)
-      return IOP_CS_LAB;
-  }
-  return IOP_CS_RGB;
+  const dt_iop_colorin_params_t *const p = (dt_iop_colorin_params_t *)self->params;
+  return (p->type == DT_COLORSPACE_LAB) ? IOP_CS_LAB : IOP_CS_RGB;
 }
 
-int output_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe,
-                      dt_dev_pixelpipe_iop_t *piece)
+void input_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                  dt_iop_buffer_dsc_t *dsc)
 {
-  if(piece)
-  {
-    const dt_iop_colorin_data_t *const d = (dt_iop_colorin_data_t *)piece->data;
-    if(d->type == DT_COLORSPACE_LAB) return IOP_CS_LAB;
-  }
-  else
-  {
-    const dt_iop_colorin_params_t *const p = (dt_iop_colorin_params_t *)self->params;
-    if(p->type == DT_COLORSPACE_LAB) return IOP_CS_LAB;
-  }
+  /* The sealed pipeline asks for the buffer contract before commit_params() has refreshed
+   * `piece->data`. Read the module params snapshot instead of the previous image runtime data,
+   * otherwise colorin can publish a stale Lab/RGB contract. */
+  dsc->channels = 4;
+  dsc->datatype = TYPE_FLOAT;
+  dsc->cst = _colorin_format_cst(self);
+}
 
-  return IOP_CS_RGB;
+void output_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                   dt_iop_buffer_dsc_t *dsc)
+{
+  dsc->channels = 4;
+  dsc->datatype = TYPE_FLOAT;
+  dsc->cst = _colorin_format_cst(self);
 }
 
 static void _resolve_work_profile(dt_colorspaces_color_profile_type_t *work_type, char *work_filename)
@@ -578,7 +571,7 @@ static void workicc_changed(GtkWidget *widget, gpointer user_data)
     g_strlcpy(p->filename_work, filename_work, sizeof(p->filename_work));
 
     const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_add_profile_info_to_list(self->dev, p->type_work, p->filename_work, DT_INTENT_PERCEPTUAL);
-    if(work_profile == NULL || isnan(work_profile->matrix_in[0][0]) || isnan(work_profile->matrix_out[0][0]))
+    if(IS_NULL_PTR(work_profile) || isnan(work_profile->matrix_in[0][0]) || isnan(work_profile->matrix_out[0][0]))
     {
       dt_print(DT_DEBUG_COLORPROFILE,
                "[colorin] can't extract matrix from colorspace `%s', it will be replaced by Rec2020 RGB!\n",
@@ -602,9 +595,9 @@ static void workicc_changed(GtkWidget *widget, gpointer user_data)
 
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_colorin_data_t *d = (dt_iop_colorin_data_t *)piece->data;
   dt_iop_colorin_global_data_t *gd = (dt_iop_colorin_global_data_t *)self->global_data;
   cl_mem dev_m = NULL, dev_l = NULL, dev_r = NULL, dev_g = NULL, dev_b = NULL, dev_coeffs = NULL;
@@ -626,8 +619,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   }
 
   cl_int err = -999;
-  const int blue_mapping = d->blue_mapping && dt_image_is_matrix_correction_supported(&piece->pipe->image);
-  const int devid = piece->pipe->devid;
+  const int blue_mapping = d->blue_mapping && dt_image_is_matrix_correction_supported(&pipe->dev->image_storage);
+  const int devid = pipe->devid;
   const int width = roi_in->width;
   const int height = roi_in->height;
 
@@ -642,18 +635,18 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
   dev_m = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 12, cmat);
-  if(dev_m == NULL) goto error;
+  if(IS_NULL_PTR(dev_m)) goto error;
   dev_l = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 12, lmat);
-  if(dev_l == NULL) goto error;
+  if(IS_NULL_PTR(dev_l)) goto error;
   dev_r = dt_opencl_copy_host_to_device(devid, d->lut[0], 256, 256, sizeof(float));
-  if(dev_r == NULL) goto error;
+  if(IS_NULL_PTR(dev_r)) goto error;
   dev_g = dt_opencl_copy_host_to_device(devid, d->lut[1], 256, 256, sizeof(float));
-  if(dev_g == NULL) goto error;
+  if(IS_NULL_PTR(dev_g)) goto error;
   dev_b = dt_opencl_copy_host_to_device(devid, d->lut[2], 256, 256, sizeof(float));
-  if(dev_b == NULL) goto error;
+  if(IS_NULL_PTR(dev_b)) goto error;
   dev_coeffs
       = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 3 * 3, (float *)d->unbounded_coeffs);
-  if(dev_coeffs == NULL) goto error;
+  if(IS_NULL_PTR(dev_coeffs)) goto error;
   dt_opencl_set_kernel_arg(devid, kernel, 0, sizeof(cl_mem), (void *)&dev_in);
   dt_opencl_set_kernel_arg(devid, kernel, 1, sizeof(cl_mem), (void *)&dev_out);
   dt_opencl_set_kernel_arg(devid, kernel, 2, sizeof(int), (void *)&width);
@@ -720,13 +713,13 @@ static inline __attribute__((always_inline)) dt_aligned_pixel_simd_t _colorin_cl
 }
 
 __DT_CLONE_TARGETS__
-static void process_cmatrix_bm(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+static void process_cmatrix_bm(struct dt_iop_module_t *self, const dt_dev_pixelpipe_iop_t *piece,
                                const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
                                const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_colorin_data_t *const d = (dt_iop_colorin_data_t *)piece->data;
-  const int ch = piece->colors;
-  const int clipping = (d->nrgb != NULL);
+  const int ch = 4;
+  const int clipping = (!IS_NULL_PTR(d->nrgb));
 
   dt_colormatrix_t cmatrix;
   transpose_3xSSE(d->cmatrix, cmatrix);
@@ -746,11 +739,7 @@ static void process_cmatrix_bm(struct dt_iop_module_t *self, dt_dev_pixelpipe_io
 
     // fprintf(stderr, "Using cmatrix codepath\n");
     // only color matrix. use our optimized fast path!
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, clipping, d, ivoid, ovoid, roi_out, cm0, cm1, cm2, nm0, nm1, nm2, lm0, lm1, lm2) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int j = 0; j < roi_out->height; j++)
   {
     const float *in = (const float *)ivoid + (size_t)ch * j * roi_out->width;
@@ -788,12 +777,11 @@ static void process_cmatrix_bm(struct dt_iop_module_t *self, dt_dev_pixelpipe_io
 }
 
 __DT_CLONE_TARGETS__
-static void process_cmatrix_fastpath_simple(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+static void process_cmatrix_fastpath_simple(struct dt_iop_module_t *self, const dt_dev_pixelpipe_iop_t *piece,
                                             const void *const ivoid, void *const ovoid,
                                             const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_colorin_data_t *const d = (dt_iop_colorin_data_t *)piece->data;
-  assert(piece->colors == 4);
   const size_t npixels = (size_t)roi_out->width * roi_out->height;
 
   const float *const restrict in = DT_IS_ALIGNED(ivoid);
@@ -807,11 +795,7 @@ static void process_cmatrix_fastpath_simple(struct dt_iop_module_t *self, dt_dev
 
 // fprintf(stderr, "Using cmatrix codepath\n");
 // only color matrix. use our optimized fast path!
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(in, out, npixels, cm0, cm1, cm2) \
-  schedule(static) aligned(in, out:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(in, out:64))
   for(size_t k = 0; k < npixels; k++)
   {
     const size_t idx = 4 * k;
@@ -822,12 +806,11 @@ static void process_cmatrix_fastpath_simple(struct dt_iop_module_t *self, dt_dev
 }
 
 __DT_CLONE_TARGETS__
-static void process_cmatrix_fastpath_clipping(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+static void process_cmatrix_fastpath_clipping(struct dt_iop_module_t *self, const dt_dev_pixelpipe_iop_t *piece,
                                               const void *const ivoid, void *const ovoid,
                                               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_colorin_data_t *const d = (dt_iop_colorin_data_t *)piece->data;
-  assert(piece->colors == 4);
   const size_t npixels = (size_t)roi_out->width * roi_out->height;
   const float *const restrict in = DT_IS_ALIGNED(ivoid);
   float *const restrict out = DT_IS_ALIGNED(ovoid);
@@ -845,11 +828,7 @@ static void process_cmatrix_fastpath_clipping(struct dt_iop_module_t *self, dt_d
 
 // fprintf(stderr, "Using cmatrix codepath\n");
 // only color matrix. use our optimized fast path!
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(in, out, npixels, nm0, nm1, nm2, lm0, lm1, lm2) \
-  schedule(static) aligned(in, out:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(in, out:64))
   for(size_t k = 0; k < npixels; k++)
   {
     const size_t idx = 4 * k;
@@ -861,13 +840,12 @@ static void process_cmatrix_fastpath_clipping(struct dt_iop_module_t *self, dt_d
   dt_omploop_sfence();  // ensure that nontemporal writes complete before we attempt to read output
 }
 
-__DT_CLONE_TARGETS__
-static void process_cmatrix_fastpath(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+static inline __attribute__((always_inline)) void process_cmatrix_fastpath(struct dt_iop_module_t *self, const dt_dev_pixelpipe_iop_t *piece,
                                      const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
                                      const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_colorin_data_t *const d = (dt_iop_colorin_data_t *)piece->data;
-  const int clipping = (d->nrgb != NULL);
+  const int clipping = (!IS_NULL_PTR(d->nrgb));
 
   if(!clipping)
   {
@@ -879,12 +857,13 @@ static void process_cmatrix_fastpath(struct dt_iop_module_t *self, dt_dev_pixelp
   }
 }
 
-static void process_cmatrix_proper(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+__DT_CLONE_TARGETS__
+static void process_cmatrix_proper(struct dt_iop_module_t *self, const dt_dev_pixelpipe_iop_t *piece,
                                    const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
                                    const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_colorin_data_t *const d = (dt_iop_colorin_data_t *)piece->data;
-  const int clipping = (d->nrgb != NULL);
+  const int clipping = (!IS_NULL_PTR(d->nrgb));
   const size_t npixels = (size_t)roi_out->width * roi_out->height;
 
   dt_colormatrix_t cmatrix;
@@ -905,11 +884,7 @@ static void process_cmatrix_proper(struct dt_iop_module_t *self, dt_dev_pixelpip
 
 // fprintf(stderr, "Using cmatrix codepath\n");
 // only color matrix. use our optimized fast path!
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(npixels, clipping, d, ivoid, ovoid, cm0, cm1, cm2, nm0, nm1, nm2, lm0, lm1, lm2) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < npixels; k++)
   {
     const float *in = (const float *)ivoid + 4 * k;
@@ -939,11 +914,12 @@ static void process_cmatrix_proper(struct dt_iop_module_t *self, dt_dev_pixelpip
   dt_omploop_sfence();  // ensure that nontemporal writes complete before we attempt to read output
 }
 
-static void process_cmatrix(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-                            void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+static inline __attribute__((always_inline)) void process_cmatrix(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                            const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
+                            const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_colorin_data_t *const d = (dt_iop_colorin_data_t *)piece->data;
-  const int blue_mapping = d->blue_mapping && dt_image_is_matrix_correction_supported(&piece->pipe->image);
+  const int blue_mapping = d->blue_mapping && dt_image_is_matrix_correction_supported(&pipe->dev->image_storage);
 
   if(!blue_mapping && d->nonlinearlut == 0)
   {
@@ -959,7 +935,8 @@ static void process_cmatrix(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
   }
 }
 
-static void process_lcms2_bm(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+__DT_CLONE_TARGETS__
+static void process_lcms2_bm(struct dt_iop_module_t *self, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
                              void *const ovoid, const dt_iop_roi_t *const roi_in,
                              const dt_iop_roi_t *const roi_out)
 {
@@ -969,17 +946,10 @@ static void process_lcms2_bm(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
   const cmsHTRANSFORM xform_cam_lab = d->xform_cam_Lab;
   const cmsHTRANSFORM xform_cam_nrgb = d->xform_cam_nrgb;
   const cmsHTRANSFORM xform_nrgb_lab = d->xform_nrgb_Lab;
-  const gboolean use_nrgb = (d->nrgb != NULL);
-  const int ch = piece->colors;
-  assert(ch == 4);
-
+  const gboolean use_nrgb = (!IS_NULL_PTR(d->nrgb));
+  const int ch = 4;
 // use general lcms2 fallback
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, ivoid, ovoid, roi_out) \
-  shared(use_nrgb, xform_cam_lab, xform_cam_nrgb, xform_nrgb_lab) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int k = 0; k < roi_out->height; k++)
   {
     const float *in = (const float *)ivoid + (size_t)ch * k * roi_out->width;
@@ -1003,9 +973,7 @@ static void process_lcms2_bm(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
       dt_colorspaces_transform_rgba_float_row(xform_cam_nrgb, out, out, roi_out->width);
 
       float *rgbptr = (float *)out;
-#ifdef _OPENMP
-#pragma omp simd aligned(rgbptr:64)
-#endif
+      __OMP_SIMD__(aligned(rgbptr:64))
       for(int j = 0; j < roi_out->width; j++)
       {
         float *const pixel = rgbptr + 4 * j;
@@ -1018,7 +986,8 @@ static void process_lcms2_bm(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
   }
 }
 
-static void process_lcms2_proper(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+__DT_CLONE_TARGETS__
+static void process_lcms2_proper(struct dt_iop_module_t *self, const dt_dev_pixelpipe_iop_t *piece,
                                  const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
                                  const dt_iop_roi_t *const roi_out)
 {
@@ -1028,16 +997,11 @@ static void process_lcms2_proper(struct dt_iop_module_t *self, dt_dev_pixelpipe_
   const cmsHTRANSFORM xform_cam_lab = d->xform_cam_Lab;
   const cmsHTRANSFORM xform_cam_nrgb = d->xform_cam_nrgb;
   const cmsHTRANSFORM xform_nrgb_lab = d->xform_nrgb_Lab;
-  const gboolean use_nrgb = (d->nrgb != NULL);
-  const int ch = piece->colors;
+  const gboolean use_nrgb = (!IS_NULL_PTR(d->nrgb));
+  const int ch = 4;
 
 // use general lcms2 fallback
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, ivoid, ovoid, roi_out) \
-  shared(use_nrgb, xform_cam_lab, xform_cam_nrgb, xform_nrgb_lab) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int k = 0; k < roi_out->height; k++)
   {
     const float *in = (const float *)ivoid + (size_t)ch * k * roi_out->width;
@@ -1053,9 +1017,7 @@ static void process_lcms2_proper(struct dt_iop_module_t *self, dt_dev_pixelpipe_
       dt_colorspaces_transform_rgba_float_row(xform_cam_nrgb, in, out, roi_out->width);
 
       float *rgbptr = (float *)out;
-#ifdef _OPENMP
-#pragma omp simd aligned(rgbptr:64)
-#endif
+      __OMP_SIMD__(aligned(rgbptr:64))
       for(int j = 0; j < roi_out->width; j++)
       {
         float *const pixel = rgbptr + 4 * j;
@@ -1067,11 +1029,12 @@ static void process_lcms2_proper(struct dt_iop_module_t *self, dt_dev_pixelpipe_
   }
 }
 
-static void process_lcms2(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-                          void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+static inline __attribute__((always_inline)) void process_lcms2(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                          const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
+                          const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_colorin_data_t *const d = (dt_iop_colorin_data_t *)piece->data;
-  const int blue_mapping = d->blue_mapping && dt_image_is_matrix_correction_supported(&piece->pipe->image);
+  const int blue_mapping = d->blue_mapping && dt_image_is_matrix_correction_supported(&pipe->dev->image_storage);
 
   // use general lcms2 fallback
   if(blue_mapping)
@@ -1084,25 +1047,27 @@ static void process_lcms2(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *
   }
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const dt_iop_colorin_data_t *const d = (dt_iop_colorin_data_t *)piece->data;
 
   if(d->type == DT_COLORSPACE_LAB)
   {
-    dt_iop_image_copy_by_size(ovoid, ivoid, roi_out->width, roi_out->height, piece->colors);
+    dt_iop_image_copy_by_size(ovoid, ivoid, roi_out->width, roi_out->height, 4);
   }
   else if(!isnan(d->cmatrix[0][0]))
   {
-    process_cmatrix(self, piece, ivoid, ovoid, roi_in, roi_out);
+    process_cmatrix(self, pipe, piece, ivoid, ovoid, roi_in, roi_out);
   }
   else
   {
-    process_lcms2(self, piece, ivoid, ovoid, roi_in, roi_out);
+    process_lcms2(self, pipe, piece, ivoid, ovoid, roi_in, roi_out);
   }
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
   return 0;
 }
 
@@ -1166,20 +1131,20 @@ static dt_colorspaces_color_profile_type_t _resolve_input_profile(const dt_iop_c
 
   if(type == DT_COLORSPACE_ENHANCED_MATRIX)
   {
-    d->input = dt_colorspaces_create_darktable_profile(pipe->image.camera_makermodel);
-    if(!d->input) type = DT_COLORSPACE_EMBEDDED_ICC;
+    d->input = dt_colorspaces_create_darktable_profile(pipe->dev->image_storage.camera_makermodel);
+    if(IS_NULL_PTR(d->input)) type = DT_COLORSPACE_EMBEDDED_ICC;
     else d->clear_input = 1;
   }
   if(type == DT_COLORSPACE_VENDOR_MATRIX)
   {
-    d->input = dt_colorspaces_create_vendor_profile(pipe->image.camera_makermodel);
-    if(!d->input) type = DT_COLORSPACE_EMBEDDED_ICC;
+    d->input = dt_colorspaces_create_vendor_profile(pipe->dev->image_storage.camera_makermodel);
+    if(IS_NULL_PTR(d->input)) type = DT_COLORSPACE_EMBEDDED_ICC;
     else d->clear_input = 1;
   }
   if(type == DT_COLORSPACE_ALTERNATE_MATRIX)
   {
-    d->input = dt_colorspaces_create_alternate_profile(pipe->image.camera_makermodel);
-    if(!d->input) type = DT_COLORSPACE_EMBEDDED_ICC;
+    d->input = dt_colorspaces_create_alternate_profile(pipe->dev->image_storage.camera_makermodel);
+    if(IS_NULL_PTR(d->input)) type = DT_COLORSPACE_EMBEDDED_ICC;
     else d->clear_input = 1;
   }
 
@@ -1189,8 +1154,8 @@ static dt_colorspaces_color_profile_type_t _resolve_input_profile(const dt_iop_c
   {
     gboolean new_profile = FALSE;
     cmsHPROFILE profile = NULL;
-    type = dt_colorspaces_get_input_profile_from_image(pipe->image.id, type, &profile, &new_profile);
-    if(profile)
+    type = dt_colorspaces_get_input_profile_from_image(pipe->dev->image_storage.id, type, &profile, &new_profile);
+    if(!IS_NULL_PTR(profile))
     {
       d->input = profile;
       d->clear_input = new_profile;
@@ -1199,19 +1164,19 @@ static dt_colorspaces_color_profile_type_t _resolve_input_profile(const dt_iop_c
 
   if(requested_type == DT_COLORSPACE_STANDARD_MATRIX
      && type == DT_COLORSPACE_LIN_REC709
-     && dt_image_is_matrix_correction_supported(&pipe->image))
+     && dt_image_is_matrix_correction_supported(&pipe->dev->image_storage))
   {
-    dt_print(DT_DEBUG_COLORPROFILE, "[colorin] `%s' color matrix not found!\n", pipe->image.camera_makermodel);
-    dt_control_log(_("`%s' color matrix not found!"), pipe->image.camera_makermodel);
+    dt_print(DT_DEBUG_COLORPROFILE, "[colorin] `%s' color matrix not found!\n", pipe->dev->image_storage.camera_makermodel);
+    dt_control_log(_("`%s' color matrix not found!"), pipe->dev->image_storage.camera_makermodel);
   }
 
-  if(!d->input)
+  if(IS_NULL_PTR(d->input))
   {
     const dt_colorspaces_color_profile_t *profile = dt_colorspaces_get_profile(type, p->filename, DT_PROFILE_DIRECTION_IN);
-    if(profile) d->input = profile->profile;
+    if(!IS_NULL_PTR(profile)) d->input = profile->profile;
   }
 
-  if(!d->input && type != DT_COLORSPACE_SRGB)
+  if(IS_NULL_PTR(d->input) && type != DT_COLORSPACE_SRGB)
   {
     // use linear_rec709_rgb as fallback for missing non-sRGB profiles:
     d->input = dt_colorspaces_get_profile(DT_COLORSPACE_LIN_REC709, "", DT_PROFILE_DIRECTION_IN)->profile;
@@ -1219,7 +1184,7 @@ static dt_colorspaces_color_profile_type_t _resolve_input_profile(const dt_iop_c
   }
 
   // final resort: sRGB
-  if(!d->input)
+  if(IS_NULL_PTR(d->input))
   {
     d->input = dt_colorspaces_get_profile(DT_COLORSPACE_SRGB, "", DT_PROFILE_DIRECTION_IN)->profile;
     d->clear_input = 0;
@@ -1260,7 +1225,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
 
   // commit and resolve working profile first, it is the target output profile of this module
   dt_iop_order_iccprofile_info_t *work_profile_info
-      = dt_ioppr_set_pipe_work_profile_info(self->dev, piece->pipe, d->type_work, d->filename_work, DT_INTENT_PERCEPTUAL);
+      = dt_ioppr_set_pipe_work_profile_info(self->dev, pipe, d->type_work, d->filename_work, DT_INTENT_PERCEPTUAL);
   if(work_profile_info)
   {
     d->type_work = work_profile_info->type;
@@ -1286,7 +1251,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   type = _resolve_input_profile(p, pipe, d);
 
   // should never happen, but catch that case to avoid a crash
-  if(!d->input)
+  if(IS_NULL_PTR(d->input))
   {
     dt_print(DT_DEBUG_COLORPROFILE, "[colorin] input profile could not be generated!\n");
     dt_control_log(_("input profile could not be generated!"));
@@ -1370,7 +1335,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   }
 
   // we might have failed generating the clipping transformations, check that:
-  if(d->nrgb && ((!d->xform_cam_nrgb && isnan(d->nmatrix[0][0])) || (!d->xform_nrgb_Lab && isnan(d->lmatrix[0][0]))))
+  if(d->nrgb && ((IS_NULL_PTR(d->xform_cam_nrgb) && isnan(d->nmatrix[0][0])) || (IS_NULL_PTR(d->xform_nrgb_Lab) && isnan(d->lmatrix[0][0]))))
   {
     if(d->xform_cam_nrgb)
     {
@@ -1386,7 +1351,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   }
 
   // user selected a non-supported input profile, check that:
-  if(!d->xform_cam_Lab && isnan(d->cmatrix[0][0]))
+  if(IS_NULL_PTR(d->xform_cam_Lab) && isnan(d->cmatrix[0][0]))
   {
     if(p->type == DT_COLORSPACE_FILE)
       dt_print(DT_DEBUG_COLORPROFILE,
@@ -1445,7 +1410,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   if(d->input)
     dt_colorspaces_get_matrix_from_input_profile(d->input, input_matrix_for_pipe, NULL, NULL, NULL, 0);
 
-  dt_ioppr_set_pipe_input_profile_info(self->dev, piece->pipe, d->type, d->filename, p->intent,
+  dt_ioppr_set_pipe_input_profile_info(self->dev, pipe, d->type, d->filename, p->intent,
                                        input_matrix_for_pipe);
 }
 
@@ -1561,7 +1526,7 @@ static void update_profile_list(dt_iop_module_t *self)
 {
   dt_iop_colorin_gui_data_t *g = (dt_iop_colorin_gui_data_t *)self->gui_data;
 
-  if(!g) return;
+  if(IS_NULL_PTR(g)) return;
 
   // clear and refill the image profile list
   g_list_free_full(g->image_profiles, dt_free_gpointer);

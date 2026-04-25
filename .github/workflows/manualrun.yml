@@ -86,7 +86,7 @@ jobs:
           sudo add-apt-repository ppa:ubuntu-toolchain-r/test
           sudo add-apt-repository -y universe
           sudo add-apt-repository -y multiverse
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
         with:
           submodules: true
           path: src
@@ -104,8 +104,8 @@ jobs:
           ${INSTALL_PREFIX}/bin/ansel-cli \
                  --width 2048 --height 2048 \
                  --apply-custom-presets false \
-                 "${SRC_DIR}/src/tests/integration/images/mire1.cr2" \
-                 "${SRC_DIR}/src/tests/integration/0000-nop/nop.xmp" \
+                 "${SRC_DIR}/tests/integration/images/mire1.cr2" \
+                 "${SRC_DIR}/tests/integration/0000-nop/nop.xmp" \
                  output.png \
                  --core --disable-opencl --conf host_memory_limit=8192 \
                  --conf worker_threads=4 -t 4 \
@@ -161,7 +161,7 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
         with:
           submodules: true
           path: src
@@ -179,8 +179,8 @@ jobs:
           $(cygpath ${INSTALL_PREFIX})/bin/ansel-cli.exe \
                  --width 2048 --height 2048 \
                  --apply-custom-presets false \
-                 $(cygpath ${SRC_DIR})/src/tests/integration/images/mire1.cr2 \
-                 $(cygpath ${SRC_DIR})/src/tests/integration/0000-nop/nop.xmp \
+                 $(cygpath ${SRC_DIR})/tests/integration/images/mire1.cr2 \
+                 $(cygpath ${SRC_DIR})/tests/integration/0000-nop/nop.xmp \
                  output.png \
                  --core --disable-opencl --conf host_memory_limit=8192 \
                  --conf worker_threads=4 -t 4 \
@@ -194,7 +194,7 @@ jobs:
           cmake --build "${BUILD_DIR}" --target package
       - name: Package upload
         if: ${{ success() && matrix.btype == 'Release' && matrix.target == 'skiptest' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: Win64.${{ matrix.compiler.compiler }}.${{ matrix.btype}}.${{ github.sha }}
           path: ${{ env.BUILD_DIR }}/ansel-*.exe
@@ -223,7 +223,7 @@ jobs:
       GENERATOR: Ninja
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
         with:
           submodules: true
           path: src
@@ -242,8 +242,8 @@ jobs:
           ${INSTALL_PREFIX}/bin/ansel-cli \
                  --width 2048 --height 2048 \
                  --apply-custom-presets false \
-                 "${SRC_DIR}/src/tests/integration/images/mire1.cr2" \
-                 "${SRC_DIR}/src/tests/integration/0000-nop/nop.xmp" \
+                 "${SRC_DIR}/tests/integration/images/mire1.cr2" \
+                 "${SRC_DIR}/tests/integration/0000-nop/nop.xmp" \
                  output.png \
                  --core --disable-opencl --conf host_memory_limit=8192 \
                  --conf worker_threads=4 -t 4 \

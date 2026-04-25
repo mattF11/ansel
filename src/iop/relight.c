@@ -127,28 +127,26 @@ int default_group()
   return IOP_GROUP_EFFECTS;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
 }
 
 #define GAUSS(a, b, c, x) (a * powf(2.718281828f, (-powf((x - b), 2) / (powf(c, 2)))))
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_relight_data_t *data = (dt_iop_relight_data_t *)piece->data;
-  const int ch = piece->colors;
+  const int ch = piece->dsc_in.channels;
 
   // Precalculate parameters for gauss function
   const float a = 1.0;                        // Height of top
   const float b = -1.0 + (data->center * 2);  // Center of top
   const float c = (data->width / 10.0) / 2.0; // Width
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) dt_omp_firstprivate(a, b, c, ch, ivoid, ovoid, roi_out) shared(data)       \
-    schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int k = 0; k < roi_out->height; k++)
   {
     float *in = ((float *)ivoid) + (size_t)ch * k * roi_out->width;
@@ -159,11 +157,11 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
       const float x = -1.0 + (lightness * 2.0);
       float gauss = GAUSS(a, b, c, x);
 
-      if(isnan(gauss) || isinf(gauss)) gauss = 0.0;
+      if(isnan(gauss) || !isfinite(gauss)) gauss = 0.0;
 
       float relight = 1.0 / exp2f(-data->ev * CLIP(gauss));
 
-      if(isnan(relight) || isinf(relight)) relight = 1.0;
+      if(isnan(relight) || !isfinite(relight)) relight = 1.0;
 
       out[0] = 100.0 * CLIP(lightness * relight);
       out[1] = in[1];
@@ -214,7 +212,7 @@ void gui_update(struct dt_iop_module_t *self)
   dtgtk_gradient_slider_set_value(g->center, p->center);
 }
 
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_relight_gui_data_t *g = (dt_iop_relight_gui_data_t *)self->gui_data;
   float mean, min, max;

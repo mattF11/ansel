@@ -85,6 +85,99 @@ static void _rounded_rectangle(cairo_t *cr)  // create rounded rectangle to use 
   cairo_close_path (cr);
 }
 
+/**
+ * @brief Paint the cursor arrow using the arrow tip position and a uniform size.
+ *
+ * The geometry is defined in unit space relative to the arrow tip, then scaled
+ * and translated so the tip lands at (tip_x, tip_y). This keeps the call site
+ * explicit about ownership of positioning while keeping the shape definition in
+ * one place.
+ *
+ * @param cr Cairo context.
+ * @param tip_x Arrow tip x position in normalized widget coordinates.
+ * @param tip_y Arrow tip y position in normalized widget coordinates.
+ * @param size Arrow height in normalized widget coordinates. A size of 1.0 fills
+ *             the unit height from the tip to the top of the arrow.
+ */
+static void _paint_cursor_arrow(cairo_t *cr, const double tip_x, const double tip_y, const double size)
+{
+  // Unit geometry: tip at (0, 0), total height 1.0.
+  const double axis_len = sqrt(0.39 * 0.39 + 0.75 * 0.75);
+  const double axis_x = 0.39 / axis_len;
+  const double axis_y = 0.75 / axis_len;
+  // Place control points symmetrically about the central axis through the tip and curve center.
+  const double curve_ctrl_axis_offset = -0.2;
+  const double curve_ctrl_0_x = 0.39 + axis_x * curve_ctrl_axis_offset;
+  const double curve_ctrl_0_y = 0.75 + axis_y * curve_ctrl_axis_offset;
+  //const double curve_ctrl_1_x = 0.39 - axis_x * curve_ctrl_axis_offset;
+  //const double curve_ctrl_1_y = 0.75 - axis_y * curve_ctrl_axis_offset;
+  // Keep the tail centered on the arrow axis so the center line crosses it.
+  const double base_axis_offset = 0.33 * axis_x + 0.49 * axis_y;
+  const double tail_axis_offset = 0.3;
+  const double base_center_x = axis_x * (base_axis_offset + tail_axis_offset);
+  const double base_center_y = axis_y * (base_axis_offset + tail_axis_offset);
+  const double tail_length = 0.47;
+  const double tail_half_width = 0.09;
+  const double tail_dir_x = axis_x;
+  const double tail_dir_y = axis_y;
+  const double tail_half_length = tail_length * 0.5;
+  const double tail_start_x = base_center_x - tail_dir_x * tail_half_length;
+  const double tail_start_y = base_center_y - tail_dir_y * tail_half_length;
+  const double tail_perp_x = -tail_dir_y * tail_half_width;
+  const double tail_perp_y = tail_dir_x * tail_half_width;
+  const double tail_end_x = base_center_x + tail_dir_x * tail_half_length;
+  const double tail_end_y = base_center_y + tail_dir_y * tail_half_length;
+
+  cairo_save(cr);
+  cairo_translate(cr, tip_x, tip_y);
+  cairo_scale(cr, size, size);
+
+  // Arrow body: start at the tip, then sweep around the triangular head.
+  cairo_move_to(cr, 0.0, 0.0);
+  cairo_line_to(cr, 0.78, 0.60);
+  cairo_curve_to(cr, curve_ctrl_0_x, curve_ctrl_0_y, curve_ctrl_0_x, curve_ctrl_0_y,
+                 0.0, 0.89);
+  cairo_line_to(cr, 0.0, 1.0);
+  cairo_close_path(cr);
+  cairo_fill(cr);
+
+  // Rectangular tail from the center of the arrow base.
+  cairo_move_to(cr, tail_start_x + tail_perp_x, tail_start_y + tail_perp_y);
+  cairo_line_to(cr, tail_end_x + tail_perp_x, tail_end_y + tail_perp_y);
+  cairo_line_to(cr, tail_end_x - tail_perp_x, tail_end_y - tail_perp_y);
+  cairo_line_to(cr, tail_start_x - tail_perp_x, tail_start_y - tail_perp_y);
+  cairo_close_path(cr);
+  cairo_fill(cr);
+
+  cairo_restore(cr);
+}
+
+/**
+ * @brief Draw a plus sign centered at the given position.
+ *
+ * The line width scale is applied to the current Cairo line width so the
+ * plus sign stays consistent with the caller's icon scaling.
+ *
+ * @param cr Cairo context.
+ * @param x Center X in normalized icon space.
+ * @param y Center Y in normalized icon space.
+ * @param size Half-length of each arm in normalized icon space.
+ * @param line_width_scale Multiplier applied to the current line width.
+ */
+static void _draw_plus_sign(cairo_t *cr, float x, float y, float size, float line_width_scale)
+{
+  const float base_line_width = cairo_get_line_width(cr);
+  cairo_set_line_width(cr, base_line_width * line_width_scale);
+
+  cairo_move_to(cr, x, y - size);
+  cairo_line_to(cr, x, y + size);
+  cairo_move_to(cr, x - size, y);
+  cairo_line_to(cr, x + size, y);
+
+  cairo_stroke(cr);
+  cairo_set_line_width(cr, base_line_width);
+}
+
 void dtgtk_cairo_paint_empty(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data)
 {
   PREAMBLE(1, 1, 0, 0)
@@ -581,52 +674,64 @@ void dtgtk_cairo_paint_invert(cairo_t *cr, gint x, gint y, gint w, gint h, gint 
   FINISH
 }
 
-void dtgtk_cairo_paint_masks_eye(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data)
+void dtgtk_cairo_paint_masks_edit(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data)
 {
   PREAMBLE(1, 1, 0, 0)
 
-  double dashed[] = { 0.2, 0.2 };
-  int len = sizeof(dashed) / sizeof(dashed[0]);
-  cairo_set_dash(cr, dashed, len, 0);
+  // Draw in a SOURCE group so overlapping strokes don't accumulate alpha.
+  const cairo_operator_t prev_operator = cairo_get_operator(cr);
+  cairo_push_group(cr);
+  cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
 
-  cairo_arc(cr, 0.75, 0.75, 0.75, 2.8, 4.7124);
+  // Curve line
+  cairo_move_to(cr, 1., 0.4);
+  cairo_curve_to(cr, 0.9, -0.1, 0.4, 0.1, 0., 0.5);
   cairo_stroke(cr);
-
-  cairo_move_to(cr, 0.4, 0.1);
-  cairo_line_to(cr, 0.3, 0.8);
-  cairo_line_to(cr, 0.55, 0.716667);
-  cairo_line_to(cr, 0.65, 1.016667);
-  cairo_line_to(cr, 0.75, 0.983333);
-  cairo_line_to(cr, 0.65, 0.683333);
-  cairo_line_to(cr, 0.9, 0.6);
-  cairo_line_to(cr, 0.4, 0.1);
+  // Node
+  cairo_arc(cr, 0.35, 0.20, 0.1, 0, 2 * M_PI);
   cairo_fill(cr);
+  // Cursor arrow
+  _paint_cursor_arrow(cr, 0.4, 0.35, 0.7);
+
+  cairo_pop_group_to_source(cr);
+  cairo_set_operator(cr, prev_operator);
+  cairo_paint(cr);
 
   FINISH
 }
 
 void dtgtk_cairo_paint_masks_circle(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data)
 {
-  PREAMBLE(1.1, 1, 0, 0)
+  PREAMBLE(1, 1, 0, 0)
 
-  cairo_arc(cr, 0.5, 0.5, 0.4, 0, 6.2832);
+  cairo_arc(cr, 0.5, 0.5, 0.5, 0, 2.0 * M_PI);
   cairo_stroke(cr);
 
   FINISH
 }
 
+/**
+ * @brief Paint a 45 deg-rotated ellipse that touches the unit square boundaries.
+ *
+ * The ellipse comes from scaling a circle and then rotating it. For a 45 deg-rotated
+ * ellipse with semi-axes a and b, the axis-aligned half-extent is
+ * sqrt((a * a + b * b) / 2). We choose the radius so this extent is 0.5, which
+ * makes the ellipse touch the [0, 1] bounds after centering at (0.5, 0.5).
+ */
 void dtgtk_cairo_paint_masks_ellipse(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data)
 {
-  PREAMBLE(1.15, 1, 0, 0)
+  PREAMBLE(1, 1, 0, 0)
+
+  const double scale_x = 0.95 / sqrt(2.0);
+  const double scale_y = 0.95;
+  // Pick the radius so the rotated ellipse's axis-aligned bbox has half-extent 0.5.
+  const double radius = sqrt(0.5 / (scale_x * scale_x + scale_y * scale_y));
 
   cairo_save(cr);
-  // Apply rotation after the non-uniform scale so the ellipse orientation changes.
   cairo_translate(cr, 0.5, 0.5);
-  cairo_rotate(cr, M_PI / 4.0);
-  // Radius chosen so the rotated/scaled ellipse touches the unit box edges.
-  const double radius = 0.5773;
-  cairo_scale(cr, 0.707, 1.0);
-  cairo_arc(cr, 0, 0, 0.45, 0, 2 * M_PI);
+  cairo_rotate(cr, M_PI_4);
+  cairo_scale(cr, scale_x, scale_y);
+  cairo_arc(cr, 0.0, 0.0, radius, 0.0, 2.0 * M_PI);
   cairo_restore(cr);
   cairo_stroke(cr);
 
@@ -635,33 +740,119 @@ void dtgtk_cairo_paint_masks_ellipse(cairo_t *cr, gint x, gint y, gint w, gint h
 
 void dtgtk_cairo_paint_masks_gradient(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data)
 {
-  PREAMBLE(1, 1, -0.05, -0.05)
+  PREAMBLE(1, 1, 0, 0)
 
-  cairo_rectangle(cr, 0.1, 0.1, 0.9, 0.9);
-  cairo_stroke_preserve(cr);
-  cairo_pattern_t *pat = NULL;
-  pat = cairo_pattern_create_linear(0.5, 0.1, 0.5, 0.9);
-  cairo_pattern_add_color_stop_rgba(pat, 0.1, 0.6, 0.6, 0.6, 0.9);
-  cairo_pattern_add_color_stop_rgba(pat, 0.9, 0.2, 0.2, 0.2, 0.9);
+  cairo_save(cr);
+
+  cairo_pattern_t *src = cairo_get_source(cr);
+  double r = 0.7, g = 0.7, b = 0.7, a = 1.0;
+  if(cairo_pattern_get_rgba(src, &r, &g, &b, &a) != CAIRO_STATUS_SUCCESS)
+  {
+    /* fallback */
+    r = g = b = 0.7;
+    a = 1.0;
+  }
+
+  cairo_pattern_t *pat = cairo_pattern_create_linear(0.0, 1.0, 1.0, 0.0);
+  cairo_pattern_add_color_stop_rgba(pat, 0.33, r, g, b, 0.3);
+  cairo_pattern_add_color_stop_rgba(pat, 0.66, r, g, b, 0.);
+  cairo_rectangle(cr, 0.0, 0.0, 1, 1);
   cairo_set_source(cr, pat);
   cairo_fill(cr);
   cairo_pattern_destroy(pat);
+  cairo_restore(cr);
+
+
+  const double line_width = cairo_get_line_width(cr);
+  const double thick_width = line_width * 2.;
+  const double triangle_size = 0.4;
+  const double triangle_width = 0.66 * triangle_size;
+  const double triangle_height = triangle_size;
+
+  // Angle pointed by the triangle tip (radians).
+  const double angle = -M_PI_4;
+  const double half_width = triangle_width * 0.5;
+  const double tip_x = cos(angle);
+  const double tip_y = sin(angle);
+  const double base_x = -tip_y;
+  const double base_y = tip_x;
+
+  // Offset center so the triangle centroid stays at (0.5, 0.5).
+  const double center_x = 0.5 - triangle_height * tip_x / 3.0;
+  const double center_y = 0.5 - triangle_height * tip_y / 3.0;
+
+  cairo_move_to(cr, center_x - half_width * base_x, center_y - half_width * base_y);
+  cairo_line_to(cr, center_x + half_width * base_x, center_y + half_width * base_y);
+  cairo_line_to(cr, center_x + triangle_height * tip_x, center_y + triangle_height * tip_y);
+  cairo_close_path(cr);
+
+
+  cairo_fill(cr);
+
+  // Clip to avoid lines to bleed outside of the gradient
+  cairo_rectangle(cr, 0.0, 0.0, 1, 1);
+  cairo_clip(cr);
+
+  double pattern[2] = {0.1f, 0.2f};
+  cairo_set_dash(cr, pattern, 2, 0);
+
+  cairo_move_to(cr, 0.5, 0.);
+  cairo_line_to(cr, 1., 0.5);
+
+  cairo_move_to(cr, 0., 0.5);
+  cairo_line_to(cr, 0.5, 1.);
+
+  cairo_set_line_width(cr, thick_width);
+  cairo_stroke(cr);  
 
   FINISH
 }
 
-void dtgtk_cairo_paint_masks_path(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data)
+void dtgtk_cairo_paint_masks_polygon(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data)
 {
-  PREAMBLE(1.05, 1, 0, 0)
+  PREAMBLE(1, 1, 0, 0)
 
-  cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-  cairo_move_to(cr, 0.1, 0.9);
-  cairo_curve_to(cr, 0.1, 0.5, 0.9, 0.6, 0.9, 0.1);
+  // Draw in a SOURCE group so overlapping strokes don't accumulate alpha.
+  const cairo_operator_t prev_operator = cairo_get_operator(cr);
+  cairo_push_group(cr);
+  cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+
+  const double nodes[5][2] =
+  {
+    {0.075, 0.50},
+    {0.375, 0.10},
+    {0.925, 0.30},
+    {0.75, 0.883},
+    {0.225, 0.925}
+  };
+
+  const int points_type[5] = {1, 0, 1, 1, 1}; // 0 for line, 1 for curve
+
+  cairo_move_to(cr, nodes[0][0], nodes[0][1]);
+  cairo_line_to(cr, nodes[1][0], nodes[1][1]);
+  cairo_line_to(cr, nodes[2][0], nodes[2][1]);
+  cairo_curve_to(cr, 0.95, 0.60, 0.75, 0.90, nodes[3][0], nodes[3][1]);
+  cairo_curve_to(cr, 0.60, 0.7, 0.5, 0.75, nodes[4][0], nodes[4][1]);
+  cairo_curve_to(cr, 0.05, 0.70, 0.05, 0.80, nodes[0][0], nodes[0][1]);
   cairo_stroke(cr);
-  cairo_move_to(cr, 0.5, 0.5);
-  cairo_line_to(cr, 0.3, 0.1);
-  cairo_set_line_width(cr, 0.1);
-  cairo_stroke(cr);
+
+  for (int i = 0; i < 5; i++)
+  {
+    const float radius = 0.075;
+      if(!points_type[i])
+      {
+        const float length = radius * 0.7071f;
+        cairo_rectangle(cr, nodes[i][0] - length, nodes[i][1] - length, 2 * length, 2 * length);
+      }
+      else
+        cairo_arc(cr, nodes[i][0], nodes[i][1], radius, 0, 2 * M_PI);
+      cairo_fill_preserve(cr);
+      cairo_stroke(cr);
+  }
+
+  cairo_pop_group_to_source(cr);
+  cairo_set_operator(cr, prev_operator);
+  cairo_paint(cr);
 
   FINISH
 }
@@ -710,22 +901,37 @@ void dtgtk_cairo_paint_masks_brush_and_inverse(cairo_t *cr, gint x, gint y, gint
 
 void dtgtk_cairo_paint_masks_brush(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data)
 {
-  PREAMBLE(0.90, 1, 0., 0.)
+  PREAMBLE(1, 1, 0, 0)
 
-  cairo_move_to(cr, -0.05, 1.0);
-  cairo_arc_negative(cr, 0.25, 0.85, 0.15, 0.5 * M_PI, 1.12 * M_PI);
-  cairo_arc(cr, -0.236, 0.72, 0.35, 0.08 * M_PI, 0.26 * M_PI);
-  cairo_close_path(cr);
-  cairo_stroke(cr);
-  cairo_move_to(cr, 0, 1);
-  cairo_arc_negative(cr, 0.20, 0.80, 0.10, 0.4 * M_PI, 1.9 * M_PI);
+  // Draw in a SOURCE group so overlapping strokes don't accumulate alpha.
+  const cairo_operator_t prev_operator = cairo_get_operator(cr);
+  cairo_push_group(cr);
+  cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+
+  //_draw_shape_plus_sign(cr);
+
+  const double nodes[3][2] = {{0.1, 0.90},
+                              {0.5, 0.5},
+                              {0.9, 0.1}};
+
+  cairo_move_to(cr, nodes[0][0], nodes[0][1]);
+  cairo_curve_to(cr, 0.00, 0.75, 0.1, 0.18, nodes[1][0], nodes[1][1]);
+  cairo_curve_to(cr, 0.82, 0.7, 0.8, 0.2, nodes[2][0], nodes[2][1]);
   cairo_stroke(cr);
 
-  cairo_set_line_width(cr, 0.01);
-  cairo_arc(cr, 0.98, 0.0, 0.055, 1.2 * M_PI, 0.2 * M_PI);
-  cairo_arc(cr, 0.48, 0.72, 0.09, 0.2 * M_PI, 1.2 * M_PI);
-  cairo_close_path(cr);
-  cairo_fill(cr);
+  for(int i = 0; i < 3; i++)
+  {
+    cairo_arc(cr, nodes[i][0], nodes[i][1], 0.075, 0, 2 * M_PI);
+    cairo_fill_preserve(cr);
+    cairo_stroke(cr);
+  }
+  
+  //cairo_rectangle(cr, 0.0, 0.0, 1, 1);
+  //cairo_stroke(cr);
+
+  cairo_pop_group_to_source(cr);
+  cairo_set_operator(cr, prev_operator);
+  cairo_paint(cr);
 
   FINISH
 }
@@ -1954,32 +2160,100 @@ void dtgtk_cairo_paint_label_flower(cairo_t *cr, gint x, gint y, gint w, gint h,
 
 void dtgtk_cairo_paint_colorpicker(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data)
 {
-  PREAMBLE(1, 1, 0, 0.05)
+  PREAMBLE(1, 1, -0.05, 0)
+  
+  // Draw in a SOURCE group so overlapping strokes don't accumulate alpha.
+  const cairo_operator_t prev_operator = cairo_get_operator(cr);
+  cairo_push_group(cr);
+  cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
 
-  /* draw pipette */
+  if(flags & CPF_ALTER)
+  {
+    // plus sign
+    _draw_plus_sign(cr, 0.18f, 0.18f, 0.18f, 1.0f);
+  }
 
-  // drop
-  cairo_move_to(cr, 0., 1. - 0.0);
-  cairo_line_to(cr, 0.08, 1. - 0.15);
-  cairo_line_to(cr, 0.16, 1. - 0.0);
-  cairo_arc(cr, 0.08, 1. - 0.15 + 0.1926, 0.090666667, -0.49, 3.63);
+  cairo_translate(cr, 0.5, 0.5);
+  cairo_rotate(cr, M_PI * 0.2973);
+  cairo_scale(cr, 1.2, 1.2);
+  cairo_translate(cr, -0.5, -0.5);
+  cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+
+  // Shaft
+  const float top_width = 0.25f;
+  const float top_height = 0.15f;
+  const float bottom_width = top_width * 1.5f;
+  const float bottom_height = 0.13f;
+
+  const float x1 = 0.5f - top_width * 0.5f;
+  const float y1 = 0.0f;
+
+  cairo_rectangle(cr, x1, y1, top_width, top_height);
+  cairo_arc(cr, 0.5f, 0.0, top_width * 0.5, -M_PI, 0);
+  
+  // Bottom rectangle with rounded top corners
+  const float x3 = 0.5f - bottom_width * 0.5f;
+  const float y3 = top_height;
+  const float x4 = 0.5f + bottom_width * 0.5f;
+  const float y4 = top_height + bottom_height;
+  const float radius = 0.035f;
+  
+  cairo_move_to(cr, x3 + radius, y3);
+  cairo_line_to(cr, x4 - radius, y3);
+  cairo_arc(cr, x4 - radius, y3 + radius, radius, -M_PI / 2, 0);
+  cairo_line_to(cr, x4, y4);
+  cairo_line_to(cr, x3, y4);
+  cairo_line_to(cr, x3, y3 + radius);
+  cairo_arc(cr, x3 + radius, y3 + radius, radius, M_PI, 3 * M_PI / 2);
+  cairo_close_path(cr);
   cairo_fill(cr);
 
-  // cross line
-  cairo_set_line_width(cr, 0.15);
-  cairo_move_to(cr, 0.48, 1. - 0.831);
-  cairo_line_to(cr, 0.739, 1. - 0.482);
+  // Tube and tip
+  const float tube_width = 0.2f - 0.07f;
+  const float x5 = 0.5f - tube_width * 0.5f;
+  const float x6 = 0.5f + tube_width * 0.5f;
 
-  // shaft
-  cairo_move_to(cr, 0.124, 1. - 0.297);
-  cairo_line_to(cr, 0.823, 1. - 0.814);
+  // Liquid level
+  const float center_y = 0.6f;
+  const float offset_y = 0.088f;
+  const float stem_start_y = y4 + 0.05f;
+
+  const float tip_radius = 0.0125f;
+  const float tip_base = 0.85f;
+  const float tip_shoulder = 0.95f;
+  const float tip_y = 1.0f - tip_radius;
+  const float tip_x_left = 0.5f - tip_radius;
+  const float tip_x_right = 0.5f + tip_radius;
+
+  cairo_set_line_cap(cr, CAIRO_LINE_CAP_SQUARE);
+  cairo_set_line_width(cr, 0.03);
+
+  // Tube sides
+  cairo_move_to(cr, x5, stem_start_y);
+  cairo_line_to(cr, x5, center_y + offset_y);
+  cairo_move_to(cr, x6, stem_start_y);
+  cairo_line_to(cr, x6, center_y - offset_y);
   cairo_stroke(cr);
 
-  // end
-  cairo_set_line_width(cr, 0.35);
-  cairo_move_to(cr, 0.823, 1. - 0.814);
-  cairo_line_to(cr, 0.648, 1. - 0.685);
-  cairo_stroke(cr);
+  // Liquid
+  cairo_move_to(cr, x5, center_y + offset_y);
+  cairo_line_to(cr, x5, tip_base);
+  cairo_line_to(cr, tip_x_left, tip_shoulder);
+  cairo_line_to(cr, tip_x_left, tip_y);
+  cairo_line_to(cr, tip_x_right, tip_y);
+  cairo_line_to(cr, tip_x_right, tip_shoulder);
+  cairo_line_to(cr, x6, tip_base);
+  cairo_line_to(cr, x6, center_y - offset_y);
+  cairo_close_path(cr);
+  cairo_stroke_preserve(cr);
+  cairo_fill(cr);
+
+  cairo_arc(cr, 0.5f, 1.0f - tip_radius, tip_radius, 0, M_PI);
+  cairo_fill(cr);
+
+  cairo_pop_group_to_source(cr);
+  cairo_set_operator(cr, prev_operator);
+  cairo_paint(cr);
 
   FINISH
 }
@@ -3360,6 +3634,87 @@ void dtgtk_cairo_paint_link_chain(cairo_t *cr, gint x, gint y, gint w, gint h, g
   cairo_stroke(cr);
 
   FINISH
+}
+
+/**
+ * @brief Paint the flowchart icon using normalized 0..1 coordinates.
+ *
+ * The icon geometry is expressed in normalized icon space so it scales
+ * uniformly with the PREAMBLE square and stays independent from the
+ * widget pixel size.
+ */
+void dtgtk_cairo_paint_flowchart(cairo_t *cr, gint x, gint y, gint w, gint h, gint flags, void *data)
+{
+  PREAMBLE(1, 1, 0, 0)
+
+  // Draw in a SOURCE group so overlapping strokes don't accumulate alpha.
+  const cairo_operator_t prev_operator = cairo_get_operator(cr);
+  cairo_push_group(cr);
+  cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+
+  cairo_set_line_cap(cr, CAIRO_LINE_CAP_SQUARE);
+
+  const double width = 0.25;
+  const double height = 0.25;
+  const double margin = 0.05;
+
+  // Rectangle positions and dimensions
+  const double left = margin;
+  const double top = margin;
+  const double right = 1.0 - margin - width;
+  const double bottom = 1.0 - margin - height;
+  const double center_x = margin + width * 0.5;
+  const double half_width = width * 0.5;
+
+  // Draw rectangles forming flowchart boxes
+  cairo_rectangle(cr, left, top, width, height);
+  cairo_rectangle(cr, right, top, width, height);
+  cairo_rectangle(cr, left, bottom, width, height);
+
+  // Draw vertical connector line
+  cairo_move_to(cr, center_x, bottom);
+  cairo_line_to(cr, center_x, top + height);
+
+  // Draw curved connector to right box
+  cairo_move_to(cr, center_x, 0.5);
+  cairo_curve_to(cr, right + half_width, 0.5, right + half_width, 0.5, right + half_width, margin + height);
+
+  cairo_stroke(cr);
+
+  cairo_pop_group_to_source(cr);
+  cairo_set_operator(cr, prev_operator);
+  cairo_paint(cr);
+
+  FINISH
+}
+
+void dtgtk_liquify_cairo_paint_node_tool(cairo_t *cr, const gint x, const gint y, const gint w, const gint h,
+                                            const gint flags, void *data)
+{
+  PREAMBLE(1, 1, 0, 0);
+  cairo_arc(cr, 0.5, 0.5, 0.2, 0, 2 * M_PI);
+  cairo_stroke(cr);
+  FINISH;
+}
+
+void dtgtk_liquify_cairo_paint_line_tool(cairo_t *cr, const gint x, const gint y, const gint w, const gint h,
+                                            const gint flags, void *data)
+{
+  PREAMBLE(1, 1, 0, 0);
+  cairo_move_to(cr, 0.1, 0.9);
+  cairo_line_to(cr, 0.9, 0.1);
+  cairo_stroke(cr);
+  FINISH;
+}
+
+void dtgtk_liquify_cairo_paint_curve_tool(cairo_t *cr, const gint x, const gint y, const gint w, const gint h,
+                                             const gint flags, void *data)
+{
+  PREAMBLE(1, 1, 0, 0);
+  cairo_move_to(cr, 0.1, 0.9);
+  cairo_curve_to(cr, 0.1, 0.5, 0.5, 0.1, 0.9, 0.1);
+  cairo_stroke(cr);
+  FINISH;
 }
 
 // clang-format off

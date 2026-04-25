@@ -155,7 +155,7 @@ int default_group()
   return IOP_GROUP_TONES;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
 }
@@ -196,18 +196,19 @@ static inline void _iop_zonesystem_calculate_zonemap(struct dt_iop_zonesystem_pa
   }
 }
 
-static void process_common_setup(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+static inline __attribute__((always_inline)) void process_common_setup(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                                 const dt_dev_pixelpipe_iop_t *piece,
                                  const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
                                  const dt_iop_roi_t *const roi_out)
 {
   const int width = roi_out->width;
   const int height = roi_out->height;
 
-  if(self->dev->gui_attached && dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, roi_out))
+  if(self->dev->gui_attached && dt_dev_pixelpipe_has_preview_output(self->dev, pipe, roi_out))
   {
     dt_iop_zonesystem_gui_data_t *g = (dt_iop_zonesystem_gui_data_t *)self->gui_data;
     dt_iop_gui_enter_critical_section(self);
-    if(g->in_preview_buffer == NULL || g->out_preview_buffer == NULL || g->preview_width != width
+    if(IS_NULL_PTR(g->in_preview_buffer) || IS_NULL_PTR(g->out_preview_buffer) || g->preview_width != width
        || g->preview_height != height)
     {
       dt_free(g->in_preview_buffer);
@@ -221,7 +222,9 @@ static void process_common_setup(struct dt_iop_module_t *self, dt_dev_pixelpipe_
   }
 }
 
-static void process_common_cleanup(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+__DT_CLONE_TARGETS__
+static void process_common_cleanup(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                                   const dt_dev_pixelpipe_iop_t *piece,
                                    const void *const ivoid, void *const ovoid,
                                    const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
@@ -230,15 +233,15 @@ static void process_common_cleanup(struct dt_iop_module_t *self, dt_dev_pixelpip
 
   const int width = roi_out->width;
   const int height = roi_out->height;
-  const size_t ch = piece->colors;
+  const size_t ch = piece->dsc_in.channels;
   const int size = d->params.size;
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, width, height);
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, width, height);
 
   /* if gui and have buffer lets gaussblur and fill buffer with zone indexes */
   if(self->dev->gui_attached
-     && dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, roi_out)
-     && g && g->in_preview_buffer
+     && dt_dev_pixelpipe_has_preview_output(self->dev, pipe, roi_out)
+     && !IS_NULL_PTR(g) && g->in_preview_buffer
      && g->out_preview_buffer)
   {
     float Lmax[] = { 100.0f };
@@ -252,39 +255,22 @@ static void process_common_cleanup(struct dt_iop_module_t *self, dt_dev_pixelpip
 
     float *tmp = g_malloc_n((size_t)width * height, sizeof(float));
 
-    if(gauss && tmp)
+    if(gauss && !IS_NULL_PTR(tmp))
     {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-      dt_omp_firstprivate(ch, height, width, ivoid) \
-      shared(tmp) \
-      schedule(static)
-#endif
+      __OMP_PARALLEL_FOR__()
       for(size_t k = 0; k < (size_t)width * height; k++) tmp[k] = ((float *)ivoid)[ch * k];
 
       dt_gaussian_blur(gauss, tmp, tmp);
 
       /* create zonemap preview for input */
       dt_iop_gui_enter_critical_section(self);
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-      dt_omp_firstprivate(height, size, width) \
-      shared(tmp, g) \
-      schedule(static)
-#endif
+      __OMP_PARALLEL_FOR__()
       for(size_t k = 0; k < (size_t)width * height; k++)
       {
         g->in_preview_buffer[k] = CLAMPS(tmp[k] * (size - 1) / 100.0f, 0, size - 2);
       }
       dt_iop_gui_leave_critical_section(self);
-
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-      dt_omp_firstprivate(ch, height, ovoid, width) \
-      shared(tmp) \
-      schedule(static)
-#endif
+      __OMP_PARALLEL_FOR__()
       for(size_t k = 0; k < (size_t)width * height; k++) tmp[k] = ((float *)ovoid)[ch * k];
 
       dt_gaussian_blur(gauss, tmp, tmp);
@@ -292,12 +278,7 @@ static void process_common_cleanup(struct dt_iop_module_t *self, dt_dev_pixelpip
 
       /* create zonemap preview for output */
       dt_iop_gui_enter_critical_section(self);
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-      dt_omp_firstprivate(height, size, width) \
-      shared(tmp, g) \
-      schedule(static)
-#endif
+      __OMP_PARALLEL_FOR__()
       for(size_t k = 0; k < (size_t)width * height; k++)
       {
         g->out_preview_buffer[k] = CLAMPS(tmp[k] * (size - 1) / 100.0f, 0, size - 2);
@@ -310,27 +291,22 @@ static void process_common_cleanup(struct dt_iop_module_t *self, dt_dev_pixelpip
   }
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
-                                         ivoid, ovoid, roi_in, roi_out))
-    return 0;
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
 
   const dt_iop_zonesystem_data_t *const d = (const dt_iop_zonesystem_data_t *const)piece->data;
-  process_common_setup(self, piece, ivoid, ovoid, roi_in, roi_out);
+  process_common_setup(self, pipe, piece, ivoid, ovoid, roi_in, roi_out);
 
   const int size = d->params.size;
 
   const float *const restrict in = (const float *const)ivoid;
   float *const restrict out = (float *const)ovoid;
   const size_t npixels = (size_t)roi_out->width * roi_out->height;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(d, in, out, npixels, size) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < (size_t)4 * npixels; k += 4)
   {
     /* remap lightness into zonemap and apply lightness */
@@ -342,7 +318,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     }
   }
 
-  process_common_cleanup(self, piece, ivoid, ovoid, roi_in, roi_out);
+  process_common_cleanup(self, pipe, piece, ivoid, ovoid, roi_in, roi_out);
   return 0;
 }
 

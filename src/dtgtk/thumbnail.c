@@ -38,8 +38,6 @@
 */
 /** this is the thumbnail class for the lighttable module.  */
 
-#include "common/extra_optimizations.h"
-
 #include "dtgtk/thumbnail.h"
 #include "dtgtk/thumbtable.h"
 #include "dtgtk/thumbtable_info.h"
@@ -82,6 +80,8 @@
 
 static void _set_flag(GtkWidget *w, GtkStateFlags flag, gboolean activate)
 {
+  if(!GTK_IS_WIDGET(w)) return;
+
   if(activate)
     gtk_widget_set_state_flags(w, flag, FALSE);
   else
@@ -217,10 +217,10 @@ static void _preview_window_open(GtkWidget *widget, dt_thumbnail_t *thumb)
 static void _active_modules_popup(GtkWidget *widget, dt_thumbnail_t *thumb)
 {
   (void)widget;
-  if(!thumb) return;
+  if(IS_NULL_PTR(thumb)) return;
 
   sqlite3 *handle = dt_database_get(darktable.db);
-  if(!handle) return;
+  if(IS_NULL_PTR(handle)) return;
 
   static const char *sql =
       "SELECT MIN(num) AS num, operation, multi_name "
@@ -371,6 +371,24 @@ static void _free_image_surface(dt_thumbnail_t *thumb)
   thumb->img_surf = NULL;
 }
 
+static void _thumbnail_free(dt_thumbnail_t *thumb)
+{
+  if(IS_NULL_PTR(thumb)) return;
+
+  _free_image_surface(thumb);
+  dt_pthread_mutex_destroy(&thumb->lock);
+  dt_free(thumb);
+}
+
+static void _thumbnail_release(void *data)
+{
+  dt_thumbnail_t *thumb = (dt_thumbnail_t *)data;
+  if(IS_NULL_PTR(thumb)) return;
+
+  if(dt_atomic_sub_int(&thumb->ref_count, 1) == 1)
+    _thumbnail_free(thumb);
+}
+
 static gboolean _main_context_queue_draw(GtkWidget *widget)
 {
   if(GTK_IS_WIDGET(widget))
@@ -425,7 +443,7 @@ int32_t _get_image_buffer(dt_job_t *job)
   if(dt_atomic_get_int(&thumb->destroying)) return 1;
 
   // The job was cancelled on the queue. Good chances of having thumb destroyed anytime soon.
-  if(!thumb->job || thumb->job != job || dt_control_job_get_state(job) == DT_JOB_STATE_CANCELLED) return 1;
+  if(IS_NULL_PTR(thumb->job) || thumb->job != job || dt_control_job_get_state(job) == DT_JOB_STATE_CANCELLED) return 1;
 
   // Read and cache the thumb data now, while we have it. And lock it.
   dt_pthread_mutex_lock(&thumb->lock);
@@ -520,7 +538,7 @@ int32_t _get_image_buffer(dt_job_t *job)
   }
 
   // The job was cancelled on the queue. Good chances of having thumb destroyed anytime soon.
-  if(!thumb->job || thumb->job != job 
+  if(IS_NULL_PTR(thumb->job) || thumb->job != job 
      || dt_control_job_get_state(job) == DT_JOB_STATE_CANCELLED 
      || dt_atomic_get_int(&thumb->destroying))
   {
@@ -531,11 +549,15 @@ int32_t _get_image_buffer(dt_job_t *job)
   // Write temporary surface into actual image surface if we still have a widget to paint on
   if(thumb && thumb->widget && thumb->w_main)
   {
+    double sx = 1.0, sy = 1.0;
+    cairo_surface_get_device_scale(surface, &sx, &sy);
+
     dt_pthread_mutex_lock(&thumb->lock);
-    thumb->img_width = img_width;
-    thumb->img_height = img_height;
-    thumb->zoomx = zoomx;
-    thumb->zoomy = zoomy;
+    _free_image_surface(thumb);
+    thumb->img_width = roundf(img_width / sx);
+    thumb->img_height = roundf(img_height / sy);
+    thumb->zoomx = zoomx / sx;
+    thumb->zoomy = zoomy / sy;
     thumb->img_surf = surface;
     dt_pthread_mutex_unlock(&thumb->lock);
 
@@ -560,7 +582,7 @@ int dt_thumbnail_get_image_buffer(dt_thumbnail_t *thumb)
   // previously queued/running jobs exit early (thumb->job != job), which can lead to endless
   // "busy" redraws without ever painting an image.
   dt_pthread_mutex_lock(&thumb->lock);
-  const gboolean job_running = (thumb->job != NULL);
+  const gboolean job_running = (!IS_NULL_PTR(thumb->job));
   dt_pthread_mutex_unlock(&thumb->lock);
   if(job_running) return 0;
 
@@ -569,12 +591,6 @@ int dt_thumbnail_get_image_buffer(dt_thumbnail_t *thumb)
   // - a rendering job has already been started
   if((thumb->image_inited && thumb->img_surf && cairo_surface_get_reference_count(thumb->img_surf) > 0))
     return 0;
-
-  // Nuke the image surface in GUI mainthread.
-  // Note: if background thumbnail thread gets ditched, this may never be recreated.
-  dt_pthread_mutex_lock(&thumb->lock);
-  _free_image_surface(thumb);
-  dt_pthread_mutex_unlock(&thumb->lock);
 
   // Get thumbnail GUI allocated size now (in GUI mainthread).
   // Size requests may be unset (-1) during initial layout while allocations are already valid.
@@ -598,23 +614,34 @@ int dt_thumbnail_get_image_buffer(dt_thumbnail_t *thumb)
   // can be expensive on large thumbnails. Do it in a background job,
   // so the thumbtable stays responsive.
   dt_job_t *job = dt_control_job_create(&_get_image_buffer, "get image %i", thumb->info.id);
-  dt_control_job_set_params(job, thumb, NULL);
+  if(IS_NULL_PTR(job)) return 1;
 
   dt_pthread_mutex_lock(&thumb->lock);
   // Re-check now that we are about to publish the job pointer.
-  if(thumb->job)
+  if(thumb->job || dt_atomic_get_int(&thumb->destroying))
   {
     dt_pthread_mutex_unlock(&thumb->lock);
     dt_control_job_dispose(job);
     return 0;
   }
   thumb->job = job;
+  dt_atomic_add_int(&thumb->ref_count, 1);
   dt_pthread_mutex_unlock(&thumb->lock);
 
-  dt_control_add_job(darktable.control, DT_JOB_QUEUE_SYSTEM_FG, job);
+  dt_control_job_set_params(job, thumb, _thumbnail_release);
+  if(dt_control_add_job(darktable.control, DT_JOB_QUEUE_SYSTEM_FG, job) != 0)
+  {
+    dt_pthread_mutex_lock(&thumb->lock);
+    if(thumb->job == job) thumb->job = NULL;
+    dt_pthread_mutex_unlock(&thumb->lock);
+    _thumbnail_release(thumb);
+    return 1;
+  }
 
   return 0;
 }
+
+
 
 static gboolean
 _thumb_draw_image(GtkWidget *widget, cairo_t *cr, gpointer user_data)
@@ -625,6 +652,8 @@ _thumb_draw_image(GtkWidget *widget, cairo_t *cr, gpointer user_data)
   int w = gtk_widget_get_allocated_width(widget);
   int h = gtk_widget_get_allocated_height(widget);
   if(w < 2 || h < 2) return TRUE;
+
+  gboolean can_draw = TRUE;
 
   dt_pthread_mutex_lock(&thumb->lock);
   if(thumb->img_surf && cairo_surface_get_reference_count(thumb->img_surf) > 0)
@@ -637,28 +666,32 @@ _thumb_draw_image(GtkWidget *widget, cairo_t *cr, gpointer user_data)
     // dt_view_image_get_surface() aspect-fits the image inside the widget box,
     // so one surface dimension is typically smaller than the widget even when up-to-date.
     // Only invalidate cached buffers when the surface is too small in *both* dimensions.
-    const int req_w = (int)roundf(darktable.gui->ppd * w);
-    const int req_h = (int)roundf(darktable.gui->ppd * h);
-    if(thumb->img_width + 1 < req_w && thumb->img_height + 1 < req_h)
+    const int req_w = w;
+    const int req_h = h;
+    if(!(abs(thumb->img_width - req_w) < 2 || abs(thumb->img_height - req_h) < 2))
+    {
       thumb->image_inited = FALSE;
+      can_draw = FALSE;
+    }
   }
   dt_pthread_mutex_unlock(&thumb->lock);
 
+  /**
+   * thumb->image_inited is the validity flag for the image surface. While it is FALSE,
+   * pending a new thumbnail, we may still hold an outdated thumbnail that can be painted
+   * into the widget, pending the new one.
+   * 
+   * can_draw means we have a size mismatch between the surface and the widget.
+   */
   dt_thumbnail_get_image_buffer(thumb);
 
   dt_print(DT_DEBUG_LIGHTTABLE, "[lighttable] redrawing thumbnail %i\n", thumb->info.id);
 
   dt_pthread_mutex_lock(&thumb->lock);
-  if(thumb->image_inited && thumb->img_surf && cairo_surface_get_reference_count(thumb->img_surf) > 0)
+  if(can_draw && thumb->img_surf && cairo_surface_get_reference_count(thumb->img_surf) > 0)
   {
     // we draw the image
     cairo_save(cr);
-    const float scaler = 1.0f / darktable.gui->ppd;
-    cairo_scale(cr, scaler, scaler);
-
-    // Correct allocation size for HighDPI scaling
-    w *= darktable.gui->ppd;
-    h *= darktable.gui->ppd;
     double x_offset = (w - thumb->img_width) / 2.;
     double y_offset = (h - thumb->img_height) / 2.;
 
@@ -686,7 +719,8 @@ _thumb_draw_image(GtkWidget *widget, cairo_t *cr, gpointer user_data)
     gtk_render_frame(context, cr, 0, 0, w, h);
     cairo_restore(cr);
   }
-  else
+  
+  if(!thumb->image_inited || IS_NULL_PTR(thumb->img_surf))
   {
     dt_control_draw_busy_msg(cr, w, h);
   }
@@ -700,19 +734,28 @@ _thumb_draw_image(GtkWidget *widget, cairo_t *cr, gpointer user_data)
 static void _thumb_update_icons(dt_thumbnail_t *thumb)
 {
   thumb_return_if_fails(thumb);
-  if(!thumb->widget) return;
+  if(IS_NULL_PTR(thumb->widget)) return;
 
   gboolean show = (thumb->over > DT_THUMBNAIL_OVERLAYS_NONE);
 
-  gtk_widget_set_visible(thumb->w_local_copy, (thumb->info.has_localcopy && show) || DEBUG);
-  gtk_widget_set_visible(thumb->w_altered, (dt_thumbtable_info_is_altered(thumb->info) && show) || DEBUG);
-  gtk_widget_set_visible(thumb->w_group, (dt_thumbtable_info_is_grouped(thumb->info) && show) || DEBUG);
-  gtk_widget_set_visible(thumb->w_audio, (thumb->info.has_audio && show) || DEBUG);
-  gtk_widget_set_visible(thumb->w_color, show || DEBUG);
-  gtk_widget_set_visible(thumb->w_bottom_eb, show || DEBUG);
-  gtk_widget_set_visible(thumb->w_reject, show || DEBUG);
-  gtk_widget_set_visible(thumb->w_ext, show || DEBUG);
-  gtk_widget_show(thumb->w_cursor);
+  if(GTK_IS_WIDGET(thumb->w_local_copy))
+    gtk_widget_set_visible(thumb->w_local_copy, (thumb->info.has_localcopy && show) || DEBUG);
+  if(GTK_IS_WIDGET(thumb->w_altered))
+    gtk_widget_set_visible(thumb->w_altered, (dt_thumbtable_info_is_altered(thumb->info) && show) || DEBUG);
+  if(GTK_IS_WIDGET(thumb->w_group))
+    gtk_widget_set_visible(thumb->w_group, (dt_thumbtable_info_is_grouped(thumb->info) && show) || DEBUG);
+  if(GTK_IS_WIDGET(thumb->w_audio))
+    gtk_widget_set_visible(thumb->w_audio, (thumb->info.has_audio && show) || DEBUG);
+  if(GTK_IS_WIDGET(thumb->w_color))
+    gtk_widget_set_visible(thumb->w_color, show || DEBUG);
+  if(GTK_IS_WIDGET(thumb->w_bottom_eb))
+    gtk_widget_set_visible(thumb->w_bottom_eb, show || DEBUG);
+  if(GTK_IS_WIDGET(thumb->w_reject))
+    gtk_widget_set_visible(thumb->w_reject, show || DEBUG);
+  if(GTK_IS_WIDGET(thumb->w_ext))
+    gtk_widget_set_visible(thumb->w_ext, show || DEBUG);
+  if(GTK_IS_WIDGET(thumb->w_cursor))
+    gtk_widget_show(thumb->w_cursor);
 
   _set_flag(thumb->w_main, GTK_STATE_FLAG_PRELIGHT, thumb->mouse_over);
   _set_flag(thumb->widget, GTK_STATE_FLAG_PRELIGHT, thumb->mouse_over);
@@ -721,7 +764,8 @@ static void _thumb_update_icons(dt_thumbnail_t *thumb)
 
   for(int i = 0; i < MAX_STARS; i++)
   {
-    gtk_widget_set_visible(thumb->w_stars[i], show || DEBUG);
+    if(GTK_IS_WIDGET(thumb->w_stars[i]))
+      gtk_widget_set_visible(thumb->w_stars[i], show || DEBUG);
     _set_flag(thumb->w_stars[i], GTK_STATE_FLAG_ACTIVE, (thumb->info.rating > i && thumb->info.rating < DT_VIEW_REJECT));
   }
 
@@ -780,7 +824,12 @@ static gboolean _event_main_release(GtkWidget *widget, GdkEventButton *event, gp
     // in the thumbtable scope, catching the SELECTION_CHANGED signal.
     return TRUE;
   }
-
+  else if(event->button == 1
+          && thumb->table && thumb->table->mode == DT_THUMBTABLE_MODE_FILMSTRIP)
+  {
+    DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_VIEWMANAGER_FILMSTRIP_ACTIVATE, thumb->info.id);
+    return TRUE;
+  }
   return FALSE;
 }
 
@@ -1049,8 +1098,8 @@ static gboolean _event_image_motion(GtkWidget *widget, GdkEventMotion *event, gp
   thumb_return_if_fails(thumb, TRUE);
   if(thumb->dragging)
   {
-    const double delta_x = (event->x - thumb->drag_x_start) * darktable.gui->ppd;
-    const double delta_y = (event->y - thumb->drag_y_start) * darktable.gui->ppd;
+    const double delta_x = event->x - thumb->drag_x_start;
+    const double delta_y = event->y - thumb->drag_y_start;
     const gboolean global_shift = dt_modifier_is(event->state, GDK_SHIFT_MASK) && thumb->table;
 
     if(global_shift)
@@ -1293,11 +1342,11 @@ GtkWidget *dt_thumbnail_create_widget(dt_thumbnail_t *thumb)
 
 void dt_thumbnail_resync_info(dt_thumbnail_t *thumb, const dt_image_t *const info)
 {
-  if(!thumb || !info) return;
+  if(IS_NULL_PTR(thumb) || IS_NULL_PTR(info)) return;
 
   dt_thumbtable_copy_image(&thumb->info, info);
 
-  if(!thumb->widget || !thumb->w_main) return;
+  if(!thumb->widget || IS_NULL_PTR(thumb->w_main)) return;
 
   _thumb_update_rating_class(thumb);
   _thumb_update_icons(thumb);
@@ -1324,6 +1373,7 @@ dt_thumbnail_t *dt_thumbnail_new(int rowid, dt_thumbnail_overlay_t over, dt_thum
   thumb->img_h = 0;
   thumb->img_w = 0;
   dt_atomic_set_int(&thumb->destroying, FALSE);
+  dt_atomic_set_int(&thumb->ref_count, 1);
 
   dt_pthread_mutex_init(&thumb->lock, NULL);
 
@@ -1340,11 +1390,28 @@ dt_thumbnail_t *dt_thumbnail_new(int rowid, dt_thumbnail_overlay_t over, dt_thum
 
 int dt_thumbnail_destroy(dt_thumbnail_t *thumb)
 {
-  thumb_return_if_fails(thumb, 0);
+  if(IS_NULL_PTR(thumb)) return 0;
 
   dt_atomic_set_int(&thumb->destroying, TRUE);
 
-  // Wait for background jobs to finish before deleting the buffers they write in
+  // Unregister the thumbnail from the parent table before any callback can
+  // pick it again through the LUT or imgid hash during view/selection updates.
+  if(thumb->table)
+  {
+    dt_pthread_mutex_lock(&thumb->table->lock);
+    if(g_hash_table_lookup(thumb->table->list, GINT_TO_POINTER(thumb->info.id)) == thumb)
+      g_hash_table_remove(thumb->table->list, GINT_TO_POINTER(thumb->info.id));
+
+    if(thumb->table->lut)
+      for(int rowid = 0; rowid < thumb->table->collection_count; rowid++)
+        if(thumb->table->lut[rowid].thumb == thumb)
+          thumb->table->lut[rowid].thumb = NULL;
+
+    dt_pthread_mutex_unlock(&thumb->table->lock);
+  }
+
+  // Detach the thumbnail from Gtk immediately, but keep it alive until any queued
+  // background rendering job gets cancelled and disposed by the job queue.
   dt_pthread_mutex_lock(&thumb->lock);
 
   thumb->job = NULL;
@@ -1360,14 +1427,38 @@ int dt_thumbnail_destroy(dt_thumbnail_t *thumb)
   thumb->img_surf = NULL;
 
   if(thumb->widget)
-    gtk_container_remove(GTK_CONTAINER(gtk_widget_get_parent(thumb->widget)), thumb->widget);
+  {
+    GtkWidget *parent = gtk_widget_get_parent(thumb->widget);
+    if(parent && GTK_IS_CONTAINER(parent))
+      gtk_container_remove(GTK_CONTAINER(parent), thumb->widget);
+  }
   thumb->widget = NULL;
+  thumb->w_main = NULL;
+  thumb->w_image = NULL;
+  thumb->w_cursor = NULL;
+  thumb->w_bottom_eb = NULL;
+  thumb->w_reject = NULL;
+  thumb->w_color = NULL;
+  thumb->w_ext = NULL;
+  thumb->w_local_copy = NULL;
+  thumb->w_altered = NULL;
+  thumb->w_group = NULL;
+  thumb->w_audio = NULL;
+  thumb->w_top_eb = NULL;
+  thumb->w_alternative = NULL;
+  thumb->w_filename = NULL;
+  thumb->w_datetime = NULL;
+  thumb->w_folder = NULL;
+  thumb->w_exposure = NULL;
+  thumb->w_exposure_bias = NULL;
+  thumb->w_camera = NULL;
+  thumb->w_lens = NULL;
+  thumb->w_focal = NULL;
+  for(int i = 0; i < MAX_STARS; i++) thumb->w_stars[i] = NULL;
 
   dt_pthread_mutex_unlock(&thumb->lock);
 
-  dt_pthread_mutex_destroy(&thumb->lock);
-
-  dt_free(thumb);
+  _thumbnail_release(thumb);
 
   return 0;
 }
@@ -1376,8 +1467,11 @@ void dt_thumbnail_update_gui(dt_thumbnail_t *thumb)
 {
   thumb_return_if_fails(thumb);
   _thumb_update_rating_class(thumb);
-  GtkDarktableThumbnailBtn *btn = (GtkDarktableThumbnailBtn *)thumb->w_color;
-  btn->icon_flags = thumb->info.color_labels;
+  if(GTK_IS_WIDGET(thumb->w_color))
+  {
+    GtkDarktableThumbnailBtn *btn = (GtkDarktableThumbnailBtn *)thumb->w_color;
+    btn->icon_flags = thumb->info.color_labels;
+  }
   _thumb_write_extension(thumb);
   _thumb_update_icons(thumb);
   _create_alternative_view(thumb);

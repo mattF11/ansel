@@ -87,7 +87,7 @@ int default_group()
   return IOP_GROUP_FILM;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -124,10 +124,10 @@ void cleanup_pipe(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelp
   piece->data = NULL;
 }
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   tiling->factor = 2.0f;    // input buffer + output buffer; increase if additional memory allocated
   tiling->factor_cl = 2.0f; // same, but for OpenCL code path running on GPU
   tiling->maxbuf = 1.0f;    // largest buffer needed regardless of how tiling splits up the processing
@@ -138,26 +138,21 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
   tiling->yalign = 1;
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
-             const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_restorescans_data_t *d = (dt_iop_restorescans_data_t *)piece->data;
-  const float scale = 1.f / roi_in->scale;
-
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
-                                         ivoid, ovoid, roi_in, roi_out))
-    return 0;
+  const float scale = dt_dev_get_module_scale(pipe, roi_in);
 
   const float *const restrict in = (const float *const restrict)ivoid;
   float *const restrict out = (float *const restrict)ovoid;
   float *const restrict cmy = dt_pixelpipe_cache_alloc_align_float_cache(roi_in->width * roi_in->height * 4, 0);
-  if(!cmy) return 1;
+  if(IS_NULL_PTR(cmy)) return 1;
 
   const float sharpen = d->diffusion / (scale * scale) / d->iterations;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(ivoid, ovoid, roi_in, roi_out, in, out, cmy)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int i = 0; i < roi_out->height; i++)
     for(int j = 0; j < roi_out->width; j++)
     {
@@ -185,10 +180,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
       temp_in = cmy;
       temp_out = out;
     }
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(d, temp_in, roi_in, roi_out)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(int i = 0; i < roi_out->height; i++)
       for(int j = 0; j < roi_out->width; j++)
       {
@@ -198,10 +190,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
         dot_product(temp1, d->CMY, temp2);
         for_four_channels(c, aligned(temp2, temp_in)) temp_in[index + c] = CLAMP(((d->iterations - 1) * temp_in[index + c] + temp2[c]) / (d->iterations), 0.f, 1.f);
       }
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(d, temp_in, temp_out, roi_in, roi_out, sharpen)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(int i = 0; i < roi_out->height; i++)
       for(int j = 0; j < roi_out->width; j++)
       {
@@ -225,10 +214,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
         for_each_channel(c) temp_out[index + c] = CLAMP(temp_in[index + c] - laplacian[c] * sharpen, 0.f, 1.f);
       }
   }
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(roi_in, roi_out, out, temp_out)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int i = 0; i < roi_out->height; i++)
     for(int j = 0; j < roi_out->width; j++)
     {
@@ -242,7 +228,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 
 
 #if 0
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_restorescans_t *p = (dt_iop_restorescans_t *)self->params;
   dt_iop_restorescans_gui_data_t *g = (dt_iop_restorescans_gui_data_t *)self->gui_data;

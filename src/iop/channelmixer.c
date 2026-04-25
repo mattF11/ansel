@@ -182,7 +182,7 @@ int default_group()
   return IOP_GROUP_COLOR;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -234,20 +234,16 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
   return 1;
 }
 
-static void process_hsl_v1(dt_dev_pixelpipe_iop_t *piece, const float *const restrict in,
+__DT_CLONE_TARGETS__
+static void process_hsl_v1(const dt_dev_pixelpipe_iop_t *piece, const float *const restrict in,
                            float *const restrict out, const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_channelmixer_data_t *data = (dt_iop_channelmixer_data_t *)piece->data;
   const float *const restrict hsl_matrix = data->hsl_matrix;
   const float *const restrict rgb_matrix = data->rgb_matrix;
-  const int ch = piece->colors;
+  const int ch = piece->dsc_in.channels;
   const size_t pixel_count = (size_t)ch * roi_out->width * roi_out->height;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, pixel_count, hsl_matrix, rgb_matrix, in, out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < pixel_count; k += ch)
   {
     float h, s, l, hmix, smix, lmix;
@@ -283,20 +279,16 @@ static void process_hsl_v1(dt_dev_pixelpipe_iop_t *piece, const float *const res
   }
 }
 
-static void process_hsl_v2(dt_dev_pixelpipe_iop_t *piece, const float *const restrict in,
+__DT_CLONE_TARGETS__
+static void process_hsl_v2(const dt_dev_pixelpipe_iop_t *piece, const float *const restrict in,
                            float *const restrict out, const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_channelmixer_data_t *data = (dt_iop_channelmixer_data_t *)piece->data;
   const float *const restrict hsl_matrix = data->hsl_matrix;
   const float *const restrict rgb_matrix = data->rgb_matrix;
-  const int ch = piece->colors;
+  const int ch = piece->dsc_in.channels;
   const size_t pixel_count = (size_t)ch * roi_out->width * roi_out->height;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, pixel_count, hsl_matrix, rgb_matrix, in, out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < pixel_count; k += ch)
   {
     dt_aligned_pixel_t rgb = { in[k], in[k + 1], in[k + 2] };
@@ -337,19 +329,15 @@ static void process_hsl_v2(dt_dev_pixelpipe_iop_t *piece, const float *const res
   }
 }
 
-static void process_rgb(dt_dev_pixelpipe_iop_t *piece, const float *const restrict in,
+__DT_CLONE_TARGETS__
+static void process_rgb(const dt_dev_pixelpipe_iop_t *piece, const float *const restrict in,
                         float *const restrict out, const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_channelmixer_data_t *data = (dt_iop_channelmixer_data_t *)piece->data;
   const float *const restrict rgb_matrix = data->rgb_matrix;
-  const int ch = piece->colors;
+  const int ch = piece->dsc_in.channels;
   const size_t pixel_count = (size_t)ch * roi_out->width * roi_out->height;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, pixel_count, rgb_matrix, in, out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < pixel_count; k += ch)
   {
     for(int i = 0, j = 0; i < 3; i++, j += 3)
@@ -361,19 +349,15 @@ static void process_rgb(dt_dev_pixelpipe_iop_t *piece, const float *const restri
   }
 }
 
-static void process_gray(dt_dev_pixelpipe_iop_t *piece, const float *const restrict in,
+__DT_CLONE_TARGETS__
+static void process_gray(const dt_dev_pixelpipe_iop_t *piece, const float *const restrict in,
                          float *const restrict out, const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_channelmixer_data_t *data = (dt_iop_channelmixer_data_t *)piece->data;
   const float *const restrict rgb_matrix = data->rgb_matrix;
-  const int ch = piece->colors;
+  const int ch = piece->dsc_in.channels;
   const size_t pixel_count = (size_t)ch * roi_out->width * roi_out->height;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, pixel_count, rgb_matrix, in, out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < pixel_count; k += ch)
   {
     float gray = fmaxf(rgb_matrix[0] * in[k + 0]
@@ -385,9 +369,10 @@ static void process_gray(dt_dev_pixelpipe_iop_t *piece, const float *const restr
   }
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const dt_iop_channelmixer_data_t *data = (dt_iop_channelmixer_data_t *)piece->data;
   switch (data->operation_mode)
   {
@@ -406,7 +391,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     default:
       break;
   }
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
   return 0;
 }
 

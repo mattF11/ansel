@@ -109,6 +109,7 @@
 
 #include "common/colorlabels.h"
 #include "common/darktable.h"
+#include "common/deprecations.h"
 #include "common/debug.h"
 #include "common/dng_opcode.h"
 #include "common/image_cache.h"
@@ -361,7 +362,7 @@ const GList* dt_exif_get_exiv2_taglist()
 
 static const char *_exif_get_exiv2_tag_type(const char *tagname)
 {
-  if(!tagname) return NULL;
+  if(IS_NULL_PTR(tagname)) return NULL;
   for(GList *tag = exiv2_taglist; tag; tag = g_list_next(tag))
   {
     char *t = (char *)tag->data;
@@ -423,7 +424,7 @@ static void dt_strlcpy_to_utf8(char *dest, size_t dest_max, Exiv2::ExifData::con
   std::string str = pos->print(&exifData);
 
   char *s = g_locale_to_utf8(str.c_str(), str.length(), NULL, NULL, NULL);
-  if(s != NULL)
+  if(!IS_NULL_PTR(s))
   {
     g_strlcpy(dest, s, dest_max);
     dt_free(s);
@@ -630,7 +631,7 @@ static bool _exif_decode_xmp_data(dt_image_t *img, Exiv2::XmpData &xmpData, int 
       if(strncmp(lens, "lang=", 5) == 0)
       {
         lens = strchr(lens, ' ');
-        if(lens != NULL) lens++;
+        if(!IS_NULL_PTR(lens)) lens++;
       }
       // no need to do any Unicode<->locale conversion, the field is specified as ASCII
       g_strlcpy(img->exif_lens, lens, sizeof(img->exif_lens));
@@ -1498,7 +1499,7 @@ static bool _exif_decode_exif_data(dt_image_t *img, Exiv2::ExifData &exifData)
       if(sel_illu == -1)
         for(int i = 0; i < 3; ++i)
         {
-          if((illu[i] == DT_LS_Unknown) && !std::isnan(colmatrix[i][0]))
+          if((illu[i] == DT_LS_Unknown) && !isnan(colmatrix[i][0]))
           {
             sel_illu = i;
             sel_temp = D65temp;
@@ -1734,7 +1735,7 @@ int dt_exif_get_thumbnail(const char *path, uint8_t **buffer, size_t *size, char
     *height = preview.height();
     *mime_type = strdup(preview.mimeType().c_str());
     *buffer = (uint8_t *)malloc(_size);
-    if(!*buffer) {
+    if(IS_NULL_PTR(*buffer)) {
       std::cerr << "[exiv2 dt_exif_get_thumbnail] couldn't allocate memory for thumbnail for " << path << std::endl;
       return 1;
     }
@@ -2117,7 +2118,7 @@ int dt_exif_read_blob(uint8_t **buf, const char *path, const int32_t imgid, cons
       dt_remove_exif_keys(exifData, keys, n_keys);
 
       GList *res = dt_metadata_get(imgid, "Xmp.dc.creator", NULL);
-      if(res != NULL)
+      if(!IS_NULL_PTR(res))
       {
         exifData["Exif.Image.Artist"] = (char *)res->data;
         g_list_free_full(res, dt_free_gpointer);
@@ -2125,7 +2126,7 @@ int dt_exif_read_blob(uint8_t **buf, const char *path, const int32_t imgid, cons
       }
 
       res = dt_metadata_get(imgid, "Xmp.dc.description", NULL);
-      if(res != NULL)
+      if(!IS_NULL_PTR(res))
       {
         char *desc = (char *)res->data;
         if(g_str_is_ascii(desc))
@@ -2143,7 +2144,7 @@ int dt_exif_read_blob(uint8_t **buf, const char *path, const int32_t imgid, cons
 #endif
 
       res = dt_metadata_get(imgid, "Xmp.dc.rights", NULL);
-      if(res != NULL)
+      if(!IS_NULL_PTR(res))
       {
         exifData["Exif.Image.Copyright"] = (char *)res->data;
         g_list_free_full(res, dt_free_gpointer);
@@ -2157,7 +2158,7 @@ int dt_exif_read_blob(uint8_t **buf, const char *path, const int32_t imgid, cons
 #endif
 
       res = dt_metadata_get(imgid, "Xmp.xmp.Rating", NULL);
-      if(res != NULL)
+      if(!IS_NULL_PTR(res))
       {
         const int rating = GPOINTER_TO_INT(res->data) + 1;
         exifData["Exif.Image.Rating"] = rating;
@@ -2168,7 +2169,7 @@ int dt_exif_read_blob(uint8_t **buf, const char *path, const int32_t imgid, cons
       // GPS data
       dt_remove_exif_geotag(exifData);
       const dt_image_t *cimg = dt_image_cache_get(darktable.image_cache, imgid, 'r');
-      if(!std::isnan(cimg->geoloc.longitude) && !std::isnan(cimg->geoloc.latitude))
+      if(!isnan(cimg->geoloc.longitude) && !isnan(cimg->geoloc.latitude))
       {
         exifData["Exif.GPSInfo.GPSVersionID"] = "02 02 00 00";
         exifData["Exif.GPSInfo.GPSLongitudeRef"] = (cimg->geoloc.longitude < 0) ? "W" : "E";
@@ -2185,7 +2186,7 @@ int dt_exif_read_blob(uint8_t **buf, const char *path, const int32_t imgid, cons
         dt_free(long_str);
         dt_free(lat_str);
       }
-      if(!std::isnan(cimg->geoloc.elevation))
+      if(!isnan(cimg->geoloc.elevation))
       {
         exifData["Exif.GPSInfo.GPSVersionID"] = "02 02 00 00";
         exifData["Exif.GPSInfo.GPSAltitudeRef"] = (cimg->geoloc.elevation < 0) ? "1" : "0";
@@ -2218,7 +2219,7 @@ int dt_exif_read_blob(uint8_t **buf, const char *path, const int32_t imgid, cons
     Exiv2::ExifParser::encode(blob, Exiv2::bigEndian, exifData);
     const size_t length = blob.size();
     *buf = (uint8_t *)malloc(length);
-    if (!*buf)
+    if (IS_NULL_PTR(*buf))
     {
       return 0;
     }
@@ -2285,11 +2286,11 @@ char *dt_exif_xmp_encode_internal(const unsigned char *input, const int len, int
 
     char *buffer2 = (char *)g_base64_encode(buffer1, destLen);
     dt_free(buffer1);
-    if(!buffer2) return NULL;
+    if(IS_NULL_PTR(buffer2)) return NULL;
 
     int outlen = strlen(buffer2) + 5; // leading "gz" + compression factor + base64 string + trailing '\0'
     output = (char *)malloc(outlen);
-    if(!output)
+    if(IS_NULL_PTR(output))
     {
       dt_free(buffer2);
       return NULL;
@@ -2309,7 +2310,7 @@ char *dt_exif_xmp_encode_internal(const unsigned char *input, const int len, int
     const char hex[16] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
 
     output = (char *)malloc(2 * len + 1);
-    if(!output) return NULL;
+    if(IS_NULL_PTR(output)) return NULL;
 
     if(output_len) *output_len = 2 * len + 1;
 
@@ -2341,7 +2342,7 @@ unsigned char *dt_exif_xmp_decode(const char *input, const int len, int *output_
 
     // get a rw copy of input buffer omitting leading "gz" and compression factor
     unsigned char *buffer = (unsigned char *)strdup(input + 4);
-    if(!buffer) return NULL;
+    if(IS_NULL_PTR(buffer)) return NULL;
 
     // decode from base64 to compressed binary
     gsize compressed_size;
@@ -2361,7 +2362,7 @@ unsigned char *dt_exif_xmp_decode(const char *input, const int len, int *output_
         dt_free(output);
       }
       output = (unsigned char *)malloc(bufLen);
-      if(!output) break;
+      if(IS_NULL_PTR(output)) break;
 
       destLen = bufLen;
 
@@ -2398,7 +2399,7 @@ unsigned char *dt_exif_xmp_decode(const char *input, const int len, int *output_
     if(strspn(input, "0123456789abcdef") != strlen(input)) return NULL;
 
     output = (unsigned char *)malloc(len / 2);
-    if(!output) return NULL;
+    if(IS_NULL_PTR(output)) return NULL;
 
     if(output_len) *output_len = len / 2;
 
@@ -2515,7 +2516,7 @@ typedef struct mask_entry_t
 static void print_history_entry(history_entry_t *entry) __attribute__((unused));
 static void print_history_entry(history_entry_t *entry)
 {
-  if(!entry || !entry->operation)
+  if(IS_NULL_PTR(entry) || IS_NULL_PTR(entry->operation))
   {
     std::cout << "malformed entry" << std::endl;
     return;
@@ -3060,7 +3061,7 @@ static void add_mask_entries_to_db(int32_t imgid, GHashTable *mask_entries, int 
   // look for mask_id in the hash table
   mask_entry_t *entry = (mask_entry_t *)g_hash_table_lookup(mask_entries, &mask_id);
 
-  if(!entry) return;
+  if(IS_NULL_PTR(entry)) return;
 
   // if it's a group: recurse into the children first
   if(entry->mask_type & DT_MASKS_GROUP)
@@ -3187,7 +3188,7 @@ int dt_exif_xmp_read(dt_image_t *img, const char *filename, const int history_on
       {
         //  All iop-order version before 3 are legacy one. Starting with version 3 we have the first
         //  attempts to propose the final v3 iop-order.
-        iop_order_version = pos->toLong() < 3 ? DT_IOP_ORDER_LEGACY : DT_IOP_ORDER_V30;
+        iop_order_version = pos->toLong() < 3 ? DT_IOP_ORDER_LEGACY : DT_IOP_ORDER_ANSEL_RAW;
         iop_order_list = dt_ioppr_get_iop_order_list_version(iop_order_version);
       }
       else
@@ -3318,7 +3319,7 @@ int dt_exif_xmp_read(dt_image_t *img, const char *filename, const int history_on
           if(base_order)
             e->o.iop_order_f = ((dt_iop_order_entry_t *)(base_order->data))->o.iop_order_f
               - entry->multi_priority / 100.0f;
-          else
+          else if(!dt_deprecated(entry->operation))
           {
             fprintf(stderr,
                     "[exif] cannot get iop-order for module '%s', XMP may be corrupted\n",
@@ -3581,7 +3582,7 @@ static void dt_set_xmp_dt_history(Exiv2::XmpData &xmpData, const int32_t imgid, 
     const char *multi_name = (const char *)sqlite3_column_text(stmt, 7);
     int32_t hist_num = sqlite3_column_int(stmt, 8);
 
-    if(!operation) continue; // no op is fatal.
+    if(IS_NULL_PTR(operation)) continue; // no op is fatal.
 
     char *params = dt_exif_xmp_encode((const unsigned char *)params_blob, params_len, NULL);
 
@@ -3719,7 +3720,7 @@ static void dt_remove_xmp_exif_geotag(Exiv2::XmpData &xmpData)
 static void dt_set_xmp_exif_geotag(Exiv2::XmpData &xmpData, double longitude, double latitude, double altitude)
 {
   dt_remove_xmp_exif_geotag(xmpData);
-  if(!std::isnan(longitude) && !std::isnan(latitude))
+  if(!isnan(longitude) && !isnan(latitude))
   {
     char long_dir = 'E', lat_dir = 'N';
     if(longitude < 0) long_dir = 'W';
@@ -3747,7 +3748,7 @@ static void dt_set_xmp_exif_geotag(Exiv2::XmpData &xmpData, double longitude, do
     dt_free(lat_str);
     dt_free(str);
   }
-  if(!std::isnan(altitude))
+  if(!isnan(altitude))
   {
     xmpData["Xmp.exif.GPSAltitudeRef"] = (altitude < 0) ? "1" : "0";
 
@@ -3804,7 +3805,7 @@ static void _exif_xmp_append_history_hash(Exiv2::XmpData &xmpData, const int32_t
                                           const dt_image_t *image)
 {
   const dt_image_t *cached = image;
-  if(!cached)
+  if(IS_NULL_PTR(cached))
     cached = dt_image_cache_get(darktable.image_cache, imgid, 'r');
 
   if(cached)
@@ -3819,7 +3820,7 @@ static void _exif_xmp_append_history_hash(Exiv2::XmpData &xmpData, const int32_t
         dt_free(value);
       }
     }
-    if(!image)
+    if(IS_NULL_PTR(image))
       dt_image_cache_read_release(darktable.image_cache, cached);
   }
 }
@@ -4283,7 +4284,7 @@ int dt_exif_xmp_attach_export(const int32_t imgid, const char *filename, void *m
       {
         gchar *tagname = (gchar *)tags->data;
         tags = g_list_next(tags);
-        if (!tags) break;
+        if (IS_NULL_PTR(tags)) break;
         gchar *formula = (gchar *)tags->data;
         if (formula[0])
         {
@@ -4356,7 +4357,7 @@ int dt_exif_xmp_attach_export(const int32_t imgid, const char *filename, void *m
                    (g_strstr_len(result, strlen(result), "/") == NULL))
                 {
                   float float_value = (float)std::atof(result);
-                  if(!std::isnan(float_value))
+                  if(!isnan(float_value))
                   {
                     dt_free(result);
                     int int_value = (int)float_value;
@@ -4432,8 +4433,8 @@ int dt_exif_xmp_write_with_imgpath(const dt_image_t *image, const char *filename
                                    const char *imgpath)
 {
   // refuse to write sidecar for non-existent image:
-  if(!image || image->id <= 0) return 1;
-  if(!imgpath || !*imgpath) return 1;
+  if(IS_NULL_PTR(image) || image->id <= 0) return 1;
+  if(IS_NULL_PTR(imgpath) || !*imgpath) return 1;
   if(!g_file_test(imgpath, G_FILE_TEST_IS_REGULAR)) return 1;
   const int32_t imgid = image->id;
 

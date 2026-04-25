@@ -64,10 +64,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef __SSE2__
-#include "common/sse.h"
-#endif
-
 #define DT_GUI_CURVE_EDITOR_INSET DT_PIXEL_APPLY_DPI(1)
 
 
@@ -198,9 +194,17 @@ const char *deprecated_msg()
   return _("this module is deprecated. better use filmic rgb module instead.");
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
+}
+
+void input_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                  dt_iop_buffer_dsc_t *dsc)
+{
+  default_input_format(self, pipe, piece, dsc);
+  dsc->channels = 4;
+  dsc->datatype = TYPE_FLOAT;
 }
 
 int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version, void *new_params,
@@ -395,12 +399,14 @@ static inline float gaussian(float x, float std)
   return expf(- (x * x) / (2.0f * std * std)) / (std * powf(2.0f * M_PI, 0.5f));
 }
 
-int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
-             const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+            const void *const ivoid, void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_filmic_data_t *const data = (dt_iop_filmic_data_t *)piece->data;
 
-  const int ch = piece->colors;
+  const int ch = 4;
 
   /** The log2(x) -> -INF when x -> 0
   * thus very low values (noise) will get even lower, resulting in noise negative amplification,
@@ -415,12 +421,7 @@ int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *co
   // If saturation == 100, we have a no-op. Disable the op then.
   const int desaturate = (data->global_saturation == 100.0f) ? FALSE : TRUE;
   const float saturation = data->global_saturation / 100.0f;
-
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) \
-  dt_omp_firstprivate(ch, data, desaturate, ivoid, ovoid, preserve_color, roi_out, saturation, EPS) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__()
   for(size_t k = 0; k < (size_t)roi_out->height * roi_out->width * ch; k += ch)
   {
     float *in = ((float *)ivoid) + k;
@@ -510,148 +511,21 @@ int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *co
     dt_prophotorgb_to_Lab(rgb, out);
   }
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
     dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
   return 0;
 }
 
 
-#if defined(__SSE__)
-int process_sse2(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
-{
-  dt_iop_filmic_data_t *const data = (dt_iop_filmic_data_t *)piece->data;
-
-  const int ch = piece->colors;
-  const int preserve_color = data->preserve_color;
-
-  const float grey = data->grey_source;
-  const float black = data->black_source;
-  const float dynamic_range = data->dynamic_range;
-  const float saturation = (data->global_saturation / 100.0f);
-
-  const __m128 grey_sse = _mm_set1_ps(grey);
-  const __m128 black_sse = _mm_set1_ps(black);
-  const __m128 dynamic_range_sse = _mm_set1_ps(dynamic_range);
-  const __m128 power = _mm_set1_ps(data->output_power);
-  const __m128 saturation_sse = _mm_set1_ps(saturation);
-
-  // If saturation == 100, we have a no-op. Disable the op then.
-  const int desaturate = (data->global_saturation == 100.0f) ? FALSE : TRUE;
-
-  const float eps = powf(2.0f, -16);
-  const __m128 EPS = _mm_setr_ps(eps, eps, eps, 0.0f);
-  const __m128 zero = _mm_setzero_ps();
-  const __m128 one = _mm_set1_ps(1.0f);
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(black, black_sse, ch, data, desaturate, dynamic_range, \
-                      dynamic_range_sse, EPS, grey, grey_sse, ivoid, one, \
-                      ovoid, power, preserve_color, roi_out, saturation_sse, \
-                      zero, eps) \
-  schedule(static)
-#endif
-  for(size_t k = 0; k < (size_t)roi_out->height * roi_out->width * ch; k += ch)
-  {
-    float *in = ((float *)ivoid) + k;
-    float *out = ((float *)ovoid) + k;
-
-    __m128 XYZ = dt_Lab_to_XYZ_sse2(_mm_load_ps(in));
-    __m128 rgb = dt_XYZ_to_prophotoRGB_sse2(XYZ);
-
-    __m128 concavity;
-    __m128 luma;
-
-    // Global saturation adjustment
-    if (desaturate)
-    {
-      luma = _mm_set1_ps(XYZ[1]);
-      rgb = luma + saturation_sse * (rgb - luma);
-    }
-
-    if (preserve_color)
-    {
-      // Get the max of the RGB values
-      float max = fmax(fmaxf(rgb[0], rgb[1]), rgb[2]);
-      __m128 max_sse = _mm_set1_ps(max);
-
-      // Save the ratios
-      const __m128 ratios = rgb / max_sse;
-
-      // Log tone-mapping
-      max = max / grey;
-      max = (max > eps) ? (fastlog2(max) - black) / dynamic_range : eps;
-      max = CLAMP(max, 0.0f, 1.0f);
-
-      // Filmic S curve on the max RGB
-      const int index = CLAMP(max * 0x10000ul, 0, 0xffff);
-      max = data->table[index];
-      concavity = _mm_set1_ps(data->grad_2[index]);
-
-      // Re-apply ratios
-      max_sse = _mm_set1_ps(max);
-      rgb = ratios * max_sse;
-      luma = max_sse;
-    }
-    else
-    {
-      // Log tone-mapping
-      rgb = rgb / grey_sse;
-      rgb = _mm_max_ps(rgb, EPS);
-      rgb = _mm_log2_ps(rgb);
-      rgb -= black_sse;
-      rgb /=  dynamic_range_sse;
-      rgb = _mm_max_ps(rgb, zero);
-      rgb = _mm_min_ps(rgb, one);
-
-      // Store the derivative at the pixel luminance
-      XYZ = dt_prophotoRGB_to_XYZ_sse2(rgb);
-      concavity = _mm_set1_ps(data->grad_2[(int)CLAMP(XYZ[1] * 0x10000ul, 0, 0xffff)]);
-
-      // Unpack SSE vector to regular array
-      dt_aligned_pixel_t rgb_unpack;
-
-      // Filmic S curve
-      for (int c = 0; c < 4; ++c)
-      {
-        rgb_unpack[c] = data->table[(int)CLAMP(rgb[c] * 0x10000ul, 0, 0xffff)];
-      }
-
-      rgb = _mm_load_ps(rgb_unpack);
-      XYZ = dt_prophotoRGB_to_XYZ_sse2(rgb);
-      luma = _mm_set1_ps(XYZ[1]);
-    }
-
-    rgb = luma + concavity * (rgb - luma);
-    rgb = _mm_max_ps(rgb, zero);
-    rgb = _mm_min_ps(rgb, one);
-
-    // Apply the transfer function of the display
-    rgb = _mm_pow_ps(rgb, power);
-
-    // transform the result back to Lab
-    // sRGB -> XYZ
-    XYZ = dt_prophotoRGB_to_XYZ_sse2(rgb);
-    // XYZ -> Lab
-    _mm_stream_ps(out, dt_XYZ_to_Lab_sse2(XYZ));
-  }
-
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
-  return 0;
-}
-#endif
-
-
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_filmic_data_t *d = (dt_iop_filmic_data_t *)piece->data;
   dt_iop_filmic_global_data_t *gd = (dt_iop_filmic_global_data_t *)self->global_data;
 
   cl_int err = -999;
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   const int width = roi_in->width;
   const int height = roi_in->height;
 
@@ -661,10 +535,10 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   cl_mem diff_table = NULL;
 
   dev_table = dt_opencl_copy_host_to_device(devid, d->table, 256, 256, sizeof(float));
-  if(dev_table == NULL) goto error;
+  if(IS_NULL_PTR(dev_table)) goto error;
 
   diff_table = dt_opencl_copy_host_to_device(devid, d->grad_2, 256, 256, sizeof(float));
-  if(diff_table == NULL) goto error;
+  if(IS_NULL_PTR(diff_table)) goto error;
 
   const float dynamic_range = d->dynamic_range;
   const float shadows_range = d->black_source;
@@ -869,7 +743,7 @@ static void apply_autotune(dt_iop_module_t *self)
   gtk_widget_queue_draw(self->widget);
 }
 
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_filmic_gui_data_t *g = (dt_iop_filmic_gui_data_t *)self->gui_data;
   if     (picker == g->grey_point_source)
@@ -1183,7 +1057,7 @@ void compute_curve_lut(dt_iop_filmic_params_t *p, float *table, float *table_tem
     nodes_data->y[2] = grey_display;
     nodes_data->y[3] = white_display;
 
-    if(d)
+    if(!IS_NULL_PTR(d))
     {
       d->latitude_min = toe_log;
       d->latitude_max = white_log;
@@ -1207,7 +1081,7 @@ void compute_curve_lut(dt_iop_filmic_params_t *p, float *table, float *table_tem
     nodes_data->y[2] = shoulder_display;
     nodes_data->y[3] = white_display;
 
-    if(d)
+    if(!IS_NULL_PTR(d))
     {
       d->latitude_min = black_log;
       d->latitude_max = shoulder_log;
@@ -1229,7 +1103,7 @@ void compute_curve_lut(dt_iop_filmic_params_t *p, float *table, float *table_tem
     nodes_data->y[1] = grey_display;
     nodes_data->y[2] = white_display;
 
-    if(d)
+    if(!IS_NULL_PTR(d))
     {
       d->latitude_min = black_log;
       d->latitude_max = white_log;
@@ -1255,7 +1129,7 @@ void compute_curve_lut(dt_iop_filmic_params_t *p, float *table, float *table_tem
     nodes_data->y[2] = shoulder_display;
     nodes_data->y[3] = white_display;
 
-    if(d)
+    if(!IS_NULL_PTR(d))
     {
       d->latitude_min = toe_log;
       d->latitude_max = shoulder_log;
@@ -1295,9 +1169,7 @@ void compute_curve_lut(dt_iop_filmic_params_t *p, float *table, float *table_tem
     dt_draw_curve_destroy(curve);
 
     // Average both LUT
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) shared(table, table_temp, res) schedule(static)
-#endif
+    __OMP_PARALLEL_FOR_SIMD__()
     for(int k = 0; k < res; k++) table[k] = (table[k] + table_temp[k]) / 2.0f;
   }
 
@@ -1352,13 +1224,7 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   const float center = (d->latitude_max + d->latitude_min)/2.0f;
   const float saturation = d->saturation / 100.0f;
   const float sigma = saturation * saturation * latitude * latitude;
-
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) \
-  dt_omp_firstprivate(center, sigma) \
-  shared(d) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__()
   for(int k = 0; k < 65536; k++)
   {
     const float x = ((float)k) / 65536.0f;

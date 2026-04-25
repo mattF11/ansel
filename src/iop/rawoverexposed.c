@@ -95,12 +95,13 @@ int flags()
   return IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_HIDDEN | IOP_FLAGS_ONE_INSTANCE | IOP_FLAGS_NO_HISTORY_STACK;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
 
-static void process_common_setup(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece)
+__DT_CLONE_TARGETS__
+static void process_common_setup(dt_iop_module_t *self, const dt_dev_pixelpipe_iop_t *piece)
 {
   dt_develop_t *dev = self->dev;
   dt_iop_rawoverexposed_data_t *d = piece->data;
@@ -117,25 +118,29 @@ static void process_common_setup(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *
     float chthr = threshold;
 
     // "undo" rawprepare iop
-    chthr *= piece->pipe->dsc.rawprepare.raw_white_point - piece->pipe->dsc.rawprepare.raw_black_level;
-    chthr += piece->pipe->dsc.rawprepare.raw_black_level;
+    chthr *= piece->dsc_in.rawprepare.raw_white_point - piece->dsc_in.rawprepare.raw_black_level;
+    chthr += piece->dsc_in.rawprepare.raw_black_level;
 
     // and this is that threshold, but in raw input buffer values
     d->threshold[k] = (unsigned int)chthr;
   }
 }
 
-int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
-             const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+            const void *const ivoid, void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const dt_iop_rawoverexposed_data_t *const d = piece->data;
 
   process_common_setup(self, piece);
 
   dt_develop_t *dev = self->dev;
   const dt_image_t *const image = &(dev->image_storage);
+  dt_dev_pixelpipe_t *const runtime_pipe = (dt_dev_pixelpipe_t *)pipe;
 
-  const int ch = piece->colors;
+  const int ch = piece->dsc_in.channels;
   const double iop_order = self->iop_order;
 
   const dt_dev_rawoverexposed_mode_t mode = dev->rawoverexposed.mode;
@@ -146,7 +151,7 @@ int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *co
 
   dt_mipmap_buffer_t buf;
   dt_mipmap_cache_get(darktable.mipmap_cache, &buf, image->id, DT_MIPMAP_FULL, DT_MIPMAP_BLOCKING, 'r');
-  if(!buf.buf)
+  if(IS_NULL_PTR(buf.buf))
   {
     dt_control_log(_("failed to get raw buffer from image `%s'"), image->filename);
     dt_mipmap_cache_release(darktable.mipmap_cache, &buf);
@@ -158,7 +163,7 @@ int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *co
   dt_boundingbox_t pts = {(float)(roi_out->x) / in_scale, (float)(roi_out->y) / in_scale,
                           (float)(roi_out->x + roi_out->width) / in_scale, (float)(roi_out->y + roi_out->height) / in_scale};
   printf("in  %f %f %f %f\n", pts[0], pts[1], pts[2], pts[3]);
-  dt_dev_distort_backtransform_plus(dev, dev->pipe, 0, priority, pts, 2);
+  dt_dev_distort_backtransform_plus(dev->pipe, 0, priority, pts, 2);
   printf("out %f %f %f %f\n\n", pts[0], pts[1], pts[2], pts[3]);
 #endif
 
@@ -166,27 +171,18 @@ int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *co
   float *const restrict out = DT_IS_ALIGNED((float *const)ovoid);
 
   // NOT FROM THE PIPE !!!
-  const uint32_t filters = image->buf_dsc.filters;
-  const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])image->buf_dsc.xtrans;
+  const uint32_t filters = image->dsc.filters;
+  const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])image->dsc.xtrans;
 
   // acquire temp memory for distorted pixel coords
   size_t coordbufsize;
   float *const restrict coordbuf = dt_pixelpipe_cache_alloc_perthread_float(2*roi_out->width, &coordbufsize);
-  if(coordbuf == NULL)
+  if(IS_NULL_PTR(coordbuf))
   {
     dt_mipmap_cache_release(darktable.mipmap_cache, &buf);
     return 1;
   }
-
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) \
-  dt_omp_firstprivate(ch, color, coordbufsize, d, \
-                      dt_iop_rawoverexposed_colors, filters, iop_order, mode, \
-                      out, raw, roi_in, roi_out, xtrans) \
-  dt_omp_sharedconst(coordbuf) \
-  shared(self, buf) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(firstprivate(dt_iop_rawoverexposed_colors))
   for(int j = 0; j < roi_out->height; j++)
   {
     float *const restrict bufptr = dt_get_perthread(coordbuf, coordbufsize);
@@ -199,7 +195,8 @@ int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *co
     }
 
     // where did they come from?
-    dt_dev_distort_backtransform_plus(self->dev, self->dev->pipe, iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, bufptr, roi_out->width);
+    dt_dev_distort_backtransform_plus(runtime_pipe, iop_order,
+                                      DT_DEV_TRANSFORM_DIR_BACK_INCL, bufptr, roi_out->width);
 
     for(int i = 0; i < roi_out->width; i++)
     {
@@ -246,14 +243,15 @@ int process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *co
 
   dt_mipmap_cache_release(darktable.mipmap_cache, &buf);
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
   return 0;
 }
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const dt_iop_rawoverexposed_data_t *const d = piece->data;
   dt_develop_t *dev = self->dev;
   dt_iop_rawoverexposed_global_data_t *gd = (dt_iop_rawoverexposed_global_data_t *)self->global_data;
@@ -271,14 +269,14 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   dt_mipmap_buffer_t buf;
   dt_mipmap_cache_get(darktable.mipmap_cache, &buf, image->id, DT_MIPMAP_FULL, DT_MIPMAP_BLOCKING, 'r');
-  if(!buf.buf)
+  if(IS_NULL_PTR(buf.buf))
   {
     dt_control_log(_("failed to get raw buffer from image `%s'"), image->filename);
     dt_mipmap_cache_release(darktable.mipmap_cache, &buf);
     goto error;
   }
 
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
 
   const int width = roi_out->width;
   const int height = roi_out->height;
@@ -295,27 +293,19 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   const float *const color = dt_iop_rawoverexposed_colors[colorscheme];
 
   // NOT FROM THE PIPE !!!
-  const uint32_t filters = image->buf_dsc.filters;
+  const uint32_t filters = image->dsc.filters;
 
   const int raw_width = buf.width;
   const int raw_height = buf.height;
 
   dev_raw = dt_opencl_copy_host_to_device(devid, buf.buf, raw_width, raw_height, sizeof(uint16_t));
-  if(dev_raw == NULL) goto error;
+  if(IS_NULL_PTR(dev_raw)) goto error;
 
   const size_t coordbufsize = (size_t)height * width * 2 * sizeof(float);
 
-  coordbuf = dt_pixelpipe_cache_alloc_align_cache(
-      coordbufsize,
-      piece->pipe->type);
-  if(coordbuf == NULL) goto error;
-
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) \
-  dt_omp_firstprivate(height, roi_in, roi_out, width) \
-  shared(self, coordbuf, buf) \
-  schedule(static)
-#endif
+  coordbuf = dt_pixelpipe_cache_alloc_align_cache(coordbufsize, pipe->type);
+  if(IS_NULL_PTR(coordbuf)) goto error;
+  __OMP_PARALLEL_FOR_SIMD__()
   for(int j = 0; j < height; j++)
   {
     float *bufptr = ((float *)coordbuf) + (size_t)2 * j * width;
@@ -328,11 +318,11 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
     }
 
     // where did they come from?
-    dt_dev_distort_backtransform_plus(self->dev, self->dev->pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, bufptr, roi_out->width);
+    dt_dev_distort_backtransform_plus(pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, bufptr, roi_out->width);
   }
 
   dev_coord = dt_opencl_alloc_device_buffer(devid, coordbufsize);
-  if(dev_coord == NULL) goto error;
+  if(IS_NULL_PTR(dev_coord)) goto error;
 
   /* _blocking_ memory transfer: host coordbuf buffer -> opencl dev_coordbuf */
   err = dt_opencl_write_buffer_to_device(devid, coordbuf, dev_coord, 0, coordbufsize, CL_TRUE);
@@ -345,7 +335,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
       kernel = gd->kernel_rawoverexposed_mark_cfa;
 
       dev_colors = dt_opencl_alloc_device_buffer(devid, sizeof(dt_iop_rawoverexposed_colors));
-      if(dev_colors == NULL) goto error;
+      if(IS_NULL_PTR(dev_colors)) goto error;
 
       /* _blocking_ memory transfer: host coordbuf buffer -> opencl dev_colors */
       err = dt_opencl_write_buffer_to_device(devid, (void *)dt_iop_rawoverexposed_colors, dev_colors, 0,
@@ -365,12 +355,12 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   if(filters == 9u)
   {
     dev_xtrans
-        = dt_opencl_copy_host_to_device_constant(devid, sizeof(image->buf_dsc.xtrans), (void *)image->buf_dsc.xtrans);
-    if(dev_xtrans == NULL) goto error;
+        = dt_opencl_copy_host_to_device_constant(devid, sizeof(image->dsc.xtrans), (void *)image->dsc.xtrans);
+    if(IS_NULL_PTR(dev_xtrans)) goto error;
   }
 
   dev_thresholds = dt_opencl_copy_host_to_device_constant(devid, sizeof(unsigned int) * 4, (void *)d->threshold);
-  if(dev_thresholds == NULL) goto error;
+  if(IS_NULL_PTR(dev_thresholds)) goto error;
 
   size_t sizes[2] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid) };
   dt_opencl_set_kernel_arg(devid, kernel, 0, sizeof(cl_mem), &dev_in);
@@ -416,9 +406,7 @@ error:
 }
 #endif
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
   dt_develop_t *dev = self->dev;
   const dt_image_t *const image = &(dev->image_storage);
@@ -460,7 +448,7 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
 
   if(image->flags & DT_IMAGE_4BAYER) piece->enabled = 0;
 
-  if(image->buf_dsc.datatype != TYPE_UINT16 || !image->buf_dsc.filters) piece->enabled = 0;
+  if(image->dsc.datatype != TYPE_UINT16 || !image->dsc.filters) piece->enabled = 0;
 }
 
 void init_global(dt_iop_module_so_t *module)

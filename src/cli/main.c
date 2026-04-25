@@ -406,7 +406,7 @@ int main(int argc, char *arg[])
   for(; k < argc; k++) m_arg[m_argc++] = arg[k];
   m_arg[m_argc] = NULL;
 
-  if( (inputs && file_counter < 1) || (!inputs && file_counter < 2) || file_counter > 3)
+  if( (inputs && file_counter < 1) || (IS_NULL_PTR(inputs) && file_counter < 2) || file_counter > 3)
   {
     usage(arg[0]);
     dt_free(m_arg);
@@ -468,7 +468,7 @@ int main(int argc, char *arg[])
     xmp_filename = NULL;
   }
 
-  if(!inputs && input_filename)
+  if(IS_NULL_PTR(inputs) && input_filename)
   {
     // input is present as param
     inputs = g_list_prepend(inputs, g_strdup(input_filename));
@@ -478,7 +478,7 @@ int main(int argc, char *arg[])
   if(g_file_test(output_filename, G_FILE_TEST_IS_DIR))
   {
     output_to_dir = TRUE;
-    if(!output_ext)
+    if(IS_NULL_PTR(output_ext))
     {
       output_ext = g_strdup("jpg");
     }
@@ -495,7 +495,7 @@ int main(int argc, char *arg[])
   // the output file already exists, so there will be a sequence number added
   if(g_file_test(output_filename, G_FILE_TEST_EXISTS) && !output_to_dir)
   {
-    if(!output_ext || (output_ext && g_str_has_suffix(output_filename, output_ext) && !g_strcmp0(output_ext,strrchr(output_filename, '.')+1))){
+    if(IS_NULL_PTR(output_ext) || (output_ext && g_str_has_suffix(output_filename, output_ext) && !g_strcmp0(output_ext,strrchr(output_filename, '.')+1))){
       //output file exists or there's output ext specified and it's same as file...
       fprintf(stderr, "%s\n", _("output file already exists, it will get renamed"));
     }
@@ -504,7 +504,7 @@ int main(int argc, char *arg[])
   }
 
   // init dt without gui and without data.db:
-  if(dt_init(m_argc, m_arg, FALSE, custom_presets, NULL))
+  if(dt_init(m_argc, m_arg, FALSE, custom_presets))
   {
     dt_free(m_arg);
     dt_free(output_filename);
@@ -522,7 +522,7 @@ int main(int argc, char *arg[])
 
   GList *id_list = NULL;
 
-  for(GList *l = inputs; l != NULL; l=g_list_next(l))
+  for(GList *l = inputs; !IS_NULL_PTR(l); l=g_list_next(l))
   {
     gchar* input = l->data;
 
@@ -613,7 +613,7 @@ int main(int argc, char *arg[])
       printf("[%s]\n", _("empty history stack"));
   }
 
-  if(!output_ext)
+  if(IS_NULL_PTR(output_ext))
   {
     // by this point we're sure output is not dir, there's no output ext specified
     // so only place to look for it is in filename
@@ -665,7 +665,7 @@ int main(int argc, char *arg[])
   dt_imageio_module_data_t *sdata, *fdata;
 
   storage = dt_imageio_get_storage_by_name("disk"); // only exporting to disk makes sense
-  if(storage == NULL)
+  if(IS_NULL_PTR(storage))
   {
     fprintf(
         stderr, "%s\n",
@@ -677,7 +677,7 @@ int main(int argc, char *arg[])
   }
 
   sdata = storage->get_params(storage);
-  if(sdata == NULL)
+  if(IS_NULL_PTR(sdata))
   {
     fprintf(stderr, "%s\n", _("failed to get parameters from storage module, aborting export ..."));
     dt_free(m_arg);
@@ -693,7 +693,7 @@ int main(int argc, char *arg[])
   dt_free(output_filename);
 
   format = dt_imageio_get_format_by_name(output_ext);
-  if(format == NULL)
+  if(IS_NULL_PTR(format))
   {
     fprintf(stderr, _("unknown extension '.%s'"), output_ext);
     fprintf(stderr, "\n");
@@ -703,7 +703,7 @@ int main(int argc, char *arg[])
   }
 
   fdata = format->get_params(format);
-  if(fdata == NULL)
+  if(IS_NULL_PTR(fdata))
   {
     fprintf(stderr, "%s\n", _("failed to get parameters from format module, aborting export ..."));
     dt_free(m_arg);

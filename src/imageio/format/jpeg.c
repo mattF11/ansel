@@ -249,7 +249,7 @@ read_icc_profile (j_decompress_ptr cinfo,
   for(int seq_no = 1; seq_no <= MAX_SEQ_NO; seq_no++)
     marker_present[seq_no] = 0;
 
-  for(jpeg_saved_marker_ptr marker = cinfo->marker_list; marker != NULL; marker = marker->next)
+  for(jpeg_saved_marker_ptr marker = cinfo->marker_list; !IS_NULL_PTR(marker); marker = marker->next)
   {
     if(marker_is_icc(marker))
     {
@@ -288,11 +288,11 @@ read_icc_profile (j_decompress_ptr cinfo,
 
   /* Allocate space for assembled data */
   JOCTET *icc_data = (JOCTET *)calloc(total_length, sizeof(JOCTET));
-  if(icc_data == NULL)
+  if(IS_NULL_PTR(icc_data))
     return FALSE;   /* oops, out of memory */
 
   /* and fill it in */
-  for(jpeg_saved_marker_ptr marker = cinfo->marker_list; marker != NULL; marker = marker->next)
+  for(jpeg_saved_marker_ptr marker = cinfo->marker_list; !IS_NULL_PTR(marker); marker = marker->next)
   {
     if(marker_is_icc(marker))
     {
@@ -338,7 +338,7 @@ int write_image(dt_imageio_module_data_t *jpg_tmp, const char *filename, const v
   }
   jpeg_create_compress(&(jpg->cinfo));
   FILE *f = g_fopen(filename, "wb");
-  if(!f) return 1;
+  if(IS_NULL_PTR(f)) return 1;
   jpeg_stdio_dest(&(jpg->cinfo), f);
 
   jpg->cinfo.image_width = jpg->global.width;
@@ -401,7 +401,7 @@ int write_image(dt_imageio_module_data_t *jpg_tmp, const char *filename, const v
 static int __attribute__((__unused__)) read_header(const char *filename, dt_imageio_jpeg_t *jpg)
 {
   jpg->f = g_fopen(filename, "rb");
-  if(!jpg->f) return 1;
+  if(IS_NULL_PTR(jpg->f)) return 1;
 
   struct dt_imageio_jpeg_error_mgr jerr;
   jpg->dinfo.err = jpeg_std_error(&jerr.pub);
@@ -557,10 +557,8 @@ int flags(dt_imageio_module_data_t *data)
 
 void init(dt_imageio_module_format_t *self)
 {
-#ifdef USE_LUA
-  dt_lua_register_module_member(darktable.lua_state.state, self, dt_imageio_jpeg_t, quality, int);
-#endif
 }
+
 void cleanup(dt_imageio_module_format_t *self)
 {
 }

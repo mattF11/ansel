@@ -53,6 +53,7 @@
 #include "common/bilateral.h"
 #include "common/colorspaces_inline_conversions.h"
 #include "common/debug.h"
+#include "common/image.h"
 #include "common/imagebuf.h"
 #include "common/interpolation.h"
 #include "common/math.h"
@@ -70,7 +71,7 @@
 #include "gui/gtk.h"
 #include "gui/presets.h"
 #include "iop/iop_api.h"
-#include "libs/modulegroups.h"
+
 #include "gui/guides.h"
 
 #include <assert.h>
@@ -187,7 +188,7 @@ int operation_tags_filter()
   return IOP_TAG_DECORATION | IOP_TAG_CLIPPING;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -515,6 +516,7 @@ typedef struct dt_iop_ashift_gui_data_t
   float crop_cy;
   dt_iop_ashift_jobcode_t jobcode;
   int jobparams;
+  uint64_t pending_preview_input_hash;
 
   dt_iop_ashift_method_t current_structure_method;
   int draw_near_point;
@@ -659,7 +661,7 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
 dt_iop_ashift_params_t * _get_ashift_params(dt_iop_module_t *self)
 {
   dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)self->gui_data;
-  if(g && g->editing)
+  if(!IS_NULL_PTR(g) && g->editing)
     return &g->new_params;
   else
     return (dt_iop_ashift_params_t *)self->params;
@@ -745,6 +747,7 @@ static void _clear_shadow_crop_box(dt_iop_ashift_gui_data_t *g)
 
 #define MAT3SWAP(a, b) { float (*tmp)[3] = (a); (a) = (b); (b) = tmp; }
 
+__DT_CLONE_TARGETS__
 static void homography(float *homograph, const float angle, const float shift_v, const float shift_h,
                        const float shear, const float f_length_kb, const float orthocorr, const float aspect,
                        const int width, const int height, dt_iop_ashift_homodir_t dir)
@@ -981,7 +984,8 @@ static inline int isneutral(const dt_iop_ashift_data_t *data)
 }
 
 
-int distort_transform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, float *const restrict points, size_t points_count)
+int distort_transform(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+                      float *const restrict points, size_t points_count)
 {
   const dt_iop_ashift_data_t *const data = (dt_iop_ashift_data_t *)piece->data;
 
@@ -997,12 +1001,7 @@ int distort_transform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, floa
   const float fullheight = (float)piece->buf_out.height / (data->cb - data->ct);
   const float cx = fullwidth * data->cl;
   const float cy = fullheight * data->ct;
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(cx, cy, points_count, points, homograph) \
-  schedule(static) if(points_count > 100) aligned(points, homograph:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(if(points_count > 100) aligned(points, homograph:64))
   for(size_t i = 0; i < points_count * 2; i += 2)
   {
     float DT_ALIGNED_PIXEL pi[3] = { points[i], points[i + 1], 1.0f };
@@ -1016,8 +1015,8 @@ int distort_transform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, floa
 }
 
 
-int distort_backtransform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, float *points,
-                          size_t points_count)
+int distort_backtransform(dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+                          float *points, size_t points_count)
 {
   const dt_iop_ashift_data_t *const data = (dt_iop_ashift_data_t *)piece->data;
 
@@ -1033,12 +1032,7 @@ int distort_backtransform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, 
   const float fullheight = (float)piece->buf_out.height / (data->cb - data->ct);
   const float cx = fullwidth * data->cl;
   const float cy = fullheight * data->ct;
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(cx, cy, points, points_count, ihomograph) \
-  schedule(static) if(points_count > 100) aligned(ihomograph, points:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(if(points_count > 100) aligned(ihomograph, points:64))
   for(size_t i = 0; i < points_count * 2; i += 2)
   {
     float DT_ALIGNED_PIXEL pi[3] = { points[i] + cx, points[i + 1] + cy, 1.0f };
@@ -1051,9 +1045,11 @@ int distort_backtransform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, 
   return 1;
 }
 
-void distort_mask(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const float *const in,
-                  float *const out, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+void distort_mask(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, struct dt_dev_pixelpipe_iop_t *piece,
+                  const float *const in, float *const out, const dt_iop_roi_t *const roi_in,
+                  const dt_iop_roi_t *const roi_out)
 {
+  (void)pipe;
   const dt_iop_ashift_data_t *const data = (dt_iop_ashift_data_t *)piece->data;
 
   // if module is set to neutral parameters we just copy input->output and are done
@@ -1074,13 +1070,7 @@ void distort_mask(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *p
   const float fullheight = (float)piece->buf_out.height / (data->cb - data->ct);
   const float cx = roi_out->scale * fullwidth * data->cl;
   const float cy = roi_out->scale * fullheight * data->ct;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(cx, cy, in, out, roi_in, roi_out) \
-  shared(ihomograph, interpolation) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   // go over all pixels of output image
   for(int j = 0; j < roi_out->height; j++)
   {
@@ -1114,7 +1104,8 @@ void distort_mask(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *p
   }
 }
 
-void modify_roi_out(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t *roi_out,
+void modify_roi_out(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe,
+                    struct dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t *roi_out,
                     const dt_iop_roi_t *roi_in)
 {
   dt_iop_ashift_data_t *data = (dt_iop_ashift_data_t *)piece->data;
@@ -1174,9 +1165,11 @@ void modify_roi_out(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t 
 #endif
 }
 
-void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
+void modify_roi_in(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe,
+                   struct dt_dev_pixelpipe_iop_t *piece,
                    const dt_iop_roi_t *const roi_out, dt_iop_roi_t *roi_in)
 {
+  (void)pipe;
   dt_iop_ashift_data_t *data = (dt_iop_ashift_data_t *)piece->data;
   *roi_in = *roi_out;
 
@@ -1249,13 +1242,7 @@ void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *
 static void rgb2grey256(const float *const in, double *const out, const int width, const int height)
 {
   const size_t npixels = (size_t)width * height;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(npixels) \
-  dt_omp_sharedconst(in, out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int index = 0; index < npixels; index++)
   {
     out[index] = (0.3f * in[4*index+0] + 0.59f * in[4*index+1] + 0.11f * in[4*index+2]) * 256.0;
@@ -1274,13 +1261,7 @@ static void edge_enhance_1d(const double *in, double *out, const int width, cons
 
   // select kernel
   const double *kernel = (dir == ASHIFT_ENHANCE_HORIZONTAL) ? (const double *)hkernel : (const double *)vkernel;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(height, width, khwidth, kwidth) \
-  shared(in, out, kernel) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   // loop over image pixels and perform sobel convolution
   for(int j = khwidth; j < height - khwidth; j++)
   {
@@ -1301,13 +1282,7 @@ static void edge_enhance_1d(const double *in, double *out, const int width, cons
       *outp = sum;
     }
   }
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(height, width, khwidth) \
-  shared(out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   // border fill in output buffer, so we don't get pseudo lines at image frame
   for(int j = 0; j < height; j++)
     for(int i = 0; i < width; i++)
@@ -1337,22 +1312,17 @@ static int edge_enhance(const double *in, double *out, const int width, const in
   double *Gy = NULL;
 
   Gx = malloc(sizeof(double) * width * height);
-  if(Gx == NULL) goto error;
+  if(IS_NULL_PTR(Gx)) goto error;
 
   Gy = malloc(sizeof(double) * width * height);
-  if(Gy == NULL) goto error;
+  if(IS_NULL_PTR(Gy)) goto error;
 
   // perform edge enhancement in both directions
   edge_enhance_1d(in, Gx, width, height, ASHIFT_ENHANCE_HORIZONTAL);
   edge_enhance_1d(in, Gy, width, height, ASHIFT_ENHANCE_VERTICAL);
 
 // calculate absolute values
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(height, width) \
-  shared(Gx, Gy, out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < (size_t)width * height; k++)
   {
     out[k] = sqrt(Gx[k] * Gx[k] + Gy[k] * Gy[k]);
@@ -1397,12 +1367,7 @@ static int detail_enhance(const float *const in, float *const out, const int wid
   // as colors don't matter we are safe to assume data to be sRGB
 
   // convert RGB input to Lab, use output buffer for intermediate storage
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(npixels) \
-  dt_omp_sharedconst(in, out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t index = 0; index < 4*npixels; index += 4)
   {
     dt_aligned_pixel_t XYZ;
@@ -1413,7 +1378,7 @@ static int detail_enhance(const float *const in, float *const out, const int wid
   // bilateral grid detail enhancement
   dt_bilateral_t *b = dt_bilateral_init(width, height, sigma_s, sigma_r);
 
-  if(b != NULL)
+  if(!IS_NULL_PTR(b))
   {
     dt_bilateral_splat(b, out);
     dt_bilateral_blur(b);
@@ -1424,12 +1389,7 @@ static int detail_enhance(const float *const in, float *const out, const int wid
     success = FALSE;
 
   // convert resulting Lab to RGB output
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(npixels) \
-  dt_omp_sharedconst(out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t index = 0; index < 4*npixels; index += 4)
   {
     dt_aligned_pixel_t XYZ;
@@ -1444,12 +1404,7 @@ static int detail_enhance(const float *const in, float *const out, const int wid
 static void gamma_correct(const float *const in, float *const out, const int width, const int height)
 {
   const size_t npixels = (size_t)width * height;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(npixels) \
-  dt_omp_sharedconst(in, out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int index = 0; index < 4*npixels; index += 4)
   {
     for(int c = 0; c < 3; c++)
@@ -1486,7 +1441,7 @@ static int line_detect(float *in, const int width, const int height, const int x
 
   // allocate intermediate buffers
   greyscale = malloc(sizeof(double) * width * height);
-  if(greyscale == NULL) goto error;
+  if(IS_NULL_PTR(greyscale)) goto error;
 
   // convert to greyscale image
   rgb2grey256(in, greyscale, width, height);
@@ -1513,7 +1468,7 @@ static int line_detect(float *in, const int width, const int height, const int x
   {
     // aggregate lines data into our own structures
     ashift_lines = (dt_iop_ashift_line_t *)malloc(sizeof(dt_iop_ashift_line_t) * lines_count);
-    if(ashift_lines == NULL) goto error;
+    if(IS_NULL_PTR(ashift_lines)) goto error;
 
     for(int n = 0; n < lines_count; n++)
     {
@@ -1646,7 +1601,7 @@ static int _get_structure(dt_iop_module_t *module, dt_iop_ashift_enhance_t enhan
 
   dt_iop_gui_enter_critical_section(module);
   // read buffer data if they are available
-  if(g->buf != NULL)
+  if(!IS_NULL_PTR(g->buf))
   {
     width = g->buf_width;
     height = g->buf_height;
@@ -1656,12 +1611,12 @@ static int _get_structure(dt_iop_module_t *module, dt_iop_ashift_enhance_t enhan
 
     // create a temporary buffer to hold image data
     buffer = malloc(sizeof(float) * 4 * (size_t)width * height);
-    if(buffer != NULL)
+    if(!IS_NULL_PTR(buffer))
       dt_iop_image_copy_by_size(buffer, g->buf, width, height, 4);
   }
   dt_iop_gui_leave_critical_section(module);
 
-  if(buffer == NULL) goto error;
+  if(IS_NULL_PTR(buffer)) goto error;
 
   // get rid of old structural data
   g->lines_count = 0;
@@ -1958,7 +1913,7 @@ static int _remove_outliers(dt_iop_module_t *module)
   int hnb = 0, hcount = 0;
 
   // just to be on the safe side
-  if(g->lines == NULL) goto error;
+  if(IS_NULL_PTR(g->lines)) goto error;
 
   // generate index list for the vertical lines
   for(int n = 0; n < g->lines_count; n++)
@@ -2190,7 +2145,7 @@ static dt_iop_ashift_nmsresult_t nmsfit(dt_iop_module_t *module, dt_iop_ashift_p
 {
   dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)module->gui_data;
 
-  if(!g->lines) return NMS_NOT_ENOUGH_LINES;
+  if(IS_NULL_PTR(g->lines)) return NMS_NOT_ENOUGH_LINES;
   if(dir == ASHIFT_FIT_NONE) return NMS_SUCCESS;
 
   double params[4];
@@ -2378,7 +2333,7 @@ static void model_probe(dt_iop_module_t *module, dt_iop_ashift_params_t *p, dt_i
 {
   dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)module->gui_data;
 
-  if(!g->lines) return;
+  if(IS_NULL_PTR(g->lines)) return;
   if(dir == ASHIFT_FIT_NONE) return;
 
   double params[4];
@@ -2539,6 +2494,40 @@ static double crop_fitness(double *params, void *data)
   return -A;
 }
 
+/**
+ * @brief Return the crop rectangle diagonal angle matching the final displayed aspect.
+ *
+ * Auto-crop is solved in ashift input coordinates, before the orientation module rotates the
+ * image for portrait display. The crop rectangle itself still lives in ashift coordinates, but
+ * its aspect ratio needs to match what the user finally sees on screen. When the final display is
+ * rotated by 90 degrees, that means swapping width and height before building the diagonal angle
+ * used by the crop fit.
+ *
+ * @param self Current ashift module.
+ * @param g GUI state used to reuse the current pipeline flip diagnosis when available.
+ * @param width Ashift input width.
+ * @param height Ashift input height.
+ *
+ * @return Diagonal angle in radians for the crop rectangle.
+ */
+static float _get_crop_aspect_angle(dt_iop_module_t *self, const dt_iop_ashift_gui_data_t *g,
+                                    const int width, const int height)
+{
+  int isflipped = 0;
+
+  if(!IS_NULL_PTR(g) && g->isflipped != -1)
+  {
+    isflipped = g->isflipped;
+  }
+  else if(self->dev)
+  {
+    const dt_image_orientation_t orientation = dt_image_get_orientation(self->dev->image_storage.id);
+    isflipped = (orientation & ORIENTATION_SWAP_XY) ? 1 : 0;
+  }
+
+  return isflipped ? atan2f((float)width, (float)height) : atan2f((float)height, (float)width);
+}
+
 // strategy: for a given center of the crop area and a specific aspect angle
 // we calculate the largest crop area that still lies within the output image;
 // now we allow a Nelder-Mead simplex to search for the center coordinates
@@ -2557,7 +2546,11 @@ static void do_crop(dt_iop_module_t *self, dt_iop_ashift_params_t *p)
   if(p->cropmode == ASHIFT_CROP_OFF)
   {
     _clear_shadow_crop_box(g);
-    dt_dev_pixelpipe_update_history_all(self->dev);
+    if(g->editing)
+      dt_dev_pixelpipe_resync_history_all(self->dev);
+    else
+      dt_dev_pixelpipe_update_history_all(self->dev);
+    dt_dev_get_thumbnail_size(self->dev);
     return;
   }
 
@@ -2584,6 +2577,7 @@ static void do_crop(dt_iop_module_t *self, dt_iop_ashift_params_t *p)
 
   const float wd = cropfit.width;
   const float ht = cropfit.height;
+  const float crop_alpha = _get_crop_aspect_angle(self, g, cropfit.width, cropfit.height);
 
   // the four vertices of the image in input image coordinates
   const float Vc[4][3] = { { 0.0f, 0.0f, 1.0f },
@@ -2622,7 +2616,7 @@ static void do_crop(dt_iop_module_t *self, dt_iop_ashift_params_t *p)
   {
     params[0] = 0.5;
     params[1] = 0.5;
-    params[2] = atan2f((float)cropfit.height, (float)cropfit.width);
+    params[2] = crop_alpha;
     cropfit.x = NAN;
     cropfit.y = NAN;
     cropfit.alpha = NAN;
@@ -2634,7 +2628,7 @@ static void do_crop(dt_iop_module_t *self, dt_iop_ashift_params_t *p)
     params[1] = 0.5;
     cropfit.x = NAN;
     cropfit.y = NAN;
-    cropfit.alpha = atan2f((float)cropfit.height, (float)cropfit.width);
+    cropfit.alpha = crop_alpha;
     pcount = 2;
   }
 
@@ -2684,7 +2678,11 @@ static void do_crop(dt_iop_module_t *self, dt_iop_ashift_params_t *p)
          iter, cropfit.x, cropfit.y, cropfit.alpha, p->cl, p->cr, p->ct, p->cb, wd, ht);
 #endif
 
-  dt_dev_pixelpipe_update_history_all(self->dev);
+  if(g->editing)
+    dt_dev_pixelpipe_resync_history_all(self->dev);
+  else
+    dt_dev_pixelpipe_update_history_all(self->dev);
+  dt_dev_get_thumbnail_size(self->dev);
   return;
 
 failed:
@@ -2698,7 +2696,11 @@ failed:
   g->fitting = 0;
   dt_control_log(_("automatic cropping failed"));
 
-  dt_dev_pixelpipe_update_history_all(self->dev);
+  if(g->editing)
+    dt_dev_pixelpipe_resync_history_all(self->dev);
+  else
+    dt_dev_pixelpipe_update_history_all(self->dev);
+  dt_dev_get_thumbnail_size(self->dev);
   return;
 }
 
@@ -2754,7 +2756,7 @@ static void _draw_save_lines_to_params(dt_iop_module_t *self)
 
   dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)self->gui_data;
   dt_iop_ashift_params_t *p = _get_ashift_params(self);
-  if(!g || !p) return;
+  if(IS_NULL_PTR(g) || IS_NULL_PTR(p)) return;
 
   // save quad lines (we only handle the 2 vertical lines)
   if(g->current_structure_method == ASHIFT_METHOD_QUAD && g->lines && g->lines_count >= 4)
@@ -2762,7 +2764,7 @@ static void _draw_save_lines_to_params(dt_iop_module_t *self)
     float pts[8] = { g->lines[0].p1[0], g->lines[0].p1[1], g->lines[0].p2[0],
                      g->lines[0].p2[1], g->lines[1].p1[0], g->lines[1].p1[1],
                      g->lines[1].p2[0], g->lines[1].p2[1] };
-    if(dt_dev_distort_backtransform_plus(self->dev, self->dev->virtual_pipe, self->iop_order,
+    if(dt_dev_distort_backtransform_plus(self->dev->virtual_pipe, self->iop_order,
                                          DT_DEV_TRANSFORM_DIR_BACK_EXCL, pts, 4))
     {
       for(int i = 0; i < 8; i++) p->last_quad_lines[i] = pts[i];
@@ -2787,7 +2789,7 @@ static void _draw_save_lines_to_params(dt_iop_module_t *self)
         if(p->last_drawn_lines_count >= MAX_SAVED_LINES) break;
       }
     }
-    dt_dev_distort_backtransform_plus(self->dev, self->dev->virtual_pipe, self->iop_order,
+    dt_dev_distort_backtransform_plus(self->dev->virtual_pipe, self->iop_order,
                                       DT_DEV_TRANSFORM_DIR_BACK_EXCL, p->last_drawn_lines,
                                       p->last_drawn_lines_count * 2);
   }
@@ -2801,9 +2803,9 @@ static gboolean _draw_retrieve_lines_from_params(dt_iop_module_t *self, dt_iop_a
 
   dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)self->gui_data;
   dt_iop_ashift_params_t *p = _get_ashift_params(self);
-  if(!g || !p) return FALSE;
+  if(IS_NULL_PTR(g) || IS_NULL_PTR(p)) return FALSE;
 
-  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(self->dev, self->dev->virtual_pipe, self);
+  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(self->dev->virtual_pipe, self);
 
   if(method == ASHIFT_METHOD_QUAD
      && p->last_quad_lines[0] > 0.0f && p->last_quad_lines[1] > 0.0f
@@ -2813,7 +2815,7 @@ static gboolean _draw_retrieve_lines_from_params(dt_iop_module_t *self, dt_iop_a
                      p->last_quad_lines[2], p->last_quad_lines[3],
                      p->last_quad_lines[4], p->last_quad_lines[5],
                      p->last_quad_lines[6], p->last_quad_lines[7] };
-    if(dt_dev_distort_transform_plus(self->dev, self->dev->virtual_pipe, self->iop_order,
+    if(dt_dev_distort_transform_plus(darktable.develop->virtual_pipe, self->iop_order,
                                      DT_DEV_TRANSFORM_DIR_BACK_EXCL, pts, 4))
     {
       if(g->lines)
@@ -2852,7 +2854,7 @@ static gboolean _draw_retrieve_lines_from_params(dt_iop_module_t *self, dt_iop_a
     for(int i = 0; i < p->last_drawn_lines_count * 4; i++)
       pts[i] = p->last_drawn_lines[i];
 
-    if(dt_dev_distort_transform_plus(self->dev, self->dev->virtual_pipe, self->iop_order,
+    if(dt_dev_distort_transform_plus(darktable.develop->virtual_pipe, self->iop_order,
                                      DT_DEV_TRANSFORM_DIR_BACK_EXCL, pts, p->last_drawn_lines_count * 2))
     {
       if(g->lines)
@@ -2916,6 +2918,107 @@ static int _do_clean_structure(dt_iop_module_t *module, dt_iop_ashift_params_t *
   return TRUE;
 }
 
+/**
+ * @brief Rebuild the GUI-side fitting buffer from the authoritative preview cacheline.
+ *
+ * The ashift GUI keeps a private float buffer used by structure detection and fit. That buffer is
+ * not owned by the pixelpipe cache and may disappear on darkroom teardown while the preview pipe
+ * still exact-hits cached hashes on re-entry. In that case, the correct recovery is to reopen the
+ * cached upstream preview input of the ashift piece and copy it back into @p g->buf.
+ *
+ * This helper performs only that buffer resynchronization. Callers keep ownership of the fallback
+ * policy when the cacheline is unavailable, so the control flow that removes cache suffixes,
+ * requeues jobs, and resyncs preview remains explicit at the call site.
+ *
+ * @param self Current ashift module.
+ * @param[out] preview_piece_out Matching ashift piece on the preview pipe, used by callers when
+ * the cache restore fails and they need to invalidate the preview suffix explicitly.
+ *
+ * @return TRUE when @p g->buf has been repopulated from cache, FALSE otherwise.
+ */
+static gboolean _sync_private_buffer_from_preview_cache(dt_iop_module_t *self,
+                                                        dt_dev_pixelpipe_iop_t **preview_piece_out)
+{
+  dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)self->gui_data;
+  dt_dev_pixelpipe_iop_t *preview_piece = dt_dev_distort_get_iop_pipe(self->dev->preview_pipe, self);
+  if(preview_piece_out) *preview_piece_out = preview_piece;
+
+  if(IS_NULL_PTR(preview_piece) || !preview_piece->enabled || preview_piece->roi_in.width <= 0 || preview_piece->roi_in.height <= 0)
+    return FALSE;
+
+  const dt_dev_pixelpipe_iop_t *previous_piece = NULL;
+  for(GList *node = g_list_first(self->dev->preview_pipe->nodes); node; node = g_list_next(node))
+  {
+    const dt_dev_pixelpipe_iop_t *current = (dt_dev_pixelpipe_iop_t *)node->data;
+    if(current == preview_piece) break;
+    if(current->enabled) previous_piece = current;
+  }
+
+  const uint64_t upstream_hash
+      = dt_dev_pixelpipe_node_hash(self->dev->preview_pipe, previous_piece, preview_piece->roi_in, 0);
+  void *preview_buf = NULL;
+  dt_pixel_cache_entry_t *preview_entry = NULL;
+  if(!dt_dev_pixelpipe_cache_peek(darktable.pixelpipe_cache, upstream_hash, &preview_buf, &preview_entry,
+                                  self->dev->preview_pipe->devid, NULL)
+     || !preview_buf || !preview_entry)
+    return FALSE;
+
+  dt_dev_pixelpipe_cache_ref_count_entry(darktable.pixelpipe_cache, TRUE, preview_entry);
+
+  const int width = preview_piece->roi_in.width;
+  const int height = preview_piece->roi_in.height;
+  const int ch = preview_piece->dsc_in.channels;
+  const float scale_x = (preview_piece->buf_in.width > 0)
+                            ? (float)width / (float)preview_piece->buf_in.width
+                            : 1.0f;
+  const float scale_y = (preview_piece->buf_in.height > 0)
+                            ? (float)height / (float)preview_piece->buf_in.height
+                            : 1.0f;
+  // The line detector needs the actual preview-buffer decimation factor to map
+  // detected segments back to the module input. Derive it from buffer sizes so
+  // it stays correct even if ROI bookkeeping changes around the GUI boundary.
+  const float buffer_scale = 0.5f * (scale_x + scale_y);
+  dt_iop_gui_enter_critical_section(self);
+  if(IS_NULL_PTR(g->buf) || (size_t)g->buf_width * g->buf_height < (size_t)width * height)
+  {
+    dt_free(g->buf);
+    g->buf = malloc(sizeof(float) * 4 * (size_t)width * height);
+  }
+  if(g->buf)
+  {
+    dt_iop_image_copy_by_size(g->buf, preview_buf, width, height, ch);
+    g->buf_width = width;
+    g->buf_height = height;
+    g->buf_x_off = preview_piece->roi_in.x;
+    g->buf_y_off = preview_piece->roi_in.y;
+    g->buf_scale = buffer_scale;
+    g->buf_hash = upstream_hash;
+  }
+  dt_iop_gui_leave_critical_section(self);
+
+  dt_dev_pixelpipe_cache_ref_count_entry(darktable.pixelpipe_cache, FALSE, preview_entry);
+  return !IS_NULL_PTR(g->buf);
+}
+
+static uint64_t _current_preview_input_hash(dt_iop_module_t *self)
+{
+  if(IS_NULL_PTR(self) || IS_NULL_PTR(self->dev) || IS_NULL_PTR(self->dev->preview_pipe)) return DT_PIXELPIPE_CACHE_HASH_INVALID;
+
+  dt_dev_pixelpipe_iop_t *preview_piece = dt_dev_distort_get_iop_pipe(self->dev->preview_pipe, self);
+  if(IS_NULL_PTR(preview_piece) || !preview_piece->enabled || preview_piece->roi_in.width <= 0 || preview_piece->roi_in.height <= 0)
+    return DT_PIXELPIPE_CACHE_HASH_INVALID;
+
+  const dt_dev_pixelpipe_iop_t *previous_piece = NULL;
+  for(GList *node = g_list_first(self->dev->preview_pipe->nodes); node; node = g_list_next(node))
+  {
+    const dt_dev_pixelpipe_iop_t *current = (dt_dev_pixelpipe_iop_t *)node->data;
+    if(current == preview_piece) break;
+    if(current->enabled) previous_piece = current;
+  }
+
+  return dt_dev_pixelpipe_node_hash(self->dev->preview_pipe, previous_piece, preview_piece->roi_in, 0);
+}
+
 // helper function to start analysis for structural data and report about errors
 static int _do_get_structure_auto(dt_iop_module_t *self, dt_iop_ashift_params_t *p,
                                   dt_iop_ashift_enhance_t enhance)
@@ -2930,11 +3033,37 @@ static int _do_get_structure_auto(dt_iop_module_t *self, dt_iop_ashift_params_t 
   float *b = g->buf;
   dt_iop_gui_leave_critical_section(self);
 
-  if(b == NULL)
+  if(IS_NULL_PTR(b))
   {
-    dt_control_log(_("Data pending - Please repeat"));
-    dt_dev_pixelpipe_update_history_preview(self->dev);
-    goto error;
+    dt_dev_pixelpipe_iop_t *preview_piece = dt_dev_distort_get_iop_pipe(self->dev->preview_pipe, self);
+    if(_sync_private_buffer_from_preview_cache(self, &preview_piece)) b = g->buf;
+
+    if(IS_NULL_PTR(b))
+    {
+      dt_control_log(_("Data pending - Please repeat"));
+      // If preview is already valid here, the GUI state was lost while the pipe can still exact-hit
+      // downstream cachelines. Remove the preview chain from ashift onward so the worker recomputes
+      // exactly that suffix. On a cold first run, just queue the job and let preview build normally.
+      if(dt_dev_pixelpipe_is_backbufer_valid(self->dev->preview_pipe) && preview_piece)
+      {
+        gboolean remove_from_ashift = FALSE;
+        for(GList *node = g_list_first(self->dev->preview_pipe->nodes); node; node = g_list_next(node))
+        {
+          dt_dev_pixelpipe_iop_t *current = (dt_dev_pixelpipe_iop_t *)node->data;
+          remove_from_ashift |= (current == preview_piece);
+          if(!remove_from_ashift) continue;
+          if(current->global_hash == DT_PIXELPIPE_CACHE_HASH_INVALID) continue;
+
+          dt_pixel_cache_entry_t *entry
+              = dt_dev_pixelpipe_cache_get_entry(darktable.pixelpipe_cache, current->global_hash);
+          if(entry) dt_dev_pixelpipe_cache_remove(darktable.pixelpipe_cache, TRUE, entry);
+        }
+      }
+      g->jobcode = ASHIFT_JOBCODE_GET_STRUCTURE;
+      g->jobparams = enhance;
+      dt_dev_pixelpipe_resync_history_preview(self->dev);
+      goto error;
+    }
   }
 
   if(!_get_structure(self, enhance))
@@ -2980,14 +3109,37 @@ static void _do_get_structure_lines(dt_iop_module_t *self)
   float *b = g->buf;
   dt_iop_gui_leave_critical_section(self);
 
-  if(b == NULL)
+  if(IS_NULL_PTR(b))
   {
-    dt_control_log(_("Data pending - Please repeat"));
-    dt_dev_pixelpipe_update_history_preview(self->dev);
-    return;
+    dt_dev_pixelpipe_iop_t *preview_piece = dt_dev_distort_get_iop_pipe(darktable.develop->preview_pipe, self);
+    if(_sync_private_buffer_from_preview_cache(self, &preview_piece)) b = g->buf;
+
+    if(IS_NULL_PTR(b))
+    {
+      dt_control_log(_("Data pending - Please repeat"));
+      if(dt_dev_pixelpipe_is_backbufer_valid(darktable.develop->preview_pipe) && preview_piece)
+      {
+        gboolean remove_from_ashift = FALSE;
+        for(GList *node = g_list_first(darktable.develop->preview_pipe->nodes); node; node = g_list_next(node))
+        {
+          dt_dev_pixelpipe_iop_t *current = (dt_dev_pixelpipe_iop_t *)node->data;
+          remove_from_ashift |= (current == preview_piece);
+          if(!remove_from_ashift) continue;
+          if(current->global_hash == DT_PIXELPIPE_CACHE_HASH_INVALID) continue;
+
+          dt_pixel_cache_entry_t *entry
+              = dt_dev_pixelpipe_cache_get_entry(darktable.pixelpipe_cache, current->global_hash);
+          if(entry) dt_dev_pixelpipe_cache_remove(darktable.pixelpipe_cache, TRUE, entry);
+        }
+      }
+      g->jobcode = ASHIFT_JOBCODE_GET_STRUCTURE_LINES;
+      g->jobparams = 0;
+      dt_dev_pixelpipe_resync_history_preview(darktable.develop);
+      return;
+    }
   }
 
-  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(self->dev, self->dev->virtual_pipe, self);
+  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(darktable.develop->virtual_pipe, self);
 
   _do_clean_structure(self, p, TRUE);
 
@@ -3015,14 +3167,37 @@ static void _do_get_structure_quad(dt_iop_module_t *self)
   float *b = g->buf;
   dt_iop_gui_leave_critical_section(self);
 
-  if(b == NULL)
+  if(IS_NULL_PTR(b))
   {
-    dt_control_log(_("Data pending - Please repeat"));
-    dt_dev_pixelpipe_update_history_preview(self->dev);
-    return;
+    dt_dev_pixelpipe_iop_t *preview_piece = dt_dev_distort_get_iop_pipe(darktable.develop->preview_pipe, self);
+    if(_sync_private_buffer_from_preview_cache(self, &preview_piece)) b = g->buf;
+
+    if(IS_NULL_PTR(b))
+    {
+      dt_control_log(_("Data pending - Please repeat"));
+      if(dt_dev_pixelpipe_is_backbufer_valid(darktable.develop->preview_pipe) && preview_piece)
+      {
+        gboolean remove_from_ashift = FALSE;
+        for(GList *node = g_list_first(darktable.develop->preview_pipe->nodes); node; node = g_list_next(node))
+        {
+          dt_dev_pixelpipe_iop_t *current = (dt_dev_pixelpipe_iop_t *)node->data;
+          remove_from_ashift |= (current == preview_piece);
+          if(!remove_from_ashift) continue;
+          if(current->global_hash == DT_PIXELPIPE_CACHE_HASH_INVALID) continue;
+
+          dt_pixel_cache_entry_t *entry
+              = dt_dev_pixelpipe_cache_get_entry(darktable.pixelpipe_cache, current->global_hash);
+          if(entry) dt_dev_pixelpipe_cache_remove(darktable.pixelpipe_cache, TRUE, entry);
+        }
+      }
+      g->jobcode = ASHIFT_JOBCODE_GET_STRUCTURE_QUAD;
+      g->jobparams = 0;
+      dt_dev_pixelpipe_resync_history_preview(self->dev);
+      return;
+    }
   }
 
-  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(self->dev, self->dev->virtual_pipe, self);
+  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(self->dev->virtual_pipe, self);
 
   _do_clean_structure(self, p, TRUE);
 
@@ -3037,7 +3212,7 @@ static void _do_get_structure_quad(dt_iop_module_t *self)
     const float wd = self->dev->roi.processed_width;
     const float ht = self->dev->roi.processed_height;
     float pts[8] = { wd * 0.2, ht * 0.2, wd * 0.2, ht * 0.8, wd * 0.8, ht * 0.2, wd * 0.8, ht * 0.8 };
-    if(dt_dev_distort_backtransform_plus(self->dev, self->dev->virtual_pipe, self->iop_order,
+    if(dt_dev_distort_backtransform_plus(darktable.develop->virtual_pipe, self->iop_order,
                                          DT_DEV_TRANSFORM_DIR_FORW_INCL, pts, 4))
     {
       g->current_structure_method = ASHIFT_METHOD_QUAD;
@@ -3080,8 +3255,38 @@ static void do_fit(dt_iop_module_t *module, dt_iop_ashift_params_t *p, dt_iop_as
   if(g->fitting) return;
 
   // if no structure available get it
-  if(g->lines == NULL)
+  if(IS_NULL_PTR(g->lines))
     if(!_do_get_structure_auto(module, p, ASHIFT_ENHANCE_NONE)) return;
+
+  if(g->lines_in_width > 0 && g->lines_in_height > 0)
+  {
+    const float f_length_kb = (p->mode == ASHIFT_MODE_GENERIC) ? DEFAULT_F_LENGTH : p->f_length * p->crop_factor;
+    const float orthocorr = (p->mode == ASHIFT_MODE_GENERIC) ? 0.0f : p->orthocorr;
+    const float aspect = (p->mode == ASHIFT_MODE_GENERIC) ? 1.0f : p->aspect;
+
+    float homograph[3][3];
+    homography((float *)homograph, p->rotation, p->lensshift_v, p->lensshift_h, p->shear, f_length_kb,
+               orthocorr, aspect, g->lines_in_width, g->lines_in_height, ASHIFT_HOMOGRAPH_FORWARD);
+
+    const float ivec[2] = { (float)g->lines_in_width, (float)g->lines_in_height };
+    const float ivecl = sqrtf(ivec[0] * ivec[0] + ivec[1] * ivec[1]);
+
+    const float pin0[3] = { 0.0f, 0.0f, 1.0f };
+    const float pin1[3] = { (float)g->lines_in_width, (float)g->lines_in_height, 1.0f };
+    float pout0[3];
+    float pout1[3];
+    mat3mulv(pout0, (float *)homograph, pin0);
+    mat3mulv(pout1, (float *)homograph, pin1);
+    pout0[0] /= pout0[2];
+    pout0[1] /= pout0[2];
+    pout1[0] /= pout1[2];
+    pout1[1] /= pout1[2];
+
+    const float ovec[2] = { pout1[0] - pout0[0], pout1[1] - pout0[1] };
+    const float ovecl = sqrtf(ovec[0] * ovec[0] + ovec[1] * ovec[1]);
+    const float alpha = acos(CLAMP((ivec[0] * ovec[0] + ivec[1] * ovec[1]) / (ivecl * ovecl), -1.0f, 1.0f));
+    g->isflipped = fabs(fmod(alpha + M_PI, M_PI) - M_PI / 2.0f) < M_PI / 4.0f ? 1 : 0;
+  }
 
   g->fitting = 1;
 
@@ -3116,18 +3321,22 @@ static void do_fit(dt_iop_module_t *module, dt_iop_ashift_params_t *p, dt_iop_as
   --darktable.gui->reset;
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_ashift_data_t *data = (dt_iop_ashift_data_t *)piece->data;
   dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)self->gui_data;
 
-  const int ch = piece->colors;
+  const int ch = piece->dsc_in.channels;
   const int ch_width = ch * roi_in->width;
 
   // only for preview pipe: collect input buffer data and do some other evaluations
-  if(g && self->dev->gui_attached
-     && dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, roi_out))
+  if(!IS_NULL_PTR(g) && self->dev->gui_attached
+     && pipe == self->dev->preview_pipe
+     && dt_dev_pixelpipe_has_preview_output(self->dev, pipe, roi_out))
   {
     // we want to find out if the final output image is flipped in relation to this iop
     // so we can adjust the gui labels accordingly
@@ -3135,7 +3344,11 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     const int height = roi_in->height;
     const int x_off = roi_in->x;
     const int y_off = roi_in->y;
-    const float scale = roi_in->scale;
+    const float scale_x = (piece->buf_in.width > 0) ? (float)width / (float)piece->buf_in.width : 1.0f;
+    const float scale_y = (piece->buf_in.height > 0) ? (float)height / (float)piece->buf_in.height : 1.0f;
+    // Keep structure detection anchored to the actual preview buffer resolution,
+    // not to external ROI scale semantics.
+    const float scale = 0.5f * (scale_x + scale_y);
 
     // origin of image and opposite corner as reference points
     dt_boundingbox_t points = { 0.0f, 0.0f, (float)piece->buf_in.width, (float)piece->buf_in.height };
@@ -3143,7 +3356,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     float ivecl = sqrtf(ivec[0] * ivec[0] + ivec[1] * ivec[1]);
 
     // where do they go?
-    dt_dev_distort_backtransform_plus(self->dev, self->dev->virtual_pipe, self->iop_order,
+    dt_dev_distort_backtransform_plus(darktable.develop->virtual_pipe, self->iop_order,
                                       DT_DEV_TRANSFORM_DIR_FORW_EXCL, points, 2);
 
     float ovec[2] = { points[2] - points[0], points[3] - points[1] };
@@ -3162,13 +3375,13 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     g->isflipped = isflipped;
 
     // save a copy of preview input buffer for parameter fitting
-    if(g->buf == NULL || (size_t)g->buf_width * g->buf_height < (size_t)width * height)
+    if(IS_NULL_PTR(g->buf) || (size_t)g->buf_width * g->buf_height < (size_t)width * height)
     {
       // if needed allocate buffer
       dt_free(g->buf); // a no-op if g->buf is NULL
       // only get new buffer if no old buffer available or old buffer does not fit in terms of size
       g->buf = malloc(sizeof(float) * 4 * width * height);
-      if(!g->buf)
+      if(IS_NULL_PTR(g->buf))
       {
         dt_iop_gui_leave_critical_section(self);
         return 1;
@@ -3209,13 +3422,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   const float fullheight = (float)piece->buf_out.height / (data->cb - data->ct);
   const float cx = roi_out->scale * fullwidth * data->cl;
   const float cy = roi_out->scale * fullheight * data->ct;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, ch_width, cx, cy, ivoid, ovoid, roi_in, roi_out) \
-  shared(ihomograph, interpolation) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   // go over all pixels of output image
   for(int j = 0; j < roi_out->height; j++)
   {
@@ -3251,14 +3458,15 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
 }
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_ashift_data_t *d = (dt_iop_ashift_data_t *)piece->data;
   dt_iop_ashift_global_data_t *gd = (dt_iop_ashift_global_data_t *)self->global_data;
   dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)self->gui_data;
 
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   const int iwidth = roi_in->width;
   const int iheight = roi_in->height;
   const int width = roi_out->width;
@@ -3268,13 +3476,19 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   cl_mem dev_homo = NULL;
 
   // only for preview pipe: collect input buffer data and do some other evaluations
-  if(self->dev->gui_attached && g && dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, roi_out))
+  if(self->dev->gui_attached && g
+     && pipe == self->dev->preview_pipe
+     && dt_dev_pixelpipe_has_preview_output(self->dev, pipe, roi_out))
   {
     // we want to find out if the final output image is flipped in relation to this iop
     // so we can adjust the gui labels accordingly
     const int x_off = roi_in->x;
     const int y_off = roi_in->y;
-    const float scale = roi_in->scale;
+    const float scale_x = (piece->buf_in.width > 0) ? (float)iwidth / (float)piece->buf_in.width : 1.0f;
+    const float scale_y = (piece->buf_in.height > 0) ? (float)iheight / (float)piece->buf_in.height : 1.0f;
+    // Keep structure detection anchored to the actual preview buffer resolution,
+    // not to external ROI scale semantics.
+    const float scale = 0.5f * (scale_x + scale_y);
 
     // origin of image and opposite corner as reference points
     dt_boundingbox_t points = { 0.0f, 0.0f, (float)piece->buf_in.width, (float)piece->buf_in.height };
@@ -3282,7 +3496,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
     const float ivecl = sqrtf(ivec[0] * ivec[0] + ivec[1] * ivec[1]);
 
     // where do they go?
-    dt_dev_distort_backtransform_plus(self->dev, self->dev->virtual_pipe, self->iop_order,
+    dt_dev_distort_backtransform_plus(darktable.develop->virtual_pipe, self->iop_order,
                                       DT_DEV_TRANSFORM_DIR_FORW_EXCL, points, 2);
 
     const float ovec[2] = { points[2] - points[0], points[3] - points[1] };
@@ -3301,7 +3515,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
     g->isflipped = isflipped;
 
     // save a copy of preview input buffer for parameter fitting
-    if(g->buf == NULL || (size_t)g->buf_width * g->buf_height < (size_t)iwidth * iheight)
+    if(IS_NULL_PTR(g->buf) || (size_t)g->buf_width * g->buf_height < (size_t)iwidth * iheight)
     {
       // if needed allocate buffer
       dt_free(g->buf); // a no-op if g->buf is NULL
@@ -3346,7 +3560,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   const float cy = roi_out->scale * fullheight * d->ct;
 
   dev_homo = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 9, ihomograph);
-  if(dev_homo == NULL) goto error;
+  if(IS_NULL_PTR(dev_homo)) goto error;
 
   const int iroi[2] = { roi_in->x, roi_in->y };
   const int oroi[2] = { roi_out->x, roi_out->y };
@@ -3557,7 +3771,7 @@ static int get_points(struct dt_iop_module_t *self, const dt_iop_ashift_line_t *
 
   // allocate new index array
   my_points_idx = (dt_iop_ashift_points_idx_t *)malloc(sizeof(dt_iop_ashift_points_idx_t) * lines_count);
-  if(my_points_idx == NULL) goto error;
+  if(IS_NULL_PTR(my_points_idx)) goto error;
 
   // account for total number of points
   size_t total_points = 0;
@@ -3594,7 +3808,7 @@ static int get_points(struct dt_iop_module_t *self, const dt_iop_ashift_line_t *
   // now allocate new points buffer
   my_points = (float *)malloc(sizeof(float) * 2 * total_points);
   my_extremas = (float *)malloc(sizeof(float) * 2 * 2 * lines_count);
-  if(my_points == NULL) goto error;
+  if(IS_NULL_PTR(my_points)) goto error;
 
   // second step: generate points for each line
   for(int n = 0, offset = 0; n < lines_count; n++)
@@ -3637,9 +3851,9 @@ static int get_points(struct dt_iop_module_t *self, const dt_iop_ashift_line_t *
   }
 
   // third step: transform all points
-  if(!dt_dev_distort_transform_plus(dev, dev->virtual_pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_FORW_INCL, my_points, total_points))
+  if(!dt_dev_distort_transform_plus(dev->virtual_pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_FORW_INCL, my_points, total_points))
     goto error;
-  if(!dt_dev_distort_transform_plus(dev, dev->virtual_pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_FORW_INCL,
+  if(!dt_dev_distort_transform_plus(dev->virtual_pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_FORW_INCL,
                                     my_extremas, 2 * lines_count))
     goto error;
 
@@ -3661,12 +3875,15 @@ static int get_points(struct dt_iop_module_t *self, const dt_iop_ashift_line_t *
     const size_t offset = my_points_idx[n].offset;
     const int length = my_points_idx[n].length;
 
+    // Walk the full rasterized polyline so the hit-test bounding box matches
+    // the displayed line, not only its first sample.
     for(int l = 0; l < length; l++)
     {
-      xmin = fmin(xmin, my_points[2 * offset]);
-      xmax = fmax(xmax, my_points[2 * offset]);
-      ymin = fmin(ymin, my_points[2 * offset + 1]);
-      ymax = fmax(ymax, my_points[2 * offset + 1]);
+      const size_t point = offset + l;
+      xmin = fmin(xmin, my_points[2 * point]);
+      xmax = fmax(xmax, my_points[2 * point]);
+      ymin = fmin(ymin, my_points[2 * point + 1]);
+      ymax = fmax(ymax, my_points[2 * point + 1]);
     }
 
     my_points_idx[n].bbx = xmin;
@@ -3697,17 +3914,17 @@ error:
 if(!dt_dev_distort_transform_plus(self->dev, self->dev->virtual_pipe, self->priority, self->priority + 1,
       (float *)V, 4))
 */
-static int call_distort_transform(dt_develop_t *dev, dt_dev_pixelpipe_t *pipe, struct dt_iop_module_t *self,
+static int call_distort_transform(dt_dev_pixelpipe_t *pipe, struct dt_iop_module_t *self,
                                   float *points, size_t points_count)
 {
   int ret = 0;
-  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(self->dev, self->dev->virtual_pipe, self);
-  if(!piece) return ret;
+  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(pipe, self);
+  if(IS_NULL_PTR(piece)) return ret;
   if(piece->module == self && /*piece->enabled && */  //see note below
-     !dt_dev_pixelpipe_activemodule_disables_currentmodule(dev, piece->module))
+     !dt_dev_pixelpipe_activemodule_disables_currentmodule(pipe->dev, piece->module))
   {
     if(piece->module->distort_transform)
-    ret = piece->module->distort_transform(piece->module, piece, points, points_count);
+    ret = piece->module->distort_transform(piece->module, pipe, piece, points, points_count);
   }
   return ret;
   //NOTE: piece->enabled is FALSE for exactly the first mouse_moved event following a button_pressed event
@@ -3822,8 +4039,8 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
   dt_dev_rescale_roi(dev, cr, width, height);
 
   // we draw the cropping area; use the input ROI from the virtual pipe piece
-  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(dev, dev->virtual_pipe, self);
-  if(!piece)
+  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(darktable.develop->virtual_pipe, self);
+  if(IS_NULL_PTR(piece))
   {
     cairo_restore(cr);
     return;
@@ -3840,7 +4057,7 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
                     { ixo + iwd,  iyo       } };
 
   // convert coordinates of corners to coordinates of this module's output
-  if(!call_distort_transform(self->dev, self->dev->virtual_pipe, self, (float *)V, 4))
+  if(!call_distort_transform(darktable.develop->virtual_pipe, self, (float *)V, 4))
     return;
 
   // get x/y-offset as well as width and height of output buffer
@@ -3891,10 +4108,10 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
                     { xmin + p->cr * owd, ymin + p->ct * oht } };
 
   // convert clipping corners to final output image
-  if(!dt_dev_distort_transform_plus(self->dev, self->dev->virtual_pipe, self->iop_order,
+  if(!dt_dev_distort_transform_plus(darktable.develop->virtual_pipe, self->iop_order,
                                     DT_DEV_TRANSFORM_DIR_FORW_EXCL, (float *)C, 4))
     return;
-  if(!dt_dev_distort_transform_plus(self->dev, self->dev->virtual_pipe, self->iop_order,
+  if(!dt_dev_distort_transform_plus(darktable.develop->virtual_pipe, self->iop_order,
                                     DT_DEV_TRANSFORM_DIR_FORW_EXCL, (float *)V, 4))
     return;
 
@@ -3902,7 +4119,7 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
   cairo_set_dash(cr, &dashes, 0, 0);
   
   // Resize the coordinates of the rectangles V and C according to the current zoom.
-  const float scale_factor = dt_dev_get_natural_scale(dev);
+  const float scale_factor = dt_dev_get_natural_scale(darktable.develop);
   for(size_t i = 0; i < 4; i++)
   {
     V[i][0] *= scale_factor;
@@ -3953,7 +4170,7 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
 
   // structural data are currently being collected or fit procedure is running? -> skip
   // no structural data or visibility switched off? -> stop here
-  if(g->fitting || g->lines == NULL || !g->buf || !self->enabled) return;
+  if(g->fitting || IS_NULL_PTR(g->lines) || IS_NULL_PTR(g->buf) || !self->enabled) return;
 
   // ensure virtual pipe params are in sync so distortions use current settings
   if(dt_dev_pixelpipe_get_history_hash(dev->virtual_pipe) != dt_dev_get_history_hash(dev))
@@ -3966,7 +4183,7 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
   const uint64_t lines_hash = _get_lines_hash(g->lines, g->lines_count);
 
   // points data are missing or outdated, or distortion has changed?
-  if(g->points == NULL || g->points_idx == NULL || hash != g->grid_hash
+  if(IS_NULL_PTR(g->points) || IS_NULL_PTR(g->points_idx) || hash != g->grid_hash
      || (g->lines_version > g->points_version
          && g->lines_hash != lines_hash))
   {
@@ -4000,7 +4217,7 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
   }
 
   // a final check
-  if(g->points == NULL || g->points_idx == NULL) return;
+  if(IS_NULL_PTR(g->points) || IS_NULL_PTR(g->points_idx)) return;
 
   cairo_save(cr);
   dt_dev_rescale_roi(dev, cr, width, height);
@@ -4178,25 +4395,25 @@ int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressur
 
   gboolean handled = FALSE;
 
-  const float wd = self->dev->roi.preview_width;
-  const float ht = self->dev->roi.preview_height;
+  const float wd = darktable.develop->roi.preview_width;
+  const float ht = darktable.develop->roi.preview_height;
   if(wd < 1.0 || ht < 1.0) return 1;
 
   float pzxpy[2] = { (float)x, (float)y };
-  dt_dev_coordinates_widget_to_image_norm(self->dev, pzxpy, 1);
+  dt_dev_coordinates_widget_to_image_norm(darktable.develop, pzxpy, 1);
   float pzx = pzxpy[0];
   float pzy = pzxpy[1];
 
   // if visibility of lines is switched off or no lines available, we have nothing to do
-  if(!g->lines) return FALSE;
+  if(IS_NULL_PTR(g->lines)) return FALSE;
 
   // if we are moving a drawn line extrema, we do the change here
   if(g->draw_point_move)
   {
-    const float pd_w = self->dev->roi.processed_width;
-    const float pd_h = self->dev->roi.processed_height;
+    const float pd_w = darktable.develop->roi.processed_width;
+    const float pd_h = darktable.develop->roi.processed_height;
     float pts[2] = { pzx * pd_w, pzy * pd_h };
-    if(dt_dev_distort_backtransform_plus(self->dev, self->dev->virtual_pipe, self->iop_order,
+    if(dt_dev_distort_backtransform_plus(darktable.develop->virtual_pipe, self->iop_order,
                                          DT_DEV_TRANSFORM_DIR_FORW_INCL, pts, 1))
     {
       // first we move the point
@@ -4257,7 +4474,7 @@ int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressur
     const float pd_w = self->dev->roi.processed_width;
     const float pd_h = self->dev->roi.processed_height;
     float pts[2] = { pzx * pd_w, pzy * pd_h };
-    if(dt_dev_distort_backtransform_plus(self->dev, self->dev->virtual_pipe, self->iop_order,
+    if(dt_dev_distort_backtransform_plus(darktable.develop->virtual_pipe, self->iop_order,
                                          DT_DEV_TRANSFORM_DIR_FORW_INCL, pts, 1))
     {
       const float dx = (pts[0] - g->draw_pointmove_x);
@@ -4409,7 +4626,7 @@ int button_pressed(struct dt_iop_module_t *self, double x, double y, double pres
   if(wd < 1.0 || ht < 1.0) return 1;
 
   // if we start to draw a straightening line
-  if(!g->lines && which == 3 && !g->editing)
+  if(IS_NULL_PTR(g->lines) && which == 3 && !g->editing)
   {
     dt_control_change_cursor(GDK_CROSSHAIR);
     g->straightening = TRUE;
@@ -4473,10 +4690,10 @@ int button_pressed(struct dt_iop_module_t *self, double x, double y, double pres
     {
       if(g->points_idx[n].near)
       {
-        const float pd_w = self->dev->roi.processed_width;
-        const float pd_h = self->dev->roi.processed_height;
+        const float pd_w = darktable.develop->roi.processed_width;
+        const float pd_h = darktable.develop->roi.processed_height;
         float pts[2] = { pzx * pd_w, pzy * pd_h };
-        dt_dev_distort_backtransform_plus(self->dev, self->dev->virtual_pipe, self->iop_order,
+        dt_dev_distort_backtransform_plus(darktable.develop->virtual_pipe, self->iop_order,
                                           DT_DEV_TRANSFORM_DIR_FORW_INCL, pts, 1);
         g->draw_line_move = n;
         g->draw_pointmove_x = pts[0];
@@ -4554,7 +4771,7 @@ int button_pressed(struct dt_iop_module_t *self, double x, double y, double pres
     const float pd_w = self->dev->roi.processed_width;
     const float pd_h = self->dev->roi.processed_height;
     float pts[2] = { pzx * pd_w, pzy * pd_h };
-    dt_dev_distort_backtransform_plus(self->dev, self->dev->virtual_pipe, self->iop_order,
+    dt_dev_distort_backtransform_plus(darktable.develop->virtual_pipe, self->iop_order,
                                       DT_DEV_TRANSFORM_DIR_FORW_INCL, pts, 1);
     const int count = g->lines_count + 1;
     // if count > MAX_SAVED_LINES we alert that the next lines won't be saved in params
@@ -4618,13 +4835,13 @@ int button_released(struct dt_iop_module_t *self, double x, double y, int which,
     g->straightening = FALSE;
     // adjust the line with possible current angle and flip on this module
     float pzxpy[2] = { (float)x, (float)y };
-    dt_dev_coordinates_widget_to_image_norm(self->dev, pzxpy, 1);
+    dt_dev_coordinates_widget_to_image_norm(darktable.develop, pzxpy, 1);
     const float pzx = pzxpy[0];
     const float pzy = pzxpy[1];
-    const float pd_w = self->dev->roi.processed_width;
-    const float pd_h = self->dev->roi.processed_height;
+    const float pd_w = darktable.develop->roi.processed_width;
+    const float pd_h = darktable.develop->roi.processed_height;
     float pts[4] = { pzx * pd_w, pzy * pd_h, g->lastx * pd_w, g->lasty * pd_h };
-    dt_dev_distort_backtransform_plus(self->dev, self->dev->virtual_pipe,
+    dt_dev_distort_backtransform_plus(darktable.develop->virtual_pipe,
                                       self->iop_order,
                                       DT_DEV_TRANSFORM_DIR_FORW_EXCL, pts, 2);
 
@@ -4780,7 +4997,7 @@ int scrolled(struct dt_iop_module_t *self, double x, double y, int up, uint32_t 
   dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)self->gui_data;
 
   // do nothing if visibility of lines is switched off or no lines available
-  if(!g->lines) return FALSE;
+  if(IS_NULL_PTR(g->lines)) return FALSE;
 
   if(g->near_delta > 0 && (g->isdeselecting || g->isselecting))
   {
@@ -4854,7 +5071,7 @@ void _make_controls_sensitive(dt_iop_module_t *self, const gboolean sensitive)
   gtk_widget_set_sensitive(g->structure_auto, sensitive);
   gtk_widget_set_sensitive(g->structure_lines, sensitive);
   gtk_widget_set_sensitive(g->structure_quad, sensitive);
-  _gui_update_structure_states(self, FALSE);
+  _gui_update_structure_states(self, sensitive && g->lines && g->lines_count > 0);
 }
 
 
@@ -4894,18 +5111,33 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
   if(g->buf_height > 0 && g->buf_width > 0)
     do_crop(self, p);
   else
+  {
     g->jobcode = ASHIFT_JOBCODE_DO_CROP;
-
-  dt_dev_pixelpipe_update_history_all(self->dev);
+    if(g->editing)
+      dt_dev_pixelpipe_resync_history_all(self->dev);
+    else
+      dt_dev_pixelpipe_update_history_all(self->dev);
+  }
 }
 
 void gui_reset(struct dt_iop_module_t *self)
 {
-  dt_iop_ashift_params_t *p = _get_ashift_params(self);
   dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)self->gui_data;
   g->editing = FALSE;
+  g->jobcode = ASHIFT_JOBCODE_NONE;
+  g->jobparams = 0;
+  g->pending_preview_input_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
+  dt_iop_set_cache_bypass(self, FALSE);
 
+  dt_iop_ashift_params_t *p = (dt_iop_ashift_params_t *)self->params;
   memcpy(p, self->default_params, sizeof(dt_iop_ashift_params_t));
+  memcpy(&g->previous_params, p, sizeof(dt_iop_ashift_params_t));
+  memcpy(&g->new_params, p, sizeof(dt_iop_ashift_params_t));
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->edit_button), FALSE);
+  gtk_button_set_label(GTK_BUTTON(g->edit_button), _("Edit"));
+  gtk_widget_set_sensitive(g->commit_button, FALSE);
+  dt_control_change_cursor(GDK_LEFT_PTR);
+  _make_controls_sensitive(self, FALSE);
 
   /* reset eventual remaining structures */
   _do_clean_structure(self, p, FALSE);
@@ -4931,12 +5163,11 @@ static void cropmode_callback(GtkWidget *widget, gpointer user_data)
 
   p->cropmode = crop_mode;
   g->jobcode = ASHIFT_JOBCODE_DO_CROP;
-  do_crop(self, &g->new_params);
+  do_crop(self, p);
 
   if(g->editing)
   {
-    // Update temporary copy
-    dt_dev_pixelpipe_update_history_all(self->dev);
+    // do_crop() already resealed the temporary GUI-only contract and refreshed the ROI.
   }
   else
   {
@@ -5236,6 +5467,8 @@ static void _enter_edit_mode(GtkToggleButton* button, struct dt_iop_module_t *se
   // It sucks that we need to invalidate the preview too but we need its final dimension.
   dt_dev_pixelpipe_resync_history_all(self->dev);
   dt_dev_get_thumbnail_size(self->dev);
+  dt_dev_pixelpipe_update_zoom_main(self->dev);
+  dt_dev_pixelpipe_update_zoom_preview(self->dev);
 }
 
 static void _event_commit_clicked(GtkButton *button, dt_iop_module_t *self)
@@ -5255,6 +5488,8 @@ static void _event_commit_clicked(GtkButton *button, dt_iop_module_t *self)
   // Commit history and refresh view
   dt_dev_add_history_item(darktable.develop, self, TRUE, TRUE);
   dt_dev_get_thumbnail_size(self->dev);
+  dt_dev_pixelpipe_update_zoom_main(self->dev);
+  dt_dev_pixelpipe_update_zoom_preview(self->dev);
 
   // The following will de-activate the edit button and trigger the callback.
   // Prevent the callback to revert the param change.
@@ -5264,12 +5499,8 @@ static void _event_commit_clicked(GtkButton *button, dt_iop_module_t *self)
   g_signal_handlers_unblock_by_func(g->edit_button, _enter_edit_mode, self);
 }
 
-// routine that is called after preview image has been processed. we use it
-// to perform structure collection or fitting in case those have been triggered while
-// the module had not yet been enabled
-static void _event_process_after_preview_callback(gpointer instance, gpointer user_data)
+static void _run_pending_preview_job(dt_iop_module_t *self)
 {
-  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
   dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)self->gui_data;
   dt_iop_ashift_params_t *p = _get_ashift_params(self);
 
@@ -5308,7 +5539,64 @@ static void _event_process_after_preview_callback(gpointer instance, gpointer us
     default:
       break;
   }
+}
 
+static void _event_history_resync_callback(gpointer instance, gpointer user_data)
+{
+  (void)instance;
+  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
+  dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)self->gui_data;
+  if(IS_NULL_PTR(g) || g->jobcode == ASHIFT_JOBCODE_NONE || darktable.gui->reset) return;
+
+  const uint64_t preview_input_hash = _current_preview_input_hash(self);
+  if(preview_input_hash == DT_PIXELPIPE_CACHE_HASH_INVALID) return;
+
+  if((IS_NULL_PTR(g->buf) || g->buf_hash != preview_input_hash)
+     && !_sync_private_buffer_from_preview_cache(self, NULL))
+  {
+    g->pending_preview_input_hash = preview_input_hash;
+    return;
+  }
+
+  g->pending_preview_input_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
+  _run_pending_preview_job(self);
+  dt_control_queue_redraw_center();
+}
+
+static void _event_cacheline_ready_callback(gpointer instance, const guint64 hash, gpointer user_data)
+{
+  (void)instance;
+  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
+  dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)self->gui_data;
+  if(IS_NULL_PTR(g) || g->pending_preview_input_hash != hash || darktable.gui->reset) return;
+
+  if(!_sync_private_buffer_from_preview_cache(self, NULL)) return;
+
+  g->pending_preview_input_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
+  _run_pending_preview_job(self);
+  dt_control_queue_redraw_center();
+}
+
+/**
+ * @brief Refresh ashift overlay geometry once the displayed pipe published its new output.
+ *
+ * The crop frame and manual guides are drawn in center-view coordinates derived from the virtual
+ * pipe output size. Rotation, lens shift, shear, and auto-crop all change that size, but the
+ * final displayed dimensions are only authoritative after the UI pipe completed. Refreshing the
+ * thumbnail geometry here keeps the overlay aligned with the image the user actually sees.
+ */
+static void _event_process_after_ui_callback(gpointer instance, gpointer user_data)
+{
+  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
+  dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)self->gui_data;
+  dt_iop_ashift_params_t *p = _get_ashift_params(self);
+
+  (void)instance;
+
+  if(darktable.gui->reset) return;
+  if(!g->editing && p->cropmode == ASHIFT_CROP_OFF) return;
+
+  dt_dev_get_thumbnail_size(self->dev);
   dt_control_queue_redraw_center();
 }
 
@@ -5319,23 +5607,13 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   dt_iop_ashift_data_t *d = (dt_iop_ashift_data_t *)piece->data;
   dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)self->gui_data;
 
-  if(g && g->editing)
+  if(!IS_NULL_PTR(g) && g->editing)
   {
     p = (dt_iop_ashift_params_t *)&g->new_params;
-
-    // If we are editing in GUI, we want to see the full uncropped image
-    d->cl = 0.0f;
-    d->cr = 1.0f;
-    d->ct = 0.0f;
-    d->cb = 1.0f;
   }
   else
   {
     p = (dt_iop_ashift_params_t *)p1;
-    d->cl = p->cl;
-    d->cr = p->cr;
-    d->ct = p->ct;
-    d->cb = p->cb;
   }
 
   d->rotation = p->rotation;
@@ -5345,6 +5623,19 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   d->f_length_kb = (p->mode == ASHIFT_MODE_GENERIC) ? DEFAULT_F_LENGTH : p->f_length * p->crop_factor;
   d->orthocorr = (p->mode == ASHIFT_MODE_GENERIC) ? 0.0f : p->orthocorr;
   d->aspect = (p->mode == ASHIFT_MODE_GENERIC) ? 1.0f : p->aspect;
+  d->cl = p->cl;
+  d->cr = p->cr;
+  d->ct = p->ct;
+  d->cb = p->cb;
+}
+
+gboolean runtime_data_hash(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe,
+                           const dt_dev_pixelpipe_iop_t *piece)
+{
+  (void)self;
+  (void)pipe;
+  (void)piece;
+  return TRUE;
 }
 
 void init_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
@@ -5404,7 +5695,7 @@ void reload_defaults(dt_iop_module_t *module)
 
   // reset gui elements
   dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)module->gui_data;
-  if(g)
+  if(!IS_NULL_PTR(g))
   {
 
     char string_v[256];
@@ -5432,6 +5723,7 @@ void reload_defaults(dt_iop_module_t *module)
     dt_iop_gui_leave_critical_section(module);
 
     g->fitting = 0;
+    g->editing = FALSE;
     dt_free(g->lines);
     g->lines_count =0;
     g->horizontal_count = 0;
@@ -5456,6 +5748,7 @@ void reload_defaults(dt_iop_module_t *module)
 
     g->jobcode = ASHIFT_JOBCODE_NONE;
     g->jobparams = 0;
+    g->pending_preview_input_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
     g->lastx = g->lasty = -1.0f;
     g->crop_cx = g->crop_cy = 1.0f;
 
@@ -5463,6 +5756,8 @@ void reload_defaults(dt_iop_module_t *module)
     g->draw_line_move = -1;
     g->draw_near_point = -1;
     g->draw_point_move = FALSE;
+    memcpy(&g->previous_params, module->default_params, sizeof(dt_iop_ashift_params_t));
+    memcpy(&g->new_params, module->default_params, sizeof(dt_iop_ashift_params_t));
 
     _gui_update_structure_states(module, FALSE);
   }
@@ -5560,8 +5855,11 @@ void gui_init(struct dt_iop_module_t *self)
 
   g->jobcode = ASHIFT_JOBCODE_NONE;
   g->jobparams = 0;
+  g->pending_preview_input_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
   g->lastx = g->lasty = -1.0f;
   g->crop_cx = g->crop_cy = 1.0f;
+  memcpy(&g->previous_params, self->params, sizeof(dt_iop_ashift_params_t));
+  memcpy(&g->new_params, self->params, sizeof(dt_iop_ashift_params_t));
 
   g->draw_near_point = -1;
   g->draw_line_move = -1;
@@ -5730,14 +6028,21 @@ void gui_init(struct dt_iop_module_t *self)
                    (gpointer)self);
   g_signal_connect(G_OBJECT(self->widget), "draw", G_CALLBACK(_event_draw), self);
 
-  /* add signal handler for preview pipe finish to redraw the overlay */
-  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED,
-                                  G_CALLBACK(_event_process_after_preview_callback), self);
+  /* pending structure jobs now wake up from targeted preview-cache publication */
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_HISTORY_RESYNC,
+                                  G_CALLBACK(_event_history_resync_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_CACHELINE_READY,
+                                  G_CALLBACK(_event_cacheline_ready_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_DEVELOP_UI_PIPE_FINISHED,
+                                  G_CALLBACK(_event_process_after_ui_callback), self);
 }
 
 void gui_cleanup(struct dt_iop_module_t *self)
 {
-  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_event_process_after_preview_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_event_history_resync_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_event_cacheline_ready_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_event_process_after_ui_callback), self);
+  dt_iop_set_cache_bypass(self, FALSE);
 
   dt_iop_ashift_gui_data_t *g = (dt_iop_ashift_gui_data_t *)self->gui_data;
   if(g->lines)

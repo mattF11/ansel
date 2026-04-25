@@ -163,12 +163,20 @@ int default_group()
 
 int flags()
 {
-  return IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_ALLOW_TILING;
+  return IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_DEPRECATED;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
+}
+
+void input_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                  dt_iop_buffer_dsc_t *dsc)
+{
+  default_input_format(self, pipe, piece, dsc);
+  dsc->channels = 4;
+  dsc->datatype = TYPE_FLOAT;
 }
 
 int legacy_params(
@@ -456,7 +464,7 @@ static inline v4sf kerneldist4(const float *x, const float *y)
 
 // thinplate spline kernel \phi(r) = 2 r^2 ln(r)
 #if defined(_OPENMP) && defined(OPENMP_SIMD_)
-#pragma omp declare SIMD()
+#pragma omp declare simd
 #endif
 static inline float kernel(const float *x, const float *y)
 {
@@ -471,17 +479,15 @@ static inline float kernel(const float *x, const float *y)
   return r2*fastlog(MAX(1e-8f,r2));
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   const dt_iop_colorchecker_data_t *const data = (dt_iop_colorchecker_data_t *)piece->data;
-  const int ch = piece->colors;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, data, ivoid, ovoid, roi_in, roi_out) \
-  schedule(static) \
-  collapse(2)
-#endif
+  const int ch = 4;
+  __OMP_PARALLEL_FOR__(collapse(2))
   for(int j=0;j<roi_out->height;j++)
   {
     for(int i=0;i<roi_out->width;i++)
@@ -502,7 +508,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
                 data->coeff_b[data->num_patches+2] * in[1] +
                 data->coeff_b[data->num_patches+3] * in[2];
 #if defined(_OPENMP) && defined(OPENMP_SIMD_) // <== nice try, i don't think this does anything here
-#pragma omp SIMD()
+#pragma omp simd
 #endif
       for(int k=0;k<data->num_patches;k++)
       { // rbf from thin plate spline
@@ -513,70 +519,19 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
       }
     }
   }
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
   return 0;
 }
 
-#if 0 // TODO:
-int process_sse2(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
-{
-  const dt_iop_colorchecker_data_t *const data = (dt_iop_colorchecker_data_t *)piece->data;
-  const int ch = piece->colors;
-  // TODO: swizzle this so we can eval the distance of one point
-  // TODO: to four patches at the same time
-  v4sf source_Lab[data->num_patches];
-  for(int i=0;i<data->num_patches;i++)
-    source_Lab[i] = _mm_set_ps(1.0,
-        data->source_Lab[3*i+0],
-        data->source_Lab[3*i+1],
-        data->source_Lab[3*i+2]);
-#ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) collapse(2)
-#endif
-  for(int j=0;j<roi_out->height;j++)
-  {
-    for(int i=0;i<roi_out->width;i++)
-    {
-      const float *in = ((float *)ivoid) + (size_t)ch * (j * roi_in->width + i);
-      float *out = ((float *)ovoid) + (size_t)ch * (j * roi_in->width + i);
-      // TODO: do this part in SSE (maybe need to store coeff_L in _mm128 on data struct)
-      out[0] = data->coeff_L[data->num_patches];
-      out[1] = data->coeff_a[data->num_patches];
-      out[2] = data->coeff_b[data->num_patches];
-      // polynomial part:
-      out[0] += data->coeff_L[data->num_patches+1] * in[0] +
-                data->coeff_L[data->num_patches+2] * in[1] +
-                data->coeff_L[data->num_patches+3] * in[2];
-      out[1] += data->coeff_a[data->num_patches+1] * in[0] +
-                data->coeff_a[data->num_patches+2] * in[1] +
-                data->coeff_a[data->num_patches+3] * in[2];
-      out[2] += data->coeff_b[data->num_patches+1] * in[0] +
-                data->coeff_b[data->num_patches+2] * in[1] +
-                data->coeff_b[data->num_patches+3] * in[2];
-      for(int k=0;k<data->num_patches;k+=4)
-      { // rbf from thin plate spline
-        const v4sf phi = kerneldist4(in, source_Lab[k]);
-        // TODO: add up 4x output channels
-        out[0] += data->coeff_L[k] * phi[0];
-        out[1] += data->coeff_a[k] * phi[0];
-        out[2] += data->coeff_b[k] * phi[0];
-      }
-    }
-  }
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
-  return 0;
-}
-#endif
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_colorchecker_data_t *d = (dt_iop_colorchecker_data_t *)piece->data;
   dt_iop_colorchecker_global_data_t *gd = (dt_iop_colorchecker_global_data_t *)self->global_data;
 
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   const int width = roi_out->width;
   const int height = roi_out->height;
   const int num_patches = d->num_patches;
@@ -606,7 +561,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   }
 
   dev_params = dt_opencl_copy_host_to_device_constant(devid, params_size, params);
-  if(dev_params == NULL) goto error;
+  if(IS_NULL_PTR(dev_params)) goto error;
 
   size_t sizes[3] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
   dt_opencl_set_kernel_arg(devid, gd->kernel_colorchecker, 0, sizeof(cl_mem), (void *)&dev_in);
@@ -958,7 +913,7 @@ void cleanup_global(dt_iop_module_so_t *module)
   dt_free(module->data);
 }
 
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_colorchecker_gui_data_t *g = (dt_iop_colorchecker_gui_data_t *)self->gui_data;
   dt_iop_colorchecker_params_t *p = (dt_iop_colorchecker_params_t *)self->params;

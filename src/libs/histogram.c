@@ -55,6 +55,7 @@
 
 #include "bauhaus/bauhaus.h"
 #include "common/atomic.h"
+#include "common/color_picker.h"
 #include "common/color_vocabulary.h"
 #include "common/darktable.h"
 #include "common/debug.h"
@@ -65,6 +66,8 @@
 #include "common/math.h"
 #include "control/conf.h"
 #include "control/control.h"
+#include "control/signal.h"
+#include "develop/dev_pixelpipe.h"
 #include "develop/develop.h"
 #include "develop/pixelpipe_cache.h"
 #include "dtgtk/drawingarea.h"
@@ -144,9 +147,311 @@ typedef struct dt_lib_histogram_t
   GtkWidget *samples_container;
   GtkWidget *add_sample_button;
   GtkWidget *display_samples_check_box;
-  dt_colorpicker_sample_t primary_sample;
+  GArray *pending_hashes;
+  guint refresh_idle_source;
 
 } dt_lib_histogram_t;
+
+typedef struct dt_histogram_pending_module_refresh_t
+{
+  dt_iop_module_t *module;
+  uint64_t hash;
+} dt_histogram_pending_module_refresh_t;
+
+typedef struct dt_histogram_preview_refresh_state_t
+{
+  uint64_t initialscale_hash;
+  uint64_t colorout_hash;
+  uint64_t gamma_hash;
+  GList *module_histograms;
+} dt_histogram_preview_refresh_state_t;
+
+static dt_histogram_preview_refresh_state_t _preview_refresh_state
+    = { DT_PIXELPIPE_CACHE_HASH_INVALID, DT_PIXELPIPE_CACHE_HASH_INVALID,
+        DT_PIXELPIPE_CACHE_HASH_INVALID, NULL };
+
+static void _clear_pending_preview_histograms(void)
+{
+  g_list_free_full(_preview_refresh_state.module_histograms, g_free);
+  _preview_refresh_state.module_histograms = NULL;
+  _preview_refresh_state.initialscale_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
+  _preview_refresh_state.colorout_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
+  _preview_refresh_state.gamma_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
+}
+
+static void _refresh_module_histogram(const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+                                      const float *pixel, dt_iop_module_t *module)
+{
+  dt_dev_histogram_collection_params_t histogram_params = piece->histogram_params;
+  dt_histogram_roi_t histogram_roi;
+
+  if(IS_NULL_PTR(histogram_params.roi))
+  {
+    histogram_roi = (dt_histogram_roi_t){
+      .width = piece->roi_in.width, .height = piece->roi_in.height,
+      .crop_x = 0, .crop_y = 0, .crop_width = 0, .crop_height = 0
+    };
+    histogram_params.roi = &histogram_roi;
+  }
+
+  dt_iop_gui_enter_critical_section(module);
+  dt_histogram_helper(&histogram_params, &module->histogram_stats, piece->dsc_in.cst, module->histogram_cst,
+                      pixel, &module->histogram, module->histogram_middle_grey,
+                      dt_ioppr_get_pipe_work_profile_info(pipe));
+  dt_histogram_max_helper(&module->histogram_stats, piece->dsc_in.cst, module->histogram_cst,
+                          &module->histogram, module->histogram_max);
+  dt_iop_gui_leave_critical_section(module);
+
+  if(module->widget) dt_control_queue_redraw_widget(module->widget);
+}
+
+static dt_backbuf_t *_get_histogram_backbuf(dt_develop_t *dev, const char *op)
+{
+  if(IS_NULL_PTR(dev) || IS_NULL_PTR(op)) return NULL;
+
+  if(!strcmp(op, "initialscale"))
+    return &dev->raw_histogram;
+  else if(!strcmp(op, "colorout"))
+    return &dev->output_histogram;
+  else if(!strcmp(op, "gamma"))
+    return &dev->display_histogram;
+  else
+    return NULL;
+}
+
+static void _clear_histogram_backbuf(dt_backbuf_t *backbuf)
+{
+  if(IS_NULL_PTR(backbuf)) return;
+
+  /* Global histogram backbuffers keep one structural ref on top of the module-output lifetime.
+   * Clearing that published view therefore means releasing the extra GUI-side keepalive ref here. */
+  dt_dev_pixelpipe_cache_unref_hash(darktable.pixelpipe_cache, dt_dev_backbuf_get_hash(backbuf));
+  dt_dev_set_backbuf(backbuf, 0, 0, 0, DT_PIXELPIPE_CACHE_HASH_INVALID, DT_PIXELPIPE_CACHE_HASH_INVALID);
+}
+
+static gboolean _refresh_global_histogram_backbuf_for_hash(dt_develop_t *dev, const char *op,
+                                                           const uint64_t expected_hash)
+{
+  dt_backbuf_t *const backbuf = _get_histogram_backbuf(dev, op);
+  if(IS_NULL_PTR(backbuf) || IS_NULL_PTR(dev) || IS_NULL_PTR(dev->preview_pipe)) return FALSE;
+
+  const dt_dev_pixelpipe_iop_t *const piece = dt_dev_pixelpipe_get_module_piece(
+      dev->preview_pipe, dt_iop_get_module_by_op_priority(dev->iop, op, 0));
+  if(IS_NULL_PTR(piece))
+  {
+    _clear_histogram_backbuf(backbuf);
+    return FALSE;
+  }
+
+  const dt_dev_pixelpipe_iop_t *const previous_piece
+      = dt_dev_pixelpipe_get_prev_enabled_piece(dev->preview_pipe, piece);
+
+  const dt_iop_roi_t *roi = &piece->roi_out;
+  const dt_iop_buffer_dsc_t *dsc = &piece->dsc_out;
+  uint64_t hash = piece->global_hash;
+
+  if(!strcmp(op, "gamma"))
+  {
+    if(IS_NULL_PTR(previous_piece))
+    {
+      _clear_histogram_backbuf(backbuf);
+      return FALSE;
+    }
+
+    roi = &previous_piece->roi_out;
+    dsc = &previous_piece->dsc_out;
+    hash = previous_piece->global_hash;
+  }
+
+  if(expected_hash != DT_PIXELPIPE_CACHE_HASH_INVALID && hash != expected_hash) return FALSE;
+
+  dt_pixel_cache_entry_t *entry = NULL;
+  if(hash == DT_PIXELPIPE_CACHE_HASH_INVALID
+     || !dt_dev_pixelpipe_cache_peek_gui(dev->preview_pipe, !strcmp(op, "gamma") ? previous_piece : piece,
+                                         NULL, &entry, NULL, NULL, NULL))
+  {
+    _clear_histogram_backbuf(backbuf);
+    return FALSE;
+  }
+
+  const uint64_t previous_hash = dt_dev_backbuf_get_hash(backbuf);
+  if(previous_hash != hash)
+  {
+    /* The module output already owns its producer ref. Tagging it as a global histogram backbuffer
+     * reserves one additional consumer ref so GUI readers only need `peek()` and read locks later. */
+    dt_dev_pixelpipe_cache_unref_hash(darktable.pixelpipe_cache, previous_hash);
+    dt_dev_pixelpipe_cache_ref_count_entry(darktable.pixelpipe_cache, TRUE, entry);
+  }
+
+  dt_dev_set_backbuf(backbuf, roi->width, roi->height, dsc->bpp, hash, DT_PIXELPIPE_CACHE_HASH_INVALID);
+  return TRUE;
+}
+
+static gboolean _refresh_preview_module_histogram_for_hash(dt_develop_t *dev, dt_iop_module_t *module,
+                                                           const uint64_t expected_hash)
+{
+  if(IS_NULL_PTR(dev) || IS_NULL_PTR(dev->preview_pipe) || !module) return FALSE;
+
+  const dt_dev_pixelpipe_iop_t *const piece = dt_dev_pixelpipe_get_module_piece(dev->preview_pipe, module);
+  if(IS_NULL_PTR(piece) || !(piece->request_histogram & DT_REQUEST_ON)) return FALSE;
+  if((piece->request_histogram & DT_REQUEST_ONLY_IN_GUI) && !dev->gui_attached) return FALSE;
+
+  const dt_dev_pixelpipe_iop_t *const previous_piece
+      = dt_dev_pixelpipe_get_prev_enabled_piece(dev->preview_pipe, piece);
+  if(IS_NULL_PTR(previous_piece) || previous_piece->global_hash == DT_PIXELPIPE_CACHE_HASH_INVALID) return FALSE;
+  if(expected_hash != DT_PIXELPIPE_CACHE_HASH_INVALID && previous_piece->global_hash != expected_hash) return FALSE;
+  if(previous_piece->dsc_out.datatype != TYPE_FLOAT) return FALSE;
+
+  void *input = NULL;
+  dt_pixel_cache_entry_t *input_entry = NULL;
+  if(!dt_dev_pixelpipe_cache_peek_gui(dev->preview_pipe, previous_piece, &input, &input_entry, NULL, NULL, NULL))
+    return FALSE;
+
+  dt_dev_pixelpipe_cache_ref_count_entry(darktable.pixelpipe_cache, TRUE, input_entry);
+  dt_dev_pixelpipe_cache_rdlock_entry(darktable.pixelpipe_cache, TRUE, input_entry);
+
+  const float *histogram_input = input;
+  float *transformed_input = NULL;
+  dt_iop_buffer_dsc_t input_dsc = previous_piece->dsc_out;
+
+  if(input_dsc.cst != piece->dsc_in.cst
+     && !(dt_iop_colorspace_is_rgb(input_dsc.cst) && dt_iop_colorspace_is_rgb(piece->dsc_in.cst)))
+  {
+    const size_t pixels = (size_t)piece->roi_in.width * (size_t)piece->roi_in.height;
+    const size_t bytes = pixels * (size_t)piece->dsc_in.channels * sizeof(float);
+    transformed_input = dt_alloc_align(bytes);
+
+    if(IS_NULL_PTR(transformed_input))
+    {
+      dt_dev_pixelpipe_cache_rdlock_entry(darktable.pixelpipe_cache, FALSE, input_entry);
+      dt_dev_pixelpipe_cache_ref_count_entry(darktable.pixelpipe_cache, FALSE, input_entry);
+      return FALSE;
+    }
+
+    memcpy(transformed_input, input, bytes);
+    dt_ioppr_transform_image_colorspace(module, transformed_input, transformed_input,
+                                        piece->roi_in.width, piece->roi_in.height,
+                                        input_dsc.cst, piece->dsc_in.cst, &input_dsc.cst,
+                                        dt_ioppr_get_pipe_work_profile_info(dev->preview_pipe));
+    histogram_input = transformed_input;
+  }
+  else if(input_dsc.cst != piece->dsc_in.cst)
+  {
+    input_dsc.cst = piece->dsc_in.cst;
+  }
+
+  _refresh_module_histogram(dev->preview_pipe, piece, histogram_input, module);
+
+  dt_dev_pixelpipe_cache_rdlock_entry(darktable.pixelpipe_cache, FALSE, input_entry);
+  dt_dev_pixelpipe_cache_ref_count_entry(darktable.pixelpipe_cache, FALSE, input_entry);
+  dt_free_align(transformed_input);
+
+  return TRUE;
+}
+
+static void _refresh_preview_histograms(dt_develop_t *dev)
+{
+  if(IS_NULL_PTR(dev) || !dev->gui_attached || IS_NULL_PTR(dev->preview_pipe)) return;
+  if(!dev->preview_pipe->gui_observable_source) return;
+
+  _clear_pending_preview_histograms();
+
+  const char *ops[] = { "initialscale", "colorout", "gamma" };
+  uint64_t *pending_hashes[] = {
+    &_preview_refresh_state.initialscale_hash,
+    &_preview_refresh_state.colorout_hash,
+    &_preview_refresh_state.gamma_hash
+  };
+
+  for(size_t i = 0; i < G_N_ELEMENTS(ops); i++)
+  {
+    const dt_dev_pixelpipe_iop_t *piece = dt_dev_pixelpipe_get_module_piece(
+        dev->preview_pipe, dt_iop_get_module_by_op_priority(dev->iop, ops[i], 0));
+    if(IS_NULL_PTR(piece))
+    {
+      _clear_histogram_backbuf(_get_histogram_backbuf(dev, ops[i]));
+      continue;
+    }
+
+    uint64_t hash = piece->global_hash;
+    if(!strcmp(ops[i], "gamma"))
+    {
+      const dt_dev_pixelpipe_iop_t *const previous_piece
+          = dt_dev_pixelpipe_get_prev_enabled_piece(dev->preview_pipe, piece);
+      hash = previous_piece ? previous_piece->global_hash : DT_PIXELPIPE_CACHE_HASH_INVALID;
+    }
+
+    if(hash == DT_PIXELPIPE_CACHE_HASH_INVALID
+       || !_refresh_global_histogram_backbuf_for_hash(dev, ops[i], hash))
+      *pending_hashes[i] = hash;
+  }
+
+  for(GList *node = g_list_first(dev->preview_pipe->nodes); node; node = g_list_next(node))
+  {
+    dt_dev_pixelpipe_iop_t *piece = node->data;
+    if(IS_NULL_PTR(piece) || !piece->enabled) continue;
+    if(!(piece->request_histogram & DT_REQUEST_ON)) continue;
+    if((piece->request_histogram & DT_REQUEST_ONLY_IN_GUI) && !dev->gui_attached) continue;
+
+    const dt_dev_pixelpipe_iop_t *const previous_piece
+        = dt_dev_pixelpipe_get_prev_enabled_piece(dev->preview_pipe, piece);
+    if(previous_piece && !_refresh_preview_module_histogram_for_hash(dev, piece->module, previous_piece->global_hash))
+    {
+      dt_histogram_pending_module_refresh_t *pending = g_malloc0(sizeof(*pending));
+      pending->module = piece->module;
+      pending->hash = previous_piece->global_hash;
+      _preview_refresh_state.module_histograms
+          = g_list_prepend(_preview_refresh_state.module_histograms, pending);
+    }
+  }
+}
+
+static void _preview_history_resync_callback(gpointer instance, gpointer user_data)
+{
+  (void)instance;
+  (void)user_data;
+  _refresh_preview_histograms(darktable.develop);
+}
+
+static void _preview_cacheline_ready_callback(gpointer instance, const guint64 hash, gpointer user_data)
+{
+  (void)instance;
+  (void)user_data;
+
+  dt_develop_t *const dev = darktable.develop;
+  if(IS_NULL_PTR(dev) || !dev->gui_attached || IS_NULL_PTR(dev->preview_pipe)) return;
+
+  if(_preview_refresh_state.initialscale_hash == hash)
+  {
+    _refresh_global_histogram_backbuf_for_hash(dev, "initialscale", hash);
+    _preview_refresh_state.initialscale_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
+  }
+
+  if(_preview_refresh_state.colorout_hash == hash)
+  {
+    _refresh_global_histogram_backbuf_for_hash(dev, "colorout", hash);
+    _preview_refresh_state.colorout_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
+  }
+
+  if(_preview_refresh_state.gamma_hash == hash)
+  {
+    _refresh_global_histogram_backbuf_for_hash(dev, "gamma", hash);
+    _preview_refresh_state.gamma_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
+  }
+
+  for(GList *l = _preview_refresh_state.module_histograms; l;)
+  {
+    GList *next = g_list_next(l);
+    dt_histogram_pending_module_refresh_t *pending = l->data;
+    if(pending->hash == hash)
+    {
+      _refresh_preview_module_histogram_for_hash(dev, pending->module, pending->hash);
+      _preview_refresh_state.module_histograms = g_list_delete_link(_preview_refresh_state.module_histograms, l);
+      g_free(pending);
+    }
+    l = next;
+  }
+}
 
 const char *name(struct dt_lib_module_t *self)
 {
@@ -175,21 +480,8 @@ int position()
 }
 
 static void _update_picker_output(dt_lib_module_t *self);
-static void _update_samples_output(dt_lib_module_t *self);
 static void _update_sample_label(dt_lib_module_t *self, dt_colorpicker_sample_t *sample);
-
-
-dt_backbuf_t * _get_backuf(dt_develop_t *dev, const char *op)
-{
-  if(!strcmp(op, "demosaic"))
-    return &dev->raw_histogram;
-  else if(!strcmp(op, "colorout"))
-    return &dev->output_histogram;
-  else if(!strcmp(op, "gamma"))
-    return &dev->display_histogram;
-  else
-    return NULL;
-}
+static void _update_everything(dt_lib_module_t *self);
 
 
 void _backbuf_int_to_op(const int value, dt_lib_histogram_t *d)
@@ -198,7 +490,7 @@ void _backbuf_int_to_op(const int value, dt_lib_histogram_t *d)
   {
     case 0:
     {
-      d->op = "demosaic";
+      d->op = "initialscale";
       break;
     }
     case 1:
@@ -216,7 +508,7 @@ void _backbuf_int_to_op(const int value, dt_lib_histogram_t *d)
 
 int _backbuf_op_to_int(dt_lib_histogram_t *d)
 {
-  if(!strcmp(d->op, "demosaic")) return 0;
+  if(!strcmp(d->op, "initialscale") || !strcmp(d->op, "demosaic")) return 0;
   if(!strcmp(d->op, "colorout")) return 1;
   if(!strcmp(d->op, "gamma")) return 2;
   return 2;
@@ -257,19 +549,18 @@ void _scope_pixel_to_display_rgb(const dt_aligned_pixel_t rgb_in, dt_aligned_pix
   if(_backbuf_op_to_int(d) > 0)
   {
     // We are in display RGB
-    *rgb_out = *rgb_in;
+    for_each_channel(c)
+      rgb_out[c] = rgb_in[c];
   }
   else
   {
-    // We are in sensor RGB
-    dt_aligned_pixel_t xyz = { 0.f };
+    // We are in the sensor/input RGB profile. Convert directly between the
+    // cached stage profile and the display profile so the swatch patch uses
+    // the same authoritative ICC path as the rest of the GUI.
     const dt_iop_order_iccprofile_info_t *const profile_in = darktable.develop->preview_pipe->input_profile_info;
-    dt_ioppr_rgb_matrix_to_xyz(rgb_in, xyz, profile_in->matrix_in_transposed, profile_in->lut_in, profile_in->unbounded_coeffs_in,
-                               profile_in->lutsize, profile_in->nonlinearlut);
-
     const dt_iop_order_iccprofile_info_t *const profile_out = darktable.develop->preview_pipe->output_profile_info;
-    dt_ioppr_rgb_matrix_to_xyz(xyz, rgb_out, profile_out->matrix_out_transposed, profile_out->lut_out, profile_out->unbounded_coeffs_out,
-                               profile_out->lutsize, profile_out->nonlinearlut);
+    dt_ioppr_transform_image_colorspace_rgb(rgb_in, rgb_out, 1, 1, profile_in, profile_out,
+                                            "[histogram] sample swatch");
   }
 }
 
@@ -282,10 +573,109 @@ void _reset_cache(dt_lib_histogram_t *d)
   d->cache.zoom = -1.;
 }
 
+static void _clear_pending_hashes(dt_lib_histogram_t *d)
+{
+  if(IS_NULL_PTR(d) || !d->pending_hashes) return;
+  g_array_set_size(d->pending_hashes, 0);
+}
+
+static gboolean _has_pending_hash(const dt_lib_histogram_t *d, const uint64_t hash)
+{
+  if(IS_NULL_PTR(d) || !d->pending_hashes || hash == DT_PIXELPIPE_CACHE_HASH_INVALID) return FALSE;
+
+  for(guint i = 0; i < d->pending_hashes->len; i++)
+    if(g_array_index(d->pending_hashes, uint64_t, i) == hash) return TRUE;
+
+  return FALSE;
+}
+
+static void _add_pending_hash(dt_lib_histogram_t *d, const uint64_t hash)
+{
+  if(IS_NULL_PTR(d) || !d->pending_hashes || hash == DT_PIXELPIPE_CACHE_HASH_INVALID || _has_pending_hash(d, hash)) return;
+  g_array_append_val(d->pending_hashes, hash);
+}
+
+static gboolean _remove_pending_hash(dt_lib_histogram_t *d, const uint64_t hash)
+{
+  if(IS_NULL_PTR(d) || !d->pending_hashes || hash == DT_PIXELPIPE_CACHE_HASH_INVALID) return FALSE;
+
+  for(guint i = 0; i < d->pending_hashes->len; i++)
+  {
+    if(g_array_index(d->pending_hashes, uint64_t, i) == hash)
+    {
+      g_array_remove_index(d->pending_hashes, i);
+      return TRUE;
+    }
+  }
+
+  return FALSE;
+}
+
+static uint64_t _get_live_histogram_hash(const char *op)
+{
+  dt_develop_t *const dev = darktable.develop;
+  dt_dev_pixelpipe_t *const pipe = dev ? dev->preview_pipe : NULL;
+  if(IS_NULL_PTR(dev) || IS_NULL_PTR(pipe) || IS_NULL_PTR(op)) return DT_PIXELPIPE_CACHE_HASH_INVALID;
+
+  dt_iop_module_t *const module = dt_iop_get_module_by_op_priority(dev->iop, op, 0);
+  if(IS_NULL_PTR(module)) return DT_PIXELPIPE_CACHE_HASH_INVALID;
+
+  const dt_dev_pixelpipe_iop_t *piece = dt_dev_pixelpipe_get_module_piece(pipe, module);
+  if(IS_NULL_PTR(piece)) return DT_PIXELPIPE_CACHE_HASH_INVALID;
+
+  if(!strcmp(op, "gamma"))
+    piece = dt_dev_pixelpipe_get_prev_enabled_piece(pipe, piece);
+
+  return piece ? piece->global_hash : DT_PIXELPIPE_CACHE_HASH_INVALID;
+}
+
+static gboolean _histogram_refresh_idle(gpointer user_data)
+{
+  dt_lib_module_t *self = (dt_lib_module_t *)user_data;
+  dt_lib_histogram_t *d = self ? self->data : NULL;
+  if(IS_NULL_PTR(d)) return G_SOURCE_REMOVE;
+
+  d->refresh_idle_source = 0;
+  d->backbuf = _get_histogram_backbuf(darktable.develop, d->op);
+  _update_everything(self);
+  return G_SOURCE_REMOVE;
+}
+
+static void _schedule_histogram_refresh(dt_lib_module_t *self)
+{
+  dt_lib_histogram_t *d = self ? self->data : NULL;
+  if(IS_NULL_PTR(d) || d->refresh_idle_source != 0) return;
+  d->refresh_idle_source = g_idle_add(_histogram_refresh_idle, self);
+}
+
+static void _sync_pending_histogram_hashes(dt_lib_module_t *self)
+{
+  dt_lib_histogram_t *d = (dt_lib_histogram_t *)self->data;
+  if(IS_NULL_PTR(d)) return;
+
+  _clear_pending_hashes(d);
+  _add_pending_hash(d, _get_live_histogram_hash(d->op));
+
+  for(GSList *samples = darktable.develop->color_picker.samples; samples; samples = g_slist_next(samples))
+  {
+    dt_colorpicker_sample_t *sample = samples->data;
+    if(sample->locked) continue;
+    _add_pending_hash(d, _get_live_histogram_hash(sample->backbuf_op[0] ? sample->backbuf_op : d->op));
+  }
+
+  if(darktable.develop->color_picker.picker)
+    _add_pending_hash(d, _get_live_histogram_hash(d->op));
+
+  d->backbuf = _get_histogram_backbuf(darktable.develop, d->op);
+  _update_everything(self);
+}
+
 
 static gboolean _is_backbuf_ready(dt_lib_histogram_t *d)
 {
-  return (dt_dev_pixelpipe_is_backbufer_valid(darktable.develop->preview_pipe, darktable.develop)) &&
+  if(IS_NULL_PTR(d) || IS_NULL_PTR(d->backbuf)) return FALSE;
+
+  return (dt_dev_pixelpipe_is_backbufer_valid(darktable.develop->preview_pipe)) &&
          (dt_dev_backbuf_get_hash(d->backbuf) != (uint64_t)-1);
 }
 
@@ -297,14 +687,7 @@ static void _redraw_scopes(dt_lib_histogram_t *d)
 uint32_t _find_max_histogram(const uint32_t *const restrict bins, const size_t binning_size)
 {
   uint32_t max_hist = 0;
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-        aligned(bins: 64) \
-        dt_omp_firstprivate(bins, binning_size) \
-        reduction(max: max_hist) \
-        schedule(static)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(bins: 64)  reduction(max: max_hist) )
   for(size_t k = 0; k < binning_size; k++) if(bins[k] > max_hist) max_hist = bins[k];
 
   return max_hist;
@@ -316,18 +699,15 @@ static inline void _bin_pixels_histogram_in_roi(const float *const restrict imag
                                                 const size_t min_y, const size_t max_y,
                                                 const size_t width)
 {
+  //fprintf(stdout, "computing histogram from x = [%lu;%lu], y = [%lu;%lu]\n", min_x, max_x, min_y, max_y);
   // Process
 #ifdef _OPENMP
 #ifndef _WIN32
-#pragma omp parallel for default(none) \
-        dt_omp_firstprivate(image, min_x, min_y, max_x, max_y, width) \
-        reduction(+: bins[0: HISTOGRAM_BINS * 4]) \
-        schedule(static) collapse(3)
+#pragma omp parallel for default(firstprivate) \
+        reduction(+: bins[0: HISTOGRAM_BINS * 4])  collapse(3)
 #else
-#pragma omp parallel for default(none) \
-        dt_omp_firstprivate(image, min_x, min_y, max_x, max_y, width) \
-        shared(bins) \
-        schedule(static) collapse(3)
+#pragma omp parallel for default(firstprivate) \
+        shared(bins)  collapse(3)
 #endif
 #endif
   for(size_t i = min_y; i < max_y; i++)
@@ -364,27 +744,31 @@ static inline void _bin_pickers_histogram(const float *const restrict image,
   }
 }
 
+static const dt_dev_pixelpipe_iop_t *_get_backbuf_source_piece(const dt_backbuf_t *backbuf, const char *op);
 
-static void _process_histogram(dt_backbuf_t *backbuf, cairo_t *cr, const int width, const int height)
+static void _process_histogram(dt_backbuf_t *backbuf, const char *op, cairo_t *cr, const int width,
+                               const int height)
 {
-  // Check if the cache entry we know is still active on the cache
-  struct dt_pixel_cache_entry_t *entry;
-  dt_develop_t *dev = darktable.develop;
-  void *data = dt_dev_pixelpipe_cache_get_read_only(darktable.pixelpipe_cache, dt_dev_backbuf_get_hash(backbuf),
-                                                    &entry, dev, dev->preview_pipe);
-  if(!data) return;
+  // Histogram backbuffers already own their keepalive ref in the pipeline state. Drawing only borrows them.
+  struct dt_pixel_cache_entry_t *entry = NULL;
+  void *data = NULL;
+  const dt_dev_pixelpipe_iop_t *const piece = _get_backbuf_source_piece(backbuf, op);
+  if(IS_NULL_PTR(piece) || !dt_dev_pixelpipe_cache_peek_gui(darktable.develop->preview_pipe, piece, &data, &entry, NULL, NULL, NULL))
+    return;
+
+  dt_dev_pixelpipe_cache_rdlock_entry(darktable.pixelpipe_cache, TRUE, entry);
 
   uint32_t *bins = calloc(4 * HISTOGRAM_BINS, sizeof(uint32_t));
-  if(bins == NULL) 
+  if(IS_NULL_PTR(bins)) 
   {
-    dt_dev_pixelpipe_cache_close_read_only(darktable.pixelpipe_cache, dt_dev_backbuf_get_hash(backbuf), entry);
+    dt_dev_pixelpipe_cache_rdlock_entry(darktable.pixelpipe_cache, FALSE, entry);
     return;
   }
 
   if(dt_conf_get_bool("ui_last/colorpicker_restrict_histogram"))
   {
     // Bin only areas within color pickers
-    GSList *samples = darktable.lib->proxy.colorpicker.live_samples;
+    GSList *samples = darktable.develop->color_picker.samples;
     while(samples)
     {
       dt_colorpicker_sample_t *sample = samples->data;
@@ -393,16 +777,16 @@ static void _process_histogram(dt_backbuf_t *backbuf, cairo_t *cr, const int wid
       samples = g_slist_next(samples);
     }
 
-    if(darktable.lib->proxy.colorpicker.picker_proxy)
+    if(darktable.develop->color_picker.picker)
       _bin_pickers_histogram(data, backbuf->width, backbuf->height,
-                             bins, darktable.lib->proxy.colorpicker.primary_sample);
+                             bins, darktable.develop->color_picker.primary_sample);
   }
   else
   {
     _bin_pixels_histogram_in_roi(data, bins, 0, backbuf->width, 0, backbuf->height, width);
   }
 
-  dt_dev_pixelpipe_cache_close_read_only(darktable.pixelpipe_cache, dt_dev_backbuf_get_hash(backbuf), entry);
+  dt_dev_pixelpipe_cache_rdlock_entry(darktable.pixelpipe_cache, FALSE, entry);
 
   uint32_t overall_histogram_max = _find_max_histogram(bins, 4 * HISTOGRAM_BINS);
 
@@ -447,12 +831,7 @@ static inline void _bin_pixels_waveform_in_roi(const float *const restrict image
                                                const gboolean vertical)
 {
   // Process
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-        dt_omp_firstprivate(image, binning_size, vertical, min_x, min_y, max_x, max_y, width) \
-        shared(bins) \
-        schedule(static) collapse(3)
-#endif
+  __OMP_PARALLEL_FOR__(shared(bins)  collapse(3))
   for(size_t i = min_y; i < max_y; i++)
     for(size_t j = min_x; j < max_x; j++)
       for(size_t c = 0; c < 3; c++)
@@ -494,18 +873,13 @@ static inline void _bin_pixels_waveform(const float *const restrict image, uint3
                                         const gboolean vertical)
 {
   // Init
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-        aligned(bins: 64) \
-        dt_omp_firstprivate(bins, binning_size) \
-        schedule(static)
-#endif
+  __OMP_FOR_SIMD__(aligned(bins: 64) )
   for(size_t k = 0; k < binning_size; k++) bins[k] = 0;
 
   if(dt_conf_get_bool("ui_last/colorpicker_restrict_histogram"))
   {
     // Bin only areas within color pickers
-    GSList *samples = darktable.lib->proxy.colorpicker.live_samples;
+    GSList *samples = darktable.develop->color_picker.samples;
     while(samples)
     {
       dt_colorpicker_sample_t *sample = samples->data;
@@ -513,8 +887,9 @@ static inline void _bin_pixels_waveform(const float *const restrict image, uint3
       samples = g_slist_next(samples);
     }
 
-    if(darktable.lib->proxy.colorpicker.picker_proxy)
-      _bin_pickers_waveforms(image, bins, width, height, binning_size, vertical, darktable.lib->proxy.colorpicker.primary_sample);
+    if(darktable.develop->color_picker.picker)
+      _bin_pickers_waveforms(image, bins, width, height, binning_size, vertical,
+                             darktable.develop->color_picker.primary_sample);
   }
   else
   {
@@ -527,12 +902,7 @@ static void _create_waveform_image(const uint32_t *const restrict bins, uint8_t 
                                    const uint32_t max_hist,
                                    const size_t width, const size_t height)
 {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-        aligned(image, bins: 64) \
-        dt_omp_firstprivate(image, height, width, bins, max_hist) \
-        schedule(static)
-#endif
+  __OMP_FOR_SIMD__(aligned(image, bins: 64) )
   for(size_t k = 0; k < height * width * 4; k += 4)
   {
     image[k + 3] = 255; // alpha
@@ -548,26 +918,19 @@ static void _mask_waveform(const uint8_t *const restrict image, uint8_t *const r
 {
   // Channel masking, aka extract the desired channel out of the RGBa image
   uint8_t mask[4] = { 0, 0, 0, 0 };
-  for(size_t k = 0; k < 4; k++)
-    if(k == channel) mask[k] = 1;
+  mask[channel] = 1;
 
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-        dt_omp_firstprivate(image, masked, height, width, mask) \
-        schedule(static)
-#endif
-    for(size_t i = 0; i < height; i++)
-      for(size_t j = 0; j < width; j++)
-      {
-        const size_t index = (i * width + j) * 4;
-        const uint8_t *const restrict pixel_in = image + index;
-        uint8_t *const restrict pixel_out = masked + index;
+  __OMP_PARALLEL_FOR__(collapse(2))
+  for(size_t i = 0; i < height; i++)
+    for(size_t j = 0; j < width; j++)
+    {
+      const size_t index = (i * width + j) * 4;
+      const uint8_t *const restrict pixel_in = image + index;
+      uint8_t *const restrict pixel_out = masked + index;
 
-#ifdef _OPENMP
-#pragma omp simd aligned(mask, pixel_in, pixel_out: 16)
-#endif
-        for(size_t c = 0; c < 4; c++) pixel_out[c] = pixel_in[c] * mask[c];
-      }
+      __OMP_SIMD__(aligned(mask, pixel_in, pixel_out: 16))
+      for(size_t c = 0; c < 4; c++) pixel_out[c] = pixel_in[c] * mask[c];
+    }
 }
 
 static void _paint_waveform(cairo_t *cr, uint8_t *const restrict image, const int width, const int height, const size_t img_width, const size_t img_height, const gboolean vertical)
@@ -620,13 +983,16 @@ static void _paint_parade(cairo_t *cr, uint8_t *const restrict image, const int 
 }
 
 
-static void _process_waveform(dt_backbuf_t *backbuf, cairo_t *cr, const int width, const int height, const gboolean vertical, const gboolean parade)
+static void _process_waveform(dt_backbuf_t *backbuf, const char *op, cairo_t *cr, const int width,
+                              const int height, const gboolean vertical, const gboolean parade)
 {
-  struct dt_pixel_cache_entry_t *entry;
-  dt_develop_t *dev = darktable.develop;
-  void *data = dt_dev_pixelpipe_cache_get_read_only(darktable.pixelpipe_cache, dt_dev_backbuf_get_hash(backbuf),
-                                                    &entry, dev, dev->preview_pipe);
-  if(!data) return;
+  struct dt_pixel_cache_entry_t *entry = NULL;
+  void *data = NULL;
+  const dt_dev_pixelpipe_iop_t *const piece = _get_backbuf_source_piece(backbuf, op);
+  if(IS_NULL_PTR(piece) || !dt_dev_pixelpipe_cache_peek_gui(darktable.develop->preview_pipe, piece, &data, &entry, NULL, NULL, NULL))
+    return;
+
+  dt_dev_pixelpipe_cache_rdlock_entry(darktable.pixelpipe_cache, TRUE, entry);
 
   const size_t binning_size = (vertical) ? 4 * TONES * backbuf->height : 4 * TONES * backbuf->width;
   uint32_t *const restrict bins = dt_pixelpipe_cache_alloc_align_cache(
@@ -635,7 +1001,7 @@ static void _process_waveform(dt_backbuf_t *backbuf, cairo_t *cr, const int widt
   uint8_t *const restrict image = dt_pixelpipe_cache_alloc_align_cache(
       binning_size * sizeof(uint8_t),
       0);
-  if(image == NULL || bins == NULL) goto error;
+  if(IS_NULL_PTR(image) || IS_NULL_PTR(bins)) goto error;
 
   // 1. Pixel binning along columns/rows, aka compute a column/row-wise histogram
   _bin_pixels_waveform(data, bins, backbuf->width, backbuf->height, binning_size, vertical);
@@ -673,7 +1039,7 @@ static void _process_waveform(dt_backbuf_t *backbuf, cairo_t *cr, const int widt
 error:;
   dt_pixelpipe_cache_free_align(bins);
   dt_pixelpipe_cache_free_align(image);
-  dt_dev_pixelpipe_cache_close_read_only(darktable.pixelpipe_cache, dt_dev_backbuf_get_hash(backbuf), entry);
+  dt_dev_pixelpipe_cache_rdlock_entry(darktable.pixelpipe_cache, FALSE, entry);
 }
 
 static float _Luv_to_vectorscope_coord_zoom(const float value, const float zoom)
@@ -696,15 +1062,11 @@ static void _bin_pixels_vectorscope_in_roi(const float *const restrict image, ui
 {
 #ifdef _OPENMP
 #ifndef _WIN32
-#pragma omp parallel for default(none) \
-        dt_omp_firstprivate(image, zoom, d, min_x, max_x, min_y, max_y, width) \
-        reduction(+: vectorscope[0: HISTOGRAM_BINS * HISTOGRAM_BINS]) \
-        schedule(static)
+#pragma omp parallel for default(firstprivate) \
+        reduction(+: vectorscope[0: HISTOGRAM_BINS * HISTOGRAM_BINS]) 
 #else
-#pragma omp parallel for default(none) \
-        dt_omp_firstprivate(image, zoom, d, min_x, max_x, min_y, max_y, width) \
-        shared(vectorscope) \
-        schedule(static)
+#pragma omp parallel for default(firstprivate) \
+        shared(vectorscope) 
 #endif
 #endif
   for(size_t i = min_y; i < max_y; i++)
@@ -754,12 +1116,7 @@ static void _create_vectorscope_image(const uint32_t *const restrict vectorscope
                                       const uint32_t max_hist, const float zoom)
 {
   const dt_iop_order_iccprofile_info_t *const profile = darktable.develop->preview_pipe->output_profile_info;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-        dt_omp_firstprivate(image, vectorscope, profile, max_hist, zoom) \
-        schedule(static) collapse(2)
-#endif
+  __OMP_PARALLEL_FOR__(collapse(2))
   for(size_t i = 0; i < HISTOGRAM_BINS; i++)
     for(size_t j = 0; j < HISTOGRAM_BINS; j++)
     {
@@ -793,18 +1150,13 @@ static void _bin_vectorscope(const float *const restrict image, uint32_t *const 
                              const size_t width, const size_t height,
                              const float zoom, dt_lib_histogram_t *d)
 {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-        aligned(vectorscope: 64) \
-        dt_omp_firstprivate(vectorscope) \
-        schedule(static)
-#endif
+  __OMP_FOR_SIMD__(aligned(vectorscope: 64) )
   for(size_t k = 0; k < HISTOGRAM_BINS * HISTOGRAM_BINS; k++) vectorscope[k] = 0;
 
   if(dt_conf_get_bool("ui_last/colorpicker_restrict_histogram"))
   {
     // Bin only areas within color pickers
-    GSList *samples = darktable.lib->proxy.colorpicker.live_samples;
+    GSList *samples = darktable.develop->color_picker.samples;
     while(samples)
     {
       dt_colorpicker_sample_t *sample = samples->data;
@@ -812,9 +1164,9 @@ static void _bin_vectorscope(const float *const restrict image, uint32_t *const 
       samples = g_slist_next(samples);
     }
 
-    if(darktable.lib->proxy.colorpicker.picker_proxy)
+    if(darktable.develop->color_picker.picker)
       _bin_pickers_vectorscope(image, vectorscope, width, height, zoom, d,
-                               darktable.lib->proxy.colorpicker.primary_sample);
+                               darktable.develop->color_picker.primary_sample);
   }
   else
   {
@@ -824,16 +1176,19 @@ static void _bin_vectorscope(const float *const restrict image, uint32_t *const 
 }
 
 
-static void _process_vectorscope(dt_backbuf_t *backbuf, cairo_t *cr, const int width, const int height, const float zoom, dt_lib_histogram_t *d)
+static void _process_vectorscope(dt_backbuf_t *backbuf, const char *op, cairo_t *cr, const int width,
+                                 const int height, const float zoom, dt_lib_histogram_t *d)
 {
   dt_iop_order_iccprofile_info_t *profile = darktable.develop->preview_pipe->output_profile_info;
-  if(profile == NULL) return;
+  if(IS_NULL_PTR(profile)) return;
 
-  struct dt_pixel_cache_entry_t *entry;
-  dt_develop_t *dev = darktable.develop;
-  void *data = dt_dev_pixelpipe_cache_get_read_only(darktable.pixelpipe_cache, dt_dev_backbuf_get_hash(backbuf),
-                                                    &entry, dev, dev->pipe);
-  if(!data) return;
+  struct dt_pixel_cache_entry_t *entry = NULL;
+  void *data = NULL;
+  const dt_dev_pixelpipe_iop_t *const piece = _get_backbuf_source_piece(backbuf, op);
+  if(IS_NULL_PTR(piece) || !dt_dev_pixelpipe_cache_peek_gui(darktable.develop->preview_pipe, piece, &data, &entry, NULL, NULL, NULL))
+    return;
+
+  dt_dev_pixelpipe_cache_rdlock_entry(darktable.pixelpipe_cache, TRUE, entry);
 
   uint32_t *const restrict vectorscope = dt_pixelpipe_cache_alloc_align_cache(
       HISTOGRAM_BINS * HISTOGRAM_BINS * sizeof(uint32_t),
@@ -841,7 +1196,7 @@ static void _process_vectorscope(dt_backbuf_t *backbuf, cairo_t *cr, const int w
   uint8_t *const restrict image = dt_pixelpipe_cache_alloc_align_cache(
       4 * HISTOGRAM_BINS * HISTOGRAM_BINS * sizeof(uint8_t),
       0);
-  if(vectorscope == NULL || image == NULL) goto error;
+  if(IS_NULL_PTR(vectorscope) || IS_NULL_PTR(image)) goto error;
 
   _bin_vectorscope(data, vectorscope, backbuf->width, backbuf->height, zoom, d);
 
@@ -992,7 +1347,7 @@ static void _process_vectorscope(dt_backbuf_t *backbuf, cairo_t *cr, const int w
 error:;
   dt_pixelpipe_cache_free_align(image);
   dt_pixelpipe_cache_free_align(vectorscope);
-  dt_dev_pixelpipe_cache_close_read_only(darktable.pixelpipe_cache, dt_dev_backbuf_get_hash(backbuf), entry);
+  dt_dev_pixelpipe_cache_rdlock_entry(darktable.pixelpipe_cache, FALSE, entry);
 }
 
 gboolean _needs_recompute(dt_lib_histogram_t *d, const int width, const int height)
@@ -1003,7 +1358,7 @@ gboolean _needs_recompute(dt_lib_histogram_t *d, const int width, const int heig
   gboolean size_match = (d->cache.width == width && d->cache.height == height);
   gboolean zoom_match = (d->cache.zoom == d->zoom);
   gboolean view_match = (d->cache.view == view);
-  gboolean has_surface = (d->cst != NULL);
+  gboolean has_surface = (!IS_NULL_PTR(d->cst));
   return !(hash_match && size_match && zoom_match && view_match && has_surface);
 }
 
@@ -1013,7 +1368,7 @@ static gboolean _draw_callback(GtkWidget *widget, cairo_t *crf, gpointer user_da
   // Note: the draw callback is called from our own callback (mapped to "preview pipe finished recomputing" signal)
   // but is also called by Gtk when the main window is resized, exposed, etc.
   dt_lib_histogram_t *d = (dt_lib_histogram_t *)user_data;
-  if(d->cst == NULL) return 1;
+  if(IS_NULL_PTR(d->cst)) return 1;
   cairo_set_source_surface(crf, d->cst, 0, 0);
   cairo_paint(crf);
   return 0;
@@ -1030,7 +1385,7 @@ void _get_allocation_size(dt_lib_histogram_t *d, int *width, int *height)
 
 gboolean _redraw_surface(dt_lib_histogram_t *d)
 {
-  if(d->cst == NULL) return 1;
+  if(IS_NULL_PTR(d->cst)) return 1;
 
   dt_times_t start;
   dt_get_times(&start);
@@ -1056,32 +1411,32 @@ gboolean _redraw_surface(dt_lib_histogram_t *d)
   {
     case DT_LIB_HISTOGRAM_SCOPE_HISTOGRAM:
     {
-      _process_histogram(d->backbuf, cr, width, height);
+      _process_histogram(d->backbuf, d->op, cr, width, height);
       break;
     }
     case DT_LIB_HISTOGRAM_SCOPE_WAVEFORM_HORIZONTAL:
     {
-      _process_waveform(d->backbuf, cr, width, height, FALSE, FALSE);
+      _process_waveform(d->backbuf, d->op, cr, width, height, FALSE, FALSE);
       break;
     }
     case DT_LIB_HISTOGRAM_SCOPE_WAVEFORM_VERTICAL:
     {
-      _process_waveform(d->backbuf, cr, width, height, TRUE, FALSE);
+      _process_waveform(d->backbuf, d->op, cr, width, height, TRUE, FALSE);
       break;
     }
     case DT_LIB_HISTOGRAM_SCOPE_PARADE_HORIZONTAL:
     {
-      _process_waveform(d->backbuf, cr, width, height, FALSE, TRUE);
+      _process_waveform(d->backbuf, d->op, cr, width, height, FALSE, TRUE);
       break;
     }
     case DT_LIB_HISTOGRAM_SCOPE_PARADE_VERTICAL:
     {
-      _process_waveform(d->backbuf, cr, width, height, TRUE, TRUE);
+      _process_waveform(d->backbuf, d->op, cr, width, height, TRUE, TRUE);
       break;
     }
     case DT_LIB_HISTOGRAM_SCOPE_VECTORSCOPE:
     {
-      _process_vectorscope(d->backbuf, cr, width, height, d->zoom, d);
+      _process_vectorscope(d->backbuf, d->op, cr, width, height, d->zoom, d);
       break;
     }
     default:
@@ -1112,99 +1467,217 @@ gboolean _trigger_recompute(dt_lib_histogram_t *d)
     d->cst = dt_cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
     _redraw_surface(d);
     // Don't send gtk_queue_redraw event from here, catch the return value and do it in the calling function
+    //fprintf(stdout, "recreate histograms\n");
     return 1;
   }
 
   return 0;
 }
 
-static void _pixelpipe_pick_from_image(const dt_backbuf_t *const backbuf,
-                                       dt_colorpicker_sample_t *const sample, dt_lib_histogram_t *d)
+static const dt_dev_pixelpipe_iop_t *_get_backbuf_source_piece(const dt_backbuf_t *backbuf, const char *op)
 {
-  struct dt_pixel_cache_entry_t *entry;
-  dt_develop_t *dev = darktable.develop;
-  void *data = dt_dev_pixelpipe_cache_get_read_only(darktable.pixelpipe_cache, dt_dev_backbuf_get_hash(backbuf),
-                                                    &entry, dev, dev->preview_pipe);
-  if(!data) return;
+  dt_develop_t *const dev = darktable.develop;
+  dt_dev_pixelpipe_t *const pipe = dev ? dev->preview_pipe : NULL;
+  if(IS_NULL_PTR(dev) || IS_NULL_PTR(pipe) || IS_NULL_PTR(op) || IS_NULL_PTR(backbuf)) return NULL;
+
+  dt_iop_module_t *const module = dt_iop_get_module_by_op_priority(dev->iop, op, 0);
+  if(IS_NULL_PTR(module)) return NULL;
+
+  const dt_dev_pixelpipe_iop_t *piece = dt_dev_pixelpipe_get_module_piece(pipe, module);
+  if(IS_NULL_PTR(piece)) return NULL;
+
+  if(!strcmp(op, "gamma"))
+    piece = dt_dev_pixelpipe_get_prev_enabled_piece(pipe, piece);
+
+  if(IS_NULL_PTR(piece)) return NULL;
+  if(piece->global_hash != dt_dev_backbuf_get_hash(backbuf)) return NULL;
+
+  return piece;
+}
+
+/**
+ * @brief Resolve the live preview-stage geometry behind one global histogram backbuffer.
+ *
+ * @details
+ * The global histogram stores only the published cache hash, width, and height. For color-picker
+ * sampling we also need the live ROI, colorspace, and backtransform cut in the current preview
+ * graph so the picker point drawn on the final image is mapped back to the selected histogram
+ * stage before sampling pixels.
+ *
+ * We reopen the stage by operation name because the current preview graph is authoritative once the
+ * preview run completed. The published backbuffer hash must still match that live graph, otherwise
+ * we are looking at stale geometry and should not trust it.
+ *
+ * @param op Histogram stage operation name.
+ * @param backbuf Published histogram backbuffer for @p op.
+ * @param roi Output ROI of the sampled stage buffer.
+ * @param dsc Buffer descriptor of the sampled stage buffer.
+ * @param iop_order IOP order at which to stop the backtransform.
+ * @param direction Inclusive/exclusive transform cut matching the sampled stage buffer.
+ *
+ * @return TRUE when the live preview graph still matches the published backbuffer, FALSE otherwise.
+ */
+static gboolean _resolve_backbuf_sampling_source(const char *const op, const dt_backbuf_t *const backbuf,
+                                                 dt_iop_roi_t *const roi, dt_iop_buffer_dsc_t *const dsc,
+                                                 double *const iop_order, int *const direction)
+{
+  dt_develop_t *const dev = darktable.develop;
+  dt_dev_pixelpipe_t *const pipe = dev ? dev->preview_pipe : NULL;
+  if(IS_NULL_PTR(dev) || IS_NULL_PTR(pipe) || IS_NULL_PTR(op) || IS_NULL_PTR(backbuf) || IS_NULL_PTR(roi) || IS_NULL_PTR(dsc) || !iop_order || IS_NULL_PTR(direction)) return FALSE;
+
+  dt_iop_module_t *const module = dt_iop_get_module_by_op_priority(dev->iop, op, 0);
+  if(IS_NULL_PTR(module)) return FALSE;
+
+  const dt_dev_pixelpipe_iop_t *const piece = dt_dev_pixelpipe_get_module_piece(pipe, module);
+  if(IS_NULL_PTR(piece)) return FALSE;
+
+  uint64_t hash = piece->global_hash;
+  *roi = piece->roi_out;
+  *dsc = piece->dsc_out;
+  *iop_order = module->iop_order;
+  *direction = DT_DEV_TRANSFORM_DIR_FORW_EXCL;
+
+  if(!strcmp(op, "gamma"))
+  {
+    const dt_dev_pixelpipe_iop_t *const previous_piece = dt_dev_pixelpipe_get_prev_enabled_piece(pipe, piece);
+    if(IS_NULL_PTR(previous_piece)) return FALSE;
+
+    hash = previous_piece->global_hash;
+    *roi = previous_piece->roi_out;
+    *dsc = previous_piece->dsc_out;
+    *direction = DT_DEV_TRANSFORM_DIR_FORW_INCL;
+  }
+
+  return hash == dt_dev_backbuf_get_hash(backbuf);
+}
+
+static void _pixelpipe_pick_from_image(const dt_backbuf_t *const backbuf,
+                                       dt_colorpicker_sample_t *const sample, dt_lib_histogram_t *d,
+                                       const char *op)
+{
+  struct dt_pixel_cache_entry_t *entry = NULL;
+  void *data = NULL;
+  const dt_dev_pixelpipe_iop_t *const source_piece = _get_backbuf_source_piece(backbuf, op);
+  if(IS_NULL_PTR(source_piece)
+     || !dt_dev_pixelpipe_cache_peek_gui(darktable.develop->preview_pipe, source_piece, &data, &entry, NULL, NULL, NULL))
+    return;
+
+  dt_dev_pixelpipe_cache_rdlock_entry(darktable.pixelpipe_cache, TRUE, entry);
 
   const float *const pixel = data;
+  dt_iop_buffer_dsc_t dsc = {
+    .channels = 4,
+    .datatype = TYPE_FLOAT,
+    .bpp = 4 * sizeof(float),
+    .cst = IOP_CS_RGB
+  };
+  dt_iop_roi_t roi = {
+    .x = 0,
+    .y = 0,
+    .width = (int)backbuf->width,
+    .height = (int)backbuf->height,
+    .scale = 1.0
+  };
+  double iop_order = 0.0;
+  int direction = DT_DEV_TRANSFORM_DIR_FORW_EXCL;
+  const gboolean have_live_stage = _resolve_backbuf_sampling_source(op, backbuf, &roi, &dsc, &iop_order, &direction);
+  int box[4];
 
-  if(sample->size == DT_LIB_COLORPICKER_SIZE_BOX)
+  if(have_live_stage)
   {
-    const size_t box[4] = {
-      CLAMP((size_t)roundf(sample->box[0] * backbuf->width), 0, backbuf->width - 1),
-      CLAMP((size_t)roundf(sample->box[1] * backbuf->height), 0, backbuf->height - 1),
-      CLAMP((size_t)roundf(sample->box[2] * backbuf->width), 0, backbuf->width - 1),
-      CLAMP((size_t)roundf(sample->box[3] * backbuf->height), 0, backbuf->height - 1)
-    };
-    const float box_pixels = (float)((box[3] - box[1] + 1) * (box[2] - box[0] + 1));
-    lib_colorpicker_sample_statistics picked_rgb = { { 0.0f },
-                                                     { FLT_MAX, FLT_MAX, FLT_MAX },
-                                                     { FLT_MIN, FLT_MIN, FLT_MIN } };
+    dt_boundingbox_t fbox = { 0.0f };
 
-    // Init the picker color conversions
-    memcpy(sample->display, picked_rgb, sizeof(lib_colorpicker_sample_statistics));
-    memcpy(sample->lab, picked_rgb, sizeof(lib_colorpicker_sample_statistics));
+    if(sample->size == DT_LIB_COLORPICKER_SIZE_BOX)
+    {
+      memcpy(fbox, sample->box, sizeof(float) * 4);
+      dt_dev_coordinates_image_norm_to_preview_abs(darktable.develop, fbox, 2);
+    }
+    else if(sample->size == DT_LIB_COLORPICKER_SIZE_POINT)
+    {
+      fbox[0] = sample->point[0];
+      fbox[1] = sample->point[1];
+      dt_dev_coordinates_image_norm_to_preview_abs(darktable.develop, fbox, 1);
+      fbox[2] = fbox[0];
+      fbox[3] = fbox[1];
+    }
 
-    for(size_t j = box[1]; j <= box[3]; j++)
-      for(size_t i = box[0]; i <= box[2]; i++)
-        for_each_channel(ch, aligned(picked_rgb) aligned(pixel:64))
-        {
-          const float v = pixel[4 * (backbuf->width * j + i) + ch];
+    dt_dev_distort_backtransform_plus(darktable.develop->preview_pipe, iop_order,
+                                      direction, fbox, 2);
 
-          picked_rgb[DT_LIB_COLORPICKER_STATISTIC_MIN][ch]
-              = MIN(picked_rgb[DT_LIB_COLORPICKER_STATISTIC_MIN][ch], v);
+    /* The backtransform returns stage coordinates in the sampled piece space. Shift them by the
+       stage ROI before clamping so the picker box matches the published cache window exactly. */
+    fbox[0] -= roi.x;
+    fbox[1] -= roi.y;
+    fbox[2] -= roi.x;
+    fbox[3] -= roi.y;
 
-          picked_rgb[DT_LIB_COLORPICKER_STATISTIC_MAX][ch]
-              = MAX(picked_rgb[DT_LIB_COLORPICKER_STATISTIC_MAX][ch], v);
+    box[0] = fminf(fbox[0], fbox[2]);
+    box[1] = fminf(fbox[1], fbox[3]);
+    box[2] = fmaxf(fbox[0], fbox[2]);
+    box[3] = fmaxf(fbox[1], fbox[3]);
 
-          picked_rgb[DT_LIB_COLORPICKER_STATISTIC_MEAN][ch] += v / box_pixels;
-        }
+    if(sample->size == DT_LIB_COLORPICKER_SIZE_POINT)
+    {
+      box[2] += 1;
+      box[3] += 1;
+    }
 
-    memcpy(sample->scope, picked_rgb, sizeof(lib_colorpicker_sample_statistics));
+    box[0] = MIN(roi.width - 1, MAX(0, box[0]));
+    box[1] = MIN(roi.height - 1, MAX(0, box[1]));
+    box[2] = MIN(roi.width - 1, MAX(0, box[2]));
+    box[3] = MIN(roi.height - 1, MAX(0, box[3]));
+  }
+  else
+  {
+    dt_dev_pixelpipe_cache_rdlock_entry(darktable.pixelpipe_cache, FALSE, entry);
+    return;
+  }
 
-    // We don't convert min/max to other color spaces because min/max are channel-wise,
-    // so taking the min/max of each channel for all pixels does not represent a color
-    _scope_pixel_to_display_rgb(sample->scope[DT_LIB_COLORPICKER_STATISTIC_MEAN], sample->display[DT_LIB_COLORPICKER_STATISTIC_MEAN], d);
+  dt_aligned_pixel_t mean = { 0.0f };
+  dt_aligned_pixel_t min = { INFINITY, INFINITY, INFINITY, INFINITY };
+  dt_aligned_pixel_t max = { -INFINITY, -INFINITY, -INFINITY, -INFINITY };
+
+  dt_color_picker_helper(&dsc, pixel, &roi, box, mean, min, max, dsc.cst, IOP_CS_RGB, NULL);
+
+  for_four_channels(k)
+  {
+    sample->scope[DT_LIB_COLORPICKER_STATISTIC_MEAN][k] = mean[k];
+    sample->scope[DT_LIB_COLORPICKER_STATISTIC_MIN][k] = min[k];
+    sample->scope[DT_LIB_COLORPICKER_STATISTIC_MAX][k] = max[k];
+  }
+
+  dt_lib_histogram_t scope = *d;
+  scope.op = op;
+
+  for(dt_lib_colorpicker_statistic_t k = 0; k < DT_LIB_COLORPICKER_STATISTIC_N; k++)
+  {
+    _scope_pixel_to_display_rgb(sample->scope[k], sample->display[k], &scope);
 
     dt_aligned_pixel_t XYZ = { 0.f };
-    _scope_pixel_to_xyz(sample->scope[DT_LIB_COLORPICKER_STATISTIC_MEAN], XYZ, d);
-    dt_XYZ_to_Lab(XYZ, sample->lab[DT_LIB_COLORPICKER_STATISTIC_MEAN]);
-  }
-  else if(sample->size == DT_LIB_COLORPICKER_SIZE_POINT)
-  {
-    const size_t x = CLAMP((size_t)roundf(sample->point[0] * backbuf->width), 0, backbuf->width - 1);
-    const size_t y = CLAMP((size_t)roundf(sample->point[1] * backbuf->height), 0, backbuf->height - 1);
-    for(dt_lib_colorpicker_statistic_t k = 0; k < DT_LIB_COLORPICKER_STATISTIC_N; k++)
-    {
-      for_each_channel(ch, aligned(pixel:64))
-        sample->scope[k][ch] = pixel[4 * (backbuf->width * y + x) + ch];
-
-      _scope_pixel_to_display_rgb(sample->scope[k], sample->display[k], d);
-
-      dt_aligned_pixel_t XYZ = { 0.f };
-      _scope_pixel_to_xyz(sample->scope[k], XYZ, d);
-      dt_XYZ_to_Lab(XYZ, sample->lab[k]);
-    }
+    _scope_pixel_to_xyz(sample->scope[k], XYZ, &scope);
+    dt_XYZ_to_Lab(XYZ, sample->lab[k]);
   }
 
-  dt_dev_pixelpipe_cache_close_read_only(darktable.pixelpipe_cache, dt_dev_backbuf_get_hash(backbuf), entry);
-
-  memcpy(sample->display, sample->scope, sizeof(lib_colorpicker_sample_statistics));
+  dt_dev_pixelpipe_cache_rdlock_entry(darktable.pixelpipe_cache, FALSE, entry);
 }
 
 static void _pixelpipe_pick_samples(dt_lib_histogram_t *d)
 {
-  GSList *samples = darktable.lib->proxy.colorpicker.live_samples;
+  GSList *samples = darktable.develop->color_picker.samples;
   while(samples)
   {
     dt_colorpicker_sample_t *sample = samples->data;
-    if(!sample->locked) _pixelpipe_pick_from_image(d->backbuf, sample, d);
+    if(!sample->locked)
+    {
+      const char *const op = sample->backbuf_op[0] ? sample->backbuf_op : d->op;
+      dt_backbuf_t *const backbuf = _get_histogram_backbuf(darktable.develop, op);
+      if(backbuf) _pixelpipe_pick_from_image(backbuf, sample, d, op);
+    }
     samples = g_slist_next(samples);
   }
 
-  if(darktable.lib->proxy.colorpicker.picker_proxy)
-    _pixelpipe_pick_from_image(d->backbuf, darktable.lib->proxy.colorpicker.primary_sample, d);
+  if(darktable.develop->color_picker.picker)
+    _pixelpipe_pick_from_image(d->backbuf, darktable.develop->color_picker.primary_sample, d, d->op);
 }
 
 
@@ -1219,37 +1692,63 @@ static void _update_everything(dt_lib_module_t *self)
 
   _pixelpipe_pick_samples(d);
 
-  for(GSList *samples = darktable.lib->proxy.colorpicker.live_samples;
+  for(GSList *samples = darktable.develop->color_picker.samples;
       samples;
       samples = g_slist_next(samples))
   {
     _update_sample_label(self, samples->data);
   }
 
-  _update_sample_label(self, &d->primary_sample);
+  _update_sample_label(self, darktable.develop->color_picker.primary_sample);
 
   // allow live sample button to work for iop samples
   gtk_widget_set_sensitive(GTK_WIDGET(d->add_sample_button),
-                           darktable.lib->proxy.colorpicker.picker_proxy != NULL);
+                           !IS_NULL_PTR(darktable.develop->color_picker.picker));
 }
 
-
-// this is only called in darkroom view when preview pipe finishes
-static void _lib_histogram_preview_updated_callback(gpointer instance, dt_lib_module_t *self)
+static gboolean _refresh_global_picker(dt_lib_module_t *self)
 {
+  if(IS_NULL_PTR(self) || IS_NULL_PTR(self->data)) return FALSE;
+
   dt_lib_histogram_t *d = (dt_lib_histogram_t *)self->data;
-  d->backbuf = _get_backuf(darktable.develop, d->op);
+  d->backbuf = _get_histogram_backbuf(darktable.develop, d->op);
+
+  if(!_is_backbuf_ready(d)) return FALSE;
+
   _update_everything(self);
+  return TRUE;
 }
 
 
+static void _lib_histogram_history_resync_callback(gpointer instance, dt_lib_module_t *self)
+{
+  (void)instance;
+  _sync_pending_histogram_hashes(self);
+}
+
+static void _lib_histogram_cacheline_ready_callback(gpointer instance, const guint64 hash, dt_lib_module_t *self)
+{
+  (void)instance;
+  dt_lib_histogram_t *d = (dt_lib_histogram_t *)self->data;
+  if(IS_NULL_PTR(d) || !_remove_pending_hash(d, hash)) return;
+
+  _schedule_histogram_refresh(self);
+}
+
+// this is only called in darkroom view when history was resynchronized
 void view_enter(struct dt_lib_module_t *self, struct dt_view_t *old_view, struct dt_view_t *new_view)
 {
   dt_lib_histogram_t *d = self->data;
   _reset_cache(d);
 
-  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED,
-                                  G_CALLBACK(_lib_histogram_preview_updated_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_HISTORY_RESYNC,
+                                  G_CALLBACK(_preview_history_resync_callback), NULL);
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_CACHELINE_READY,
+                                  G_CALLBACK(_preview_cacheline_ready_callback), NULL);
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_HISTORY_RESYNC,
+                                  G_CALLBACK(_lib_histogram_history_resync_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_CACHELINE_READY,
+                                  G_CALLBACK(_lib_histogram_cacheline_ready_callback), self);
 }
 
 void view_leave(struct dt_lib_module_t *self, struct dt_view_t *old_view, struct dt_view_t *new_view)
@@ -1257,7 +1756,18 @@ void view_leave(struct dt_lib_module_t *self, struct dt_view_t *old_view, struct
   dt_lib_histogram_t *d = self->data;
   _reset_cache(d);
 
-  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_lib_histogram_preview_updated_callback), self);
+  _clear_pending_preview_histograms();
+  _clear_pending_hashes(d);
+  if(d->refresh_idle_source != 0)
+  {
+    g_source_remove(d->refresh_idle_source);
+    d->refresh_idle_source = 0;
+  }
+
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_preview_history_resync_callback), NULL);
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_preview_cacheline_ready_callback), NULL);
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_lib_histogram_history_resync_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_lib_histogram_cacheline_ready_callback), self);
 }
 
 
@@ -1269,10 +1779,11 @@ void _stage_callback(GtkWidget *widget, dt_lib_module_t *self)
   dt_conf_set_string("plugin/darkroom/histogram/op", d->op);
 
   // Disable vectorscope for RAW stage
-  dt_bauhaus_combobox_entry_set_sensitive(d->display, DT_LIB_HISTOGRAM_SCOPE_VECTORSCOPE, strcmp(d->op, "demosaic"));
+  dt_bauhaus_combobox_entry_set_sensitive(d->display, DT_LIB_HISTOGRAM_SCOPE_VECTORSCOPE,
+                                          strcmp(d->op, "initialscale"));
 
-  d->backbuf = _get_backuf(darktable.develop, d->op);
-  _update_everything(self);
+  _refresh_preview_histograms(darktable.develop);
+  _sync_pending_histogram_hashes(self);
 }
 
 
@@ -1316,14 +1827,20 @@ static gboolean _area_scrolled_callback(GtkWidget *widget, GdkEventScroll *event
 void _set_params(dt_lib_histogram_t *d)
 {
   d->op = dt_conf_get_string_const("plugin/darkroom/histogram/op");
-  d->backbuf = _get_backuf(darktable.develop, d->op);
+  if(!strcmp(d->op, "demosaic"))
+  {
+    d->op = "initialscale";
+    dt_conf_set_string("plugin/darkroom/histogram/op", d->op);
+  }
+  d->backbuf = _get_histogram_backbuf(darktable.develop, d->op);
   d->zoom = fminf(fmaxf(dt_conf_get_float("plugin/darkroom/histogram/zoom"), 32.f), 252.f);
 
   // Disable RAW stage for non-RAW images
   dt_bauhaus_combobox_entry_set_sensitive(d->stage, 0, dt_image_is_raw(&darktable.develop->image_storage));
 
   // Disable vectorscope if RAW stage is selected
-  dt_bauhaus_combobox_entry_set_sensitive(d->display, DT_LIB_HISTOGRAM_SCOPE_VECTORSCOPE, strcmp(d->op, "demosaic"));
+  dt_bauhaus_combobox_entry_set_sensitive(d->display, DT_LIB_HISTOGRAM_SCOPE_VECTORSCOPE,
+                                          strcmp(d->op, "initialscale"));
 
   dt_bauhaus_combobox_set(d->display, dt_conf_get_int("plugin/darkroom/histogram/display"));
   dt_bauhaus_combobox_set(d->stage, _backbuf_op_to_int(d));
@@ -1424,25 +1941,17 @@ static void _picker_button_toggled(GtkToggleButton *button, dt_lib_histogram_t *
 
 static void _update_size(dt_lib_module_t *self, dt_lib_colorpicker_size_t size)
 {
-  dt_lib_histogram_t *d = self->data;
-  d->primary_sample.size = size;
+  darktable.develop->color_picker.primary_sample->size = size;
   _update_picker_output(self);
-}
-
-static void _update_samples_output(dt_lib_module_t *self)
-{
-  _update_everything(self);
 }
 
 /* set sample area proxy impl */
 
 static void _set_sample_box_area(dt_lib_module_t *self, const dt_boundingbox_t box)
 {
-  dt_lib_histogram_t *d = self->data;
-
   // primary sample always follows/represents current picker
   for(int k = 0; k < 4; k++)
-    d->primary_sample.box[k] = box[k];
+    darktable.develop->color_picker.primary_sample->box[k] = box[k];
 
   _update_size(self, DT_LIB_COLORPICKER_SIZE_BOX);
   _update_everything(self);
@@ -1450,11 +1959,9 @@ static void _set_sample_box_area(dt_lib_module_t *self, const dt_boundingbox_t b
 
 static void _set_sample_point(dt_lib_module_t *self, const float pos[2])
 {
-  dt_lib_histogram_t *d = self->data;
-
   // primary sample always follows/represents current picker
-  d->primary_sample.point[0] = pos[0];
-  d->primary_sample.point[1] = pos[1];
+  darktable.develop->color_picker.primary_sample->point[0] = pos[0];
+  darktable.develop->color_picker.primary_sample->point[1] = pos[1];
 
   _update_size(self, DT_LIB_COLORPICKER_SIZE_POINT);
   _update_everything(self);
@@ -1500,7 +2007,7 @@ static gboolean _sample_tooltip_callback(GtkWidget *widget, gint x, gint y, gboo
   g_strfreev(sample_parts);
 
   static GtkWidget *view = NULL;
-  if(!view)
+  if(IS_NULL_PTR(view))
   {
     view = gtk_text_view_new();
     dt_gui_add_class(view, "dt_transparent_background");
@@ -1525,7 +2032,7 @@ static void _statistic_changed(GtkWidget *widget, dt_lib_module_t *self)
 {
   dt_lib_histogram_t *d = self->data;
   d->statistic = dt_bauhaus_combobox_get(widget);
-  darktable.lib->proxy.colorpicker.statistic = (int)d->statistic;
+  darktable.develop->color_picker.statistic = (int)d->statistic;
   dt_conf_set_string("ui_last/colorpicker_mode", dt_lib_colorpicker_statistic_names[d->statistic]);
   _update_everything(self);
 }
@@ -1560,9 +2067,9 @@ static void _label_size_allocate_callback(GtkWidget *widget, GdkRectangle *alloc
 
 static gboolean _sample_enter_callback(GtkWidget *widget, GdkEvent *event, dt_colorpicker_sample_t *sample)
 {
-  if(darktable.lib->proxy.colorpicker.picker_proxy)
+  if(darktable.develop->color_picker.picker)
   {
-    darktable.lib->proxy.colorpicker.selected_sample = sample;
+    darktable.develop->color_picker.selected_sample = sample;
    	dt_control_queue_redraw_center();
   }
 
@@ -1573,9 +2080,9 @@ static gboolean _sample_leave_callback(GtkWidget *widget, GdkEvent *event, gpoin
 {
   if(event->crossing.detail == GDK_NOTIFY_INFERIOR) return FALSE;
 
-  if(darktable.lib->proxy.colorpicker.selected_sample)
+  if(darktable.develop->color_picker.selected_sample)
   {
-    darktable.lib->proxy.colorpicker.selected_sample = NULL;
+    darktable.develop->color_picker.selected_sample = NULL;
    	dt_control_queue_redraw_center();
   }
 
@@ -1585,8 +2092,8 @@ static gboolean _sample_leave_callback(GtkWidget *widget, GdkEvent *event, gpoin
 static void _remove_sample(dt_colorpicker_sample_t *sample)
 {
   gtk_widget_destroy(sample->container);
-  darktable.lib->proxy.colorpicker.live_samples
-    = g_slist_remove(darktable.lib->proxy.colorpicker.live_samples, (gpointer)sample);
+  darktable.develop->color_picker.samples
+    = g_slist_remove(darktable.develop->color_picker.samples, (gpointer)sample);
   dt_free(sample);
 }
 
@@ -1606,11 +2113,11 @@ static gboolean _live_sample_button(GtkWidget *widget, GdkEventButton *event, dt
   else if(event->button == 3)
   {
     // copy to active picker
-    dt_lib_module_t *self = darktable.lib->proxy.colorpicker.module;
-    dt_iop_color_picker_t *picker = darktable.lib->proxy.colorpicker.picker_proxy;
+    dt_lib_module_t *self = darktable.develop->color_picker.histogram_module;
+    dt_iop_color_picker_t *picker = darktable.develop->color_picker.picker;
 
     // no active picker, too much iffy GTK work to activate a default
-    if(!picker) return FALSE;
+    if(IS_NULL_PTR(picker)) return FALSE;
 
     if(sample->size == DT_LIB_COLORPICKER_SIZE_POINT)
       _set_sample_point(self, sample->point);
@@ -1627,13 +2134,16 @@ static gboolean _live_sample_button(GtkWidget *widget, GdkEventButton *event, dt
 static void _add_sample(GtkButton *widget, dt_lib_module_t *self)
 {
   dt_lib_histogram_t *d = self->data;
-  dt_colorpicker_sample_t *sample = (dt_colorpicker_sample_t *)malloc(sizeof(dt_colorpicker_sample_t));
 
-  if(!darktable.lib->proxy.colorpicker.picker_proxy)
+  if(IS_NULL_PTR(darktable.develop->color_picker.picker))
     return;
 
-  memcpy(sample, &d->primary_sample, sizeof(dt_colorpicker_sample_t));
+  dt_colorpicker_sample_t *sample = (dt_colorpicker_sample_t *)malloc(sizeof(dt_colorpicker_sample_t));
+  if(IS_NULL_PTR(sample)) return;
+
+  memcpy(sample, darktable.develop->color_picker.primary_sample, sizeof(dt_colorpicker_sample_t));
   sample->locked = FALSE;
+  g_strlcpy(sample->backbuf_op, d->op ? d->op : "", sizeof(sample->backbuf_op));
 
   sample->container = gtk_event_box_new();
   gtk_widget_add_events(sample->container, GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
@@ -1672,11 +2182,11 @@ static void _add_sample(GtkButton *widget, dt_lib_module_t *self)
   gtk_box_pack_start(GTK_BOX(d->samples_container), sample->container, FALSE, FALSE, 0);
   gtk_widget_show_all(sample->container);
 
-  darktable.lib->proxy.colorpicker.live_samples
-      = g_slist_append(darktable.lib->proxy.colorpicker.live_samples, sample);
+  darktable.develop->color_picker.samples
+      = g_slist_append(darktable.develop->color_picker.samples, sample);
 
   // remove emphasis on primary sample from mouseover on this button
-  darktable.lib->proxy.colorpicker.selected_sample = NULL;
+  darktable.develop->color_picker.selected_sample = NULL;
 
   // Updating the display
   _update_everything(self);
@@ -1685,7 +2195,7 @@ static void _add_sample(GtkButton *widget, dt_lib_module_t *self)
 static void _display_samples_changed(GtkToggleButton *button, dt_lib_module_t *self)
 {
   dt_conf_set_bool("ui_last/colorpicker_display_samples", gtk_toggle_button_get_active(button));
-  darktable.lib->proxy.colorpicker.display_samples = gtk_toggle_button_get_active(button);
+  darktable.develop->color_picker.display_samples = gtk_toggle_button_get_active(button);
   _update_everything(self);
   dt_control_queue_redraw_center();
 }
@@ -1693,13 +2203,14 @@ static void _display_samples_changed(GtkToggleButton *button, dt_lib_module_t *s
 static void _restrict_histogram_changed(GtkToggleButton *button, dt_lib_module_t *self)
 {
   dt_conf_set_bool("ui_last/colorpicker_restrict_histogram", gtk_toggle_button_get_active(button));
-  darktable.lib->proxy.colorpicker.restrict_histogram = gtk_toggle_button_get_active(button);
+  darktable.develop->color_picker.restrict_histogram = gtk_toggle_button_get_active(button);
   _update_everything(self);
 }
 
 void gui_reset(dt_lib_module_t *self)
 {
   dt_lib_histogram_t *d = self->data;
+  dt_colorpicker_sample_t *const primary_sample = darktable.develop->color_picker.primary_sample;
 
   dt_iop_color_picker_reset(NULL, FALSE);
 
@@ -1708,20 +2219,20 @@ void gui_reset(dt_lib_module_t *self)
   {
     for(int s = 0; s < DT_LIB_COLORPICKER_STATISTIC_N; s++)
     {
-      d->primary_sample.display[s][i] = 0.f;
-      d->primary_sample.scope[s][i] = 0.f;
-      d->primary_sample.lab[s][i] = 0.f;
+      primary_sample->display[s][i] = 0.f;
+      primary_sample->scope[s][i] = 0.f;
+      primary_sample->lab[s][i] = 0.f;
     }
-    d->primary_sample.label_rgb[i] = 0;
+    primary_sample->label_rgb[i] = 0;
   }
-  d->primary_sample.swatch.red = d->primary_sample.swatch.green
-    = d->primary_sample.swatch.blue = 0.0;
+  primary_sample->swatch.red = primary_sample->swatch.green
+    = primary_sample->swatch.blue = 0.0;
 
   _update_picker_output(self);
 
   // Removing any live samples
-  while(darktable.lib->proxy.colorpicker.live_samples)
-    _remove_sample(darktable.lib->proxy.colorpicker.live_samples->data);
+  while(darktable.develop->color_picker.samples)
+    _remove_sample(darktable.develop->color_picker.samples->data);
 
   // Resetting GUI elements
   dt_bauhaus_combobox_set(d->statistic_selector, 0);
@@ -1744,6 +2255,8 @@ void gui_init(dt_lib_module_t *self)
   if(d) memset(d, 0, sizeof(dt_lib_histogram_t));
   self->data = (void *)d;
   d->cst = NULL;
+  d->pending_hashes = g_array_new(FALSE, FALSE, sizeof(uint64_t));
+  d->refresh_idle_source = 0;
 
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   d->scope_draw = dtgtk_drawing_area_new_with_aspect_ratio(1.);
@@ -1777,19 +2290,13 @@ void gui_init(dt_lib_module_t *self)
   GtkWidget *label = dt_ui_section_label_new(_("Color picker"));
   gtk_box_pack_start(GTK_BOX(self->widget), label, TRUE, TRUE, 0);
 
-  // _update_samples_output() will update the RGB values
-  d->primary_sample.swatch.alpha = 1.0;
-
-  // Initializing proxy functions and data
-  darktable.lib->proxy.colorpicker.module = self;
-  darktable.lib->proxy.colorpicker.display_samples = dt_conf_get_bool("ui_last/colorpicker_display_samples");
-  darktable.lib->proxy.colorpicker.primary_sample = &d->primary_sample;
-  darktable.lib->proxy.colorpicker.picker_proxy = NULL;
-  darktable.lib->proxy.colorpicker.live_samples = NULL;
-  darktable.lib->proxy.colorpicker.update_panel = _update_picker_output;
-  darktable.lib->proxy.colorpicker.update_samples = _update_samples_output;
-  darktable.lib->proxy.colorpicker.set_sample_box_area = _set_sample_box_area;
-  darktable.lib->proxy.colorpicker.set_sample_point = _set_sample_point;
+  // The develop module owns the picker state because both the preview pipe and the GUI need to
+  // observe it. Histogram only binds its widgets to that shared state.
+  darktable.develop->color_picker.histogram_module = self;
+  darktable.develop->color_picker.refresh_global_picker = _refresh_global_picker;
+  darktable.develop->color_picker.display_samples = dt_conf_get_bool("ui_last/colorpicker_display_samples");
+  darktable.develop->color_picker.restrict_histogram = dt_conf_get_bool("ui_last/colorpicker_restrict_histogram");
+  darktable.develop->color_picker.primary_sample->swatch.alpha = 1.0;
 
   const char *str = dt_conf_get_string_const("ui_last/colorpicker_model");
   const char **names = dt_lib_colorpicker_model_names;
@@ -1836,29 +2343,34 @@ void gui_init(dt_lib_module_t *self)
   // The small sample, label and add button
   GtkWidget *sample_row_events = gtk_event_box_new();
   gtk_widget_add_events(sample_row_events, GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
-  g_signal_connect(G_OBJECT(sample_row_events), "enter-notify-event", G_CALLBACK(_sample_enter_callback), &d->primary_sample);
-  g_signal_connect(G_OBJECT(sample_row_events), "leave-notify-event", G_CALLBACK(_sample_leave_callback), &d->primary_sample);
+  g_signal_connect(G_OBJECT(sample_row_events), "enter-notify-event", G_CALLBACK(_sample_enter_callback),
+                   darktable.develop->color_picker.primary_sample);
+  g_signal_connect(G_OBJECT(sample_row_events), "leave-notify-event", G_CALLBACK(_sample_leave_callback),
+                   darktable.develop->color_picker.primary_sample);
   gtk_box_pack_start(GTK_BOX(self->widget), sample_row_events, TRUE, TRUE, 0);
 
   GtkWidget *sample_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_container_add(GTK_CONTAINER(sample_row_events), sample_row);
 
-  d->primary_sample.color_patch = gtk_drawing_area_new();
-  g_signal_connect(G_OBJECT(d->primary_sample.color_patch), "draw", G_CALLBACK(_sample_draw_callback), &d->primary_sample);
+  darktable.develop->color_picker.primary_sample->color_patch = gtk_drawing_area_new();
+  g_signal_connect(G_OBJECT(darktable.develop->color_picker.primary_sample->color_patch), "draw",
+                   G_CALLBACK(_sample_draw_callback), darktable.develop->color_picker.primary_sample);
 
   color_patch_wrapper = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_set_name(color_patch_wrapper, "live-sample");
-  gtk_box_pack_start(GTK_BOX(color_patch_wrapper), d->primary_sample.color_patch, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(color_patch_wrapper), darktable.develop->color_picker.primary_sample->color_patch, TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(sample_row), color_patch_wrapper, TRUE, TRUE, 0);
 
-  label = d->primary_sample.output_label = gtk_label_new("");
+  label = darktable.develop->color_picker.primary_sample->output_label = gtk_label_new("");
   gtk_label_set_justify(GTK_LABEL(label), GTK_JUSTIFY_CENTER);
   gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_START);
   gtk_label_set_selectable(GTK_LABEL(label), TRUE);
   dt_gui_add_class(label, "dt_monospace");
   gtk_widget_set_has_tooltip(label, TRUE);
-  g_signal_connect(G_OBJECT(label), "query-tooltip", G_CALLBACK(_sample_tooltip_callback), &d->primary_sample);
-  g_signal_connect(G_OBJECT(label), "size-allocate", G_CALLBACK(_label_size_allocate_callback), &d->primary_sample);
+  g_signal_connect(G_OBJECT(label), "query-tooltip", G_CALLBACK(_sample_tooltip_callback),
+                   darktable.develop->color_picker.primary_sample);
+  g_signal_connect(G_OBJECT(label), "size-allocate", G_CALLBACK(_label_size_allocate_callback),
+                   darktable.develop->color_picker.primary_sample);
   gtk_box_pack_start(GTK_BOX(sample_row), label, TRUE, TRUE, 0);
 
   d->add_sample_button = dtgtk_button_new(dtgtk_cairo_paint_square_plus, 0, NULL);
@@ -1887,7 +2399,6 @@ void gui_init(dt_lib_module_t *self)
   gtk_label_set_ellipsize(GTK_LABEL(gtk_bin_get_child(GTK_BIN(restrict_button))), PANGO_ELLIPSIZE_MIDDLE);
   gboolean restrict_histogram = dt_conf_get_bool("ui_last/colorpicker_restrict_histogram");
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(restrict_button), restrict_histogram);
-  darktable.lib->proxy.colorpicker.restrict_histogram = restrict_histogram;
   g_signal_connect(G_OBJECT(restrict_button), "toggled", G_CALLBACK(_restrict_histogram_changed), self);
   gtk_box_pack_start(GTK_BOX(self->widget), restrict_button, TRUE, TRUE, 0);
 
@@ -1898,19 +2409,21 @@ void gui_init(dt_lib_module_t *self)
 void gui_cleanup(dt_lib_module_t *self)
 {
   dt_lib_histogram_t *d = self->data;
+  _clear_pending_preview_histograms();
+  _clear_pending_hashes(d);
+  if(d->refresh_idle_source != 0)
+  {
+    g_source_remove(d->refresh_idle_source);
+    d->refresh_idle_source = 0;
+  }
+  if(d->pending_hashes) g_array_free(d->pending_hashes, TRUE);
   _destroy_surface(d);
   dt_iop_color_picker_reset(NULL, FALSE);
 
-  // Clearing proxy functions
-  darktable.lib->proxy.colorpicker.module = NULL;
-  darktable.lib->proxy.colorpicker.update_panel = NULL;
-  darktable.lib->proxy.colorpicker.update_samples = NULL;
-  darktable.lib->proxy.colorpicker.set_sample_box_area = NULL;
-  darktable.lib->proxy.colorpicker.set_sample_point = NULL;
-
-  darktable.lib->proxy.colorpicker.primary_sample = NULL;
-  while(darktable.lib->proxy.colorpicker.live_samples)
-    _remove_sample(darktable.lib->proxy.colorpicker.live_samples->data);
+  darktable.develop->color_picker.histogram_module = NULL;
+  darktable.develop->color_picker.refresh_global_picker = NULL;
+  while(darktable.develop->color_picker.samples)
+    _remove_sample(darktable.develop->color_picker.samples->data);
 
   dt_pixelpipe_cache_free_align(self->data);
   self->data = NULL;

@@ -54,6 +54,7 @@
 #include "develop/imageop.h"
 #include "develop/imageop_math.h"
 #include "develop/imageop_gui.h"
+#include "develop/develop.h"
 #include "dtgtk/resetlabel.h"
 
 #include "gui/gtk.h"
@@ -116,9 +117,17 @@ int flags()
   return IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_ONE_INSTANCE;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RAW;
+}
+
+void input_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                  dt_iop_buffer_dsc_t *dsc)
+{
+  default_input_format(self, pipe, piece, dsc);
+  dsc->channels = 1;
+  dt_iop_buffer_dsc_update_bpp(dsc);
 }
 
 /* Detect hot sensor pixels based on the 4 surrounding sites. Pixels
@@ -129,6 +138,7 @@ int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_p
  * the maximum produces fewer artifacts when inadvertently replacing
  * non-hot pixels.
  * This is the Bayer sensor variant. */
+__DT_CLONE_TARGETS__
 static int process_bayer(const dt_iop_hotpixels_data_t *data,
                          const void *const ivoid, void *const ovoid,
                          const dt_iop_roi_t *const roi_out)
@@ -140,14 +150,7 @@ static int process_bayer(const dt_iop_hotpixels_data_t *data,
   const int width = roi_out->width;
   const int widthx2 = width * 2;
   int fixed = 0;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ivoid, markfixed, min_neighbours, multiplier, ovoid, \
-                      roi_out, threshold, width, widthx2) \
-  reduction(+ : fixed) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__(reduction(+ : fixed) )
   for(int row = 2; row < roi_out->height - 2; row++)
   {
     const float *in = (float *)ivoid + (size_t)width * row + 2;
@@ -190,6 +193,7 @@ static int process_bayer(const dt_iop_hotpixels_data_t *data,
 }
 
 /* X-Trans sensor equivalent of process_bayer(). */
+__DT_CLONE_TARGETS__
 static int process_xtrans(const dt_iop_hotpixels_data_t *data,
                           const void *const ivoid, void *const ovoid,
                           const dt_iop_roi_t *const roi_out, const uint8_t (*const xtrans)[6])
@@ -241,15 +245,7 @@ static int process_xtrans(const dt_iop_hotpixels_data_t *data,
   const int min_neighbours = data->permissive ? 3 : 4;
   const int width = roi_out->width;
   int fixed = 0;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ivoid, markfixed, min_neighbours, multiplier, ovoid, \
-                      roi_out, threshold, xtrans, width) \
-  shared(offsets) \
-  reduction(+ : fixed) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__(reduction(+ : fixed) )
   for(int row = 2; row < roi_out->height - 2; row++)
   {
     const float *in = (float *)ivoid + (size_t)width * row + 2;
@@ -303,9 +299,10 @@ static int process_xtrans(const dt_iop_hotpixels_data_t *data,
   return fixed;
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_hotpixels_gui_data_t *g = (dt_iop_hotpixels_gui_data_t *)self->gui_data;
   const dt_iop_hotpixels_data_t *data = (dt_iop_hotpixels_data_t *)piece->data;
 
@@ -313,16 +310,16 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   dt_iop_image_copy_by_size(ovoid, ivoid, roi_out->width, roi_out->height, 1);
 
   int fixed;
-  if(piece->pipe->dsc.filters == 9u)
+  if(piece->dsc_in.filters == 9u)
   {
-    fixed = process_xtrans(data, ivoid, ovoid, roi_out, (const uint8_t(*const)[6])piece->pipe->dsc.xtrans);
+    fixed = process_xtrans(data, ivoid, ovoid, roi_out, (const uint8_t(*const)[6])piece->dsc_in.xtrans);
   }
   else
   {
     fixed = process_bayer(data, ivoid, ovoid, roi_out);
   }
 
-  if(g != NULL && self->dev->gui_attached && piece->pipe->type == DT_DEV_PIXELPIPE_FULL)
+  if(!IS_NULL_PTR(g) && self->dev->gui_attached && pipe->type == DT_DEV_PIXELPIPE_FULL)
   {
     g->pixels_fixed = fixed;
   }
@@ -342,14 +339,14 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *params, dt_dev
 {
   dt_iop_hotpixels_params_t *p = (dt_iop_hotpixels_params_t *)params;
   dt_iop_hotpixels_data_t *d = (dt_iop_hotpixels_data_t *)piece->data;
-  d->filters = piece->pipe->dsc.filters;
+  d->filters = pipe->dev->image_storage.dsc.filters;
   d->multiplier = p->strength / 2.0;
   d->threshold = p->threshold;
   d->permissive = p->permissive;
   d->markfixed = p->markfixed && (pipe->type != DT_DEV_PIXELPIPE_EXPORT)
     && (pipe->type != DT_DEV_PIXELPIPE_THUMBNAIL);
 
-  const dt_image_t *img = &pipe->image;
+  const dt_image_t *img = &pipe->dev->image_storage;
   const gboolean enabled = dt_image_is_raw(img) && !dt_image_is_monochrome(img);
 
   if(!enabled || p->strength == 0.0) piece->enabled = 0;

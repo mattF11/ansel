@@ -18,6 +18,7 @@
 
 /* taken from dcraw and demosaic_ppg below */
 
+__DT_CLONE_TARGETS__
 static void lin_interpolate(float *out, const float *const in, const dt_iop_roi_t *const roi_out,
                             const dt_iop_roi_t *const roi_in, const uint32_t filters,
                             const uint8_t (*const xtrans)[6])
@@ -25,12 +26,7 @@ static void lin_interpolate(float *out, const float *const in, const dt_iop_roi_
   const int colors = (filters == 9) ? 3 : 4;
 
 // border interpolate
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(colors, filters, in, roi_in, roi_out, xtrans) \
-  shared(out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__(collapse(2))
   for(int row = 0; row < roi_out->height; row++)
     for(int col = 0; col < roi_out->width; col++)
     {
@@ -58,6 +54,7 @@ static void lin_interpolate(float *out, const float *const in, const dt_iop_roi_
           out[4 * (row * roi_out->width + col) + c] = in[row * roi_in->width + col];
       }
     }
+  
 
   // build interpolation lookup table which for a given offset in the sensor
   // lists neighboring pixels from which to interpolate:
@@ -74,6 +71,7 @@ static void lin_interpolate(float *out, const float *const in, const dt_iop_roi_
   int(*const lookup)[16][32] = malloc(sizeof(int) * 16 * 16 * 32);
 
   const int size = (filters == 9) ? 6 : 16;
+  __OMP_PARALLEL_FOR__(collapse(2))
   for(int row = 0; row < size; row++)
     for(int col = 0; col < size; col++)
     {
@@ -101,13 +99,9 @@ static void lin_interpolate(float *out, const float *const in, const dt_iop_roi_
         }
       *ip = f;
     }
+  
 
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(colors, in, lookup, roi_in, roi_out, size) \
-  shared(out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int row = 1; row < roi_out->height - 1; row++)
   {
     float *buf = out + 4 * roi_out->width * row + 4;
@@ -125,6 +119,7 @@ static void lin_interpolate(float *out, const float *const in, const dt_iop_roi_
       buf_in++;
     }
   }
+  
 
   dt_free(lookup);
 }
@@ -137,10 +132,7 @@ static void lin_interpolate(float *out, const float *const in, const dt_iop_roi_
     (b) = (a);                                                                                               \
     (a) = tmp;                                                                                               \
   }
-
-#ifdef _OPENMP
-  #pragma omp declare simd aligned(in, out)
-#endif
+__DT_CLONE_TARGETS__
 static void pre_median_b(float *out, const float *const in, const dt_iop_roi_t *const roi, const uint32_t filters,
                          const int num_passes, const float threshold)
 {
@@ -150,12 +142,7 @@ static void pre_median_b(float *out, const float *const in, const dt_iop_roi_t *
   const int lim[5] = { 0, 1, 2, 1, 0 };
   for(int pass = 0; pass < num_passes; pass++)
   {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(filters, in, lim, roi, threshold) \
-    shared(out) \
-    schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__()
     for(int row = 3; row < roi->height - 3; row++)
     {
       float med[9];
@@ -188,6 +175,7 @@ static void pre_median_b(float *out, const float *const in, const dt_iop_roi_t *
         pixi += 2;
       }
     }
+    
   }
 }
 
@@ -200,6 +188,7 @@ static void pre_median(float *out, const float *const in, const dt_iop_roi_t *co
 #define SWAPmed(I, J)                                                                                        \
   if(med[I] > med[J]) SWAP(med[I], med[J])
 
+__DT_CLONE_TARGETS__
 static void color_smoothing(float *out, const dt_iop_roi_t *const roi_out, const int num_passes)
 {
   const int width4 = 4 * roi_out->width;
@@ -213,12 +202,7 @@ static void color_smoothing(float *out, const dt_iop_roi_t *const roi_out, const
         for(int j = 0; j < roi_out->height; j++)
           for(int i = 0; i < roi_out->width; i++, outp += 4) outp[3] = outp[c];
       }
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-      dt_omp_firstprivate(roi_out, width4) \
-      shared(out, c) \
-      schedule(static)
-#endif
+      __OMP_PARALLEL_FOR__()
       for(int j = 1; j < roi_out->height - 1; j++)
       {
         float *outp = out + (size_t)4 * j * roi_out->width + 4;
@@ -254,11 +238,13 @@ static void color_smoothing(float *out, const dt_iop_roi_t *const roi_out, const
           outp[c] = fmaxf(med[4] + outp[1], 0.0f);
         }
       }
+      
     }
   }
 }
 #undef SWAP
 
+__DT_CLONE_TARGETS__
 static void green_equilibration_lavg(float *out, const float *const in, const int width, const int height,
                                      const uint32_t filters, const int x, const int y, const float thr)
 {
@@ -270,13 +256,7 @@ static void green_equilibration_lavg(float *out, const float *const in, const in
   if(FC(oj + y, oi + x, filters) != 1) oj--;
 
   dt_iop_image_copy_by_size(out, in, width, height, 1);
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(height, in, thr, width, maximum) \
-  shared(out, oi, oj) \
-  schedule(static) collapse(2)
-#endif
+  __OMP_PARALLEL_FOR__(collapse(2))
   for(size_t j = oj; j < height - 2; j += 2)
   {
     for(size_t i = oi; i < width - 2; i += 2)
@@ -309,8 +289,10 @@ static void green_equilibration_lavg(float *out, const float *const in, const in
       }
     }
   }
+  
 }
 
+__DT_CLONE_TARGETS__
 static void green_equilibration_favg(float *out, const float *const in, const int width, const int height,
                                      const uint32_t filters, const int x, const int y)
 {
@@ -321,13 +303,7 @@ static void green_equilibration_favg(float *out, const float *const in, const in
   if((FC(oj + y, oi + x, filters) & 1) != 1) oi++;
   const int g2_offset = oi ? -1 : 1;
   dt_iop_image_copy_by_size(out, in, width, height, 1);
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(g2_offset, height, in, width) \
-  reduction(+ : sum1, sum2) \
-  shared(oi, oj) \
-  schedule(static) collapse(2)
-#endif
+  __OMP_PARALLEL_FOR__(reduction(+ : sum1, sum2)  collapse(2))
   for(size_t j = oj; j < (height - 1); j += 2)
   {
     for(size_t i = oi; i < (width - 1 - g2_offset); i += 2)
@@ -341,13 +317,7 @@ static void green_equilibration_favg(float *out, const float *const in, const in
     gr_ratio = sum2 / sum1;
   else
     return;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(g2_offset, height, in, width) \
-  shared(out, oi, oj, gr_ratio) \
-  schedule(static) collapse(2)
-#endif
+  __OMP_PARALLEL_FOR__(collapse(2))
   for(int j = oj; j < (height - 1); j += 2)
   {
     for(int i = oi; i < (width - 1 - g2_offset); i += 2)
@@ -355,24 +325,26 @@ static void green_equilibration_favg(float *out, const float *const in, const in
       out[(size_t)j * width + i] = in[(size_t)j * width + i] * gr_ratio;
     }
   }
+  
 }
 
 #ifdef HAVE_OPENCL
 
 // color smoothing step by multiple passes of median filtering
-static int color_smoothing_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in,
-                              cl_mem dev_out, const dt_iop_roi_t *const roi_out, const int passes)
+static int color_smoothing_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                              const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
+                              const dt_iop_roi_t *const roi_out, const int passes)
 {
   dt_iop_demosaic_global_data_t *gd = (dt_iop_demosaic_global_data_t *)self->global_data;
 
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   const int width = roi_out->width;
   const int height = roi_out->height;
 
   cl_int err = -999;
 
   cl_mem dev_tmp = dt_opencl_alloc_device(devid, width, height, sizeof(float) * 4);
-  if(dev_tmp == NULL) goto error;
+  if(IS_NULL_PTR(dev_tmp)) goto error;
 
   dt_opencl_local_buffer_t locopt
     = (dt_opencl_local_buffer_t){ .xoffset = 2*1, .xfactor = 1, .yoffset = 2*1, .yfactor = 1,
@@ -425,13 +397,14 @@ error:
   return FALSE;
 }
 
-static int green_equilibration_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in,
-                                  cl_mem dev_out, const dt_iop_roi_t *const roi_in)
+static int green_equilibration_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                                  const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
+                                  const dt_iop_roi_t *const roi_in)
 {
   dt_iop_demosaic_data_t *data = (dt_iop_demosaic_data_t *)piece->data;
   dt_iop_demosaic_global_data_t *gd = (dt_iop_demosaic_global_data_t *)self->global_data;
 
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   const int width = roi_in->width;
   const int height = roi_in->height;
 
@@ -449,7 +422,7 @@ static int green_equilibration_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe
   if(data->green_eq == DT_IOP_GREEN_EQ_BOTH)
   {
     dev_tmp = dt_opencl_alloc_device(devid, width, height, sizeof(float));
-    if(dev_tmp == NULL) goto error;
+    if(IS_NULL_PTR(dev_tmp)) goto error;
   }
 
   switch(data->green_eq)
@@ -489,7 +462,7 @@ static int green_equilibration_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe
     const int bufsize = (bwidth / flocopt.sizex) * (bheight / flocopt.sizey);
 
     dev_m = dt_opencl_alloc_device_buffer(devid, sizeof(float) * 2 * bufsize);
-    if(dev_m == NULL) goto error;
+    if(IS_NULL_PTR(dev_m)) goto error;
 
     size_t fsizes[3] = { bwidth, bheight, 1 };
     size_t flocal[3] = { flocopt.sizex, flocopt.sizey, 1 };
@@ -497,7 +470,7 @@ static int green_equilibration_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_reduce_first, 1, sizeof(int), &width);
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_reduce_first, 2, sizeof(int), &height);
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_reduce_first, 3, sizeof(cl_mem), &dev_m);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_reduce_first, 4, sizeof(uint32_t), (void *)&piece->pipe->dsc.filters);
+    dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_reduce_first, 4, sizeof(uint32_t), (void *)&piece->dsc_in.filters);
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_reduce_first, 5, sizeof(int), &roi_in->x);
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_reduce_first, 6, sizeof(int), &roi_in->y);
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_reduce_first, 7,
@@ -517,7 +490,7 @@ static int green_equilibration_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe
     const int reducesize = MIN(REDUCESIZE, ROUNDUP(bufsize, slocopt.sizex) / slocopt.sizex);
 
     dev_r = dt_opencl_alloc_device_buffer(devid, sizeof(float) * 2 * reducesize);
-    if(dev_r == NULL) goto error;
+    if(IS_NULL_PTR(dev_r)) goto error;
 
     size_t ssizes[3] = { (size_t)reducesize * slocopt.sizex, 1, 1 };
     size_t slocal[3] = { slocopt.sizex, 1, 1 };
@@ -529,8 +502,8 @@ static int green_equilibration_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe
                                                  slocal);
     if(err != CL_SUCCESS) goto error;
 
-    sumsum = dt_pixelpipe_cache_alloc_align_float((size_t)2 * reducesize, piece->pipe);
-    if(sumsum == NULL) goto error;
+    sumsum = dt_pixelpipe_cache_alloc_align_float((size_t)2 * reducesize, pipe);
+    if(IS_NULL_PTR(sumsum)) goto error;
     err = dt_opencl_read_buffer_from_device(devid, (void *)sumsum, dev_r, 0,
                                             sizeof(float) * 2 * reducesize, CL_TRUE);
     if(err != CL_SUCCESS) goto error;
@@ -549,7 +522,7 @@ static int green_equilibration_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_apply, 1, sizeof(cl_mem), &dev_out1);
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_apply, 2, sizeof(int), &width);
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_apply, 3, sizeof(int), &height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_apply, 4, sizeof(uint32_t), (void *)&piece->pipe->dsc.filters);
+    dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_apply, 4, sizeof(uint32_t), (void *)&piece->dsc_in.filters);
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_apply, 5, sizeof(int), &roi_in->x);
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_apply, 6, sizeof(int), &roi_in->y);
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_favg_apply, 7, sizeof(float), &gr_ratio);
@@ -576,7 +549,7 @@ static int green_equilibration_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_lavg, 1, sizeof(cl_mem), &dev_out2);
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_lavg, 2, sizeof(int), &width);
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_lavg, 3, sizeof(int), &height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_lavg, 4, sizeof(uint32_t), (void *)&piece->pipe->dsc.filters);
+    dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_lavg, 4, sizeof(uint32_t), (void *)&piece->dsc_in.filters);
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_lavg, 5, sizeof(int), &roi_in->x);
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_lavg, 6, sizeof(int), &roi_in->y);
     dt_opencl_set_kernel_arg(devid, gd->kernel_green_eq_lavg, 7, sizeof(float), (void *)&threshold);

@@ -57,6 +57,7 @@
 #include "common/darktable.h"
 #include "common/guided_filter.h"
 #include "control/control.h"
+#include "control/signal.h"
 #include "develop/imageop.h"
 #include "develop/imageop_math.h"
 #include "develop/imageop_gui.h"
@@ -106,6 +107,7 @@ typedef struct dt_iop_hazeremoval_gui_data_t
   GtkWidget *distance;
   rgb_pixel A0;
   float distance_max;
+  uint64_t expected_preview_hash;
   uint64_t hash;
 } dt_iop_hazeremoval_gui_data_t;
 
@@ -152,7 +154,7 @@ int default_group()
 }
 
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -208,7 +210,32 @@ void gui_update(struct dt_iop_module_t *self)
   g->A0[0] = NAN;
   g->A0[1] = NAN;
   g->A0[2] = NAN;
-  g->hash = 0;
+  g->expected_preview_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
+  g->hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
+  dt_iop_gui_leave_critical_section(self);
+}
+
+static uint64_t _current_preview_hash(dt_iop_module_t *self)
+{
+  if(IS_NULL_PTR(self) || IS_NULL_PTR(self->dev) || IS_NULL_PTR(self->dev->preview_pipe)) return DT_PIXELPIPE_CACHE_HASH_INVALID;
+
+  dt_dev_pixelpipe_iop_t *piece = dt_dev_distort_get_iop_pipe(self->dev->preview_pipe, self);
+  if(IS_NULL_PTR(piece) || !piece->enabled || piece->roi_in.width <= 0 || piece->roi_in.height <= 0)
+    return DT_PIXELPIPE_CACHE_HASH_INVALID;
+
+  return piece->global_hash;
+}
+
+static void _history_resync_callback(gpointer instance, gpointer user_data)
+{
+  (void)instance;
+  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
+  dt_iop_hazeremoval_gui_data_t *g = (dt_iop_hazeremoval_gui_data_t *)self->gui_data;
+  if(IS_NULL_PTR(g)) return;
+
+  const uint64_t preview_hash = _current_preview_hash(self);
+  dt_iop_gui_enter_critical_section(self);
+  g->expected_preview_hash = preview_hash;
   dt_iop_gui_leave_critical_section(self);
 }
 
@@ -221,7 +248,8 @@ void gui_init(dt_iop_module_t *self)
   g->A0[0] = NAN;
   g->A0[1] = NAN;
   g->A0[2] = NAN;
-  g->hash = 0;
+  g->expected_preview_hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
+  g->hash = DT_PIXELPIPE_CACHE_HASH_INVALID;
 
   g->strength = dt_bauhaus_slider_from_params(self, N_("strength"));
   gtk_widget_set_tooltip_text(g->strength, _("amount of haze reduction"));
@@ -229,11 +257,15 @@ void gui_init(dt_iop_module_t *self)
   g->distance = dt_bauhaus_slider_from_params(self, N_("distance"));
   dt_bauhaus_slider_set_digits(g->distance, 3);
   gtk_widget_set_tooltip_text(g->distance, _("limit haze removal up to a specific spatial depth"));
+
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_HISTORY_RESYNC,
+                                  G_CALLBACK(_history_resync_callback), self);
 }
 
 
 void gui_cleanup(dt_iop_module_t *self)
 {
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_history_resync_callback), self);
   IOP_GUI_FREE;
 }
 
@@ -273,14 +305,11 @@ static inline void pointer_swap_f(float *a, float *b)
 
 
 // calculate the dark channel (minimal color component over a box of size (2*w+1) x (2*w+1) )
+__DT_CLONE_TARGETS__
 static int dark_channel(const const_rgb_image img1, const gray_image img2, const int w)
 {
   const size_t size = (size_t)img1.height * img1.width;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(img1, img2, size) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t i = 0; i < size; i++)
   {
     const float *pixel = img1.data + i * img1.stride;
@@ -298,15 +327,12 @@ static int dark_channel(const const_rgb_image img1, const gray_image img2, const
 
 
 // calculate the transition map
+__DT_CLONE_TARGETS__
 static int transition_map(const const_rgb_image img1, const gray_image img2, const int w, const float *const A0,
                           const float strength)
 {
   const size_t size = (size_t)img1.height * img1.width;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(A0, img1, img2, size, strength) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t i = 0; i < size; i++)
   {
     const float *pixel = img1.data + i * img1.stride;
@@ -351,6 +377,7 @@ static float *partition(float *first, float *last, float val)
 // be in that position if the entire range [first, last) had been
 // sorted, additionally, none of the elements in the range [nth, last)
 // is less than any of the elements in the range [first, nth)
+__DT_CLONE_TARGETS__
 void quick_select(float *first, float *nth, float *last)
 {
   if(first == last) return;
@@ -380,6 +407,7 @@ void quick_select(float *first, float *nth, float *last)
 // depth is estimated by the local amount of haze and given in units of the
 // characteristic haze depth, i.e., the distance over which object light is
 // reduced by the factor exp(-1)
+__DT_CLONE_TARGETS__
 static int ambient_light(const const_rgb_image img, int w1, rgb_pixel *pA0, float *max_depth_out)
 {
   const float dark_channel_quantil = 0.95f; // quantil for determining the most hazy pixels
@@ -417,12 +445,7 @@ static int ambient_light(const const_rgb_image img, int w1, rgb_pixel *pA0, floa
   float A0_r = 0, A0_g = 0, A0_b = 0;
   size_t N_bright_hazy = 0;
   const float *const data = dark_ch.data;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(crit_brightness, crit_haze_level, data, img, size) \
-  schedule(static) \
-  reduction(+ : N_bright_hazy, A0_r, A0_g, A0_b)
-#endif
+  __OMP_PARALLEL_FOR__(reduction(+ : N_bright_hazy, A0_r, A0_g, A0_b))
   for(size_t i = 0; i < size; i++)
   {
     const float *pixel_in = img.data + i * img.stride;
@@ -461,16 +484,19 @@ error:
 }
 
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_hazeremoval_gui_data_t *const g = (dt_iop_hazeremoval_gui_data_t*)self->gui_data;
   dt_iop_hazeremoval_params_t *d = piece->data;
   int err = 0;
   gray_image trans_map = (gray_image){ 0 };
   gray_image trans_map_filtered = (gray_image){ 0 };
 
-  const int ch = piece->colors;
+  const int ch = piece->dsc_in.channels;
   const int width = roi_in->width;
   const int height = roi_in->height;
   const size_t size = (size_t)width * height;
@@ -498,25 +524,27 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   // only see part of the image (region of interest).  Therefore, we
   // try to get A0 and distance_max from the PREVIEW pixelpipe which
   // luckily stores it for us.
-  if(self->dev->gui_attached && g && !dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, roi_out))
+  if(self->dev->gui_attached && !IS_NULL_PTR(g) && !dt_dev_pixelpipe_has_preview_output(self->dev, pipe, roi_out))
   {
     dt_iop_gui_enter_critical_section(self);
     const uint64_t hash = g->hash;
+    const uint64_t expected_preview_hash = g->expected_preview_hash;
     dt_iop_gui_leave_critical_section(self);
-    // Note that the case 'hash == 0' on first invocation in a session
-    // implies that g->distance_max is NAN, which initiates special
-    // handling below to avoid inconsistent results.  In all other
-    // cases we make sure that the preview pipe has left us with
-    // proper readings for distance_max and A0.  If data are not yet
-    // there we need to wait (with timeout).
-    if(hash != piece->global_hash)
-      dt_control_log(_("inconsistent output"));
-    dt_iop_gui_enter_critical_section(self);
-    A0[0] = g->A0[0];
-    A0[1] = g->A0[1];
-    A0[2] = g->A0[2];
-    distance_max = g->distance_max;
-    dt_iop_gui_leave_critical_section(self);
+    /* Full-pipe dehazing needs the preview statistics only when they belong to the
+     * currently resynchronized preview graph. HISTORY_RESYNC publishes that expected
+     * preview hash before either pipe starts processing, so a mismatch here means
+     * preview has not produced the new full-image reading yet and we must recompute
+     * locally instead of reusing stale GUI state. */
+    if(hash != DT_PIXELPIPE_CACHE_HASH_INVALID
+       && hash == expected_preview_hash)
+    {
+      dt_iop_gui_enter_critical_section(self);
+      A0[0] = g->A0[0];
+      A0[1] = g->A0[1];
+      A0[2] = g->A0[2];
+      distance_max = g->distance_max;
+      dt_iop_gui_leave_critical_section(self);
+    }
   }
   // In all other cases we calculate distance_max and A0 here.
   if(isnan(distance_max))
@@ -528,7 +556,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     }
   }
   // PREVIEW pixelpipe stores values.
-  if(self->dev->gui_attached && g && dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, roi_out))
+  if(self->dev->gui_attached && !IS_NULL_PTR(g) && dt_dev_pixelpipe_has_preview_output(self->dev, pipe, roi_out))
   {
     uint64_t hash = piece->global_hash;
     dt_iop_gui_enter_critical_section(self);
@@ -536,6 +564,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     g->A0[1] = A0[1];
     g->A0[2] = A0[2];
     g->distance_max = distance_max;
+    g->expected_preview_hash = hash;
     g->hash = hash;
     dt_iop_gui_leave_critical_section(self);
   }
@@ -576,11 +605,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
       = fminf(fmaxf(expf(-distance * distance_max), 1.f / 1024), 1.f); // minimum allowed value for transition map
   const float *const c_A0 = A0;
   const gray_image c_trans_map_filtered = trans_map_filtered;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(c_A0, c_trans_map_filtered, img_in, img_out, size, t_min) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t i = 0; i < size; i++)
   {
     float t = fmaxf(c_trans_map_filtered.data[i], t_min);
@@ -594,7 +619,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   free_gray_image(&trans_map);
   free_gray_image(&trans_map_filtered);
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
     dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
   return 0;
 
@@ -621,7 +646,7 @@ static int ambient_light_cl(struct dt_iop_module_t *self, int devid, cl_mem img,
   float *in = dt_pixelpipe_cache_alloc_align_float_cache(
       (size_t)width * height * element_size,
       0);
-  if(in == NULL) goto error;
+  if(IS_NULL_PTR(in)) goto error;
 
   int err = dt_opencl_read_host_from_device(devid, in, img, width, height, element_size);
   if(err != CL_SUCCESS) goto error;
@@ -758,9 +783,7 @@ static int dehaze_cl(struct dt_iop_module_t *self, int devid, cl_mem img_in, cl_
   return err;
 }
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
   tiling->factor = 2.5f;  // in + out + two single-channel temp buffers
   tiling->factor_cl = 5.0f;
@@ -772,14 +795,15 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
   tiling->yalign = 1;
 }
 
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem img_in, cl_mem img_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem img_in, cl_mem img_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_hazeremoval_gui_data_t *const g = (dt_iop_hazeremoval_gui_data_t*)self->gui_data;
   dt_iop_hazeremoval_params_t *d = piece->data;
 
-  const int ch = piece->colors;
-  const int devid = piece->pipe->devid;
+  const int ch = piece->dsc_in.channels;
+  const int devid = pipe->devid;
   const int width = roi_in->width;
   const int height = roi_in->height;
   const int w1 = 6; // window size (positive integer) for determining the dark channel and the transition map
@@ -803,25 +827,22 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   // only see part of the image (region of interest).  Therefore, we
   // try to get A0 and distance_max from the PREVIEW pixelpipe which
   // luckily stores it for us.
-  if(self->dev->gui_attached && g && !dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, roi_out))
+  if(self->dev->gui_attached && g && !dt_dev_pixelpipe_has_preview_output(self->dev, pipe, roi_out))
   {
     dt_iop_gui_enter_critical_section(self);
     const uint64_t hash = g->hash;
+    const uint64_t expected_preview_hash = g->expected_preview_hash;
     dt_iop_gui_leave_critical_section(self);
-    // Note that the case 'hash == 0' on first invocation in a session
-    // implies that g->distance_max is NAN, which initiates special
-    // handling below to avoid inconsistent results.  In all other
-    // cases we make sure that the preview pipe has left us with
-    // proper readings for distance_max and A0.  If data are not yet
-    // there we need to wait (with timeout).
-    if(hash != piece->global_hash)
-      dt_control_log(_("inconsistent output"));
-    dt_iop_gui_enter_critical_section(self);
-    A0[0] = g->A0[0];
-    A0[1] = g->A0[1];
-    A0[2] = g->A0[2];
-    distance_max = g->distance_max;
-    dt_iop_gui_leave_critical_section(self);
+    if(hash != DT_PIXELPIPE_CACHE_HASH_INVALID
+       && hash == expected_preview_hash)
+    {
+      dt_iop_gui_enter_critical_section(self);
+      A0[0] = g->A0[0];
+      A0[1] = g->A0[1];
+      A0[2] = g->A0[2];
+      distance_max = g->distance_max;
+      dt_iop_gui_leave_critical_section(self);
+    }
   }
   // In all other cases we calculate distance_max and A0 here.
   if(isnan(distance_max))
@@ -831,7 +852,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
     distance_max = max_depth;
   }
   // PREVIEW pixelpipe stores values.
-  if(self->dev->gui_attached && g && dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, roi_out))
+  if(self->dev->gui_attached && g && dt_dev_pixelpipe_has_preview_output(self->dev, pipe, roi_out))
   {
     uint64_t hash = piece->global_hash;
     dt_iop_gui_enter_critical_section(self);
@@ -839,6 +860,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
     g->A0[1] = A0[1];
     g->A0[2] = A0[2];
     g->distance_max = distance_max;
+    g->expected_preview_hash = hash;
     g->hash = hash;
     dt_iop_gui_leave_critical_section(self);
   }

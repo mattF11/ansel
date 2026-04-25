@@ -92,43 +92,25 @@ static int dt_imageio_load_module_format(dt_imageio_module_format_t *module, con
 
   if(darktable.gui)
   {
-    if(!module->gui_init) goto api_h_error;
+    if(IS_NULL_PTR(module->gui_init)) goto api_h_error;
   }
   else
   {
     module->gui_init = _default_format_gui_init;
   }
-  if(!module->dimension) module->dimension = _default_format_dimension;
-  if(!module->flags) module->flags = _default_format_flags;
-  if(!module->levels) module->levels = _default_format_levels;
+  if(IS_NULL_PTR(module->dimension)) module->dimension = _default_format_dimension;
+  if(IS_NULL_PTR(module->flags)) module->flags = _default_format_flags;
+  if(IS_NULL_PTR(module->levels)) module->levels = _default_format_levels;
 
   module->widget = NULL;
-  module->parameter_lua_type = LUAA_INVALID_TYPE;
   // Can by set by the module function to false if something went wrong.
   module->ready = TRUE;
 
-#ifdef USE_LUA
+  module->init(module);
+  if (!module->ready)
   {
-    char pseudo_type_name[1024];
-    snprintf(pseudo_type_name, sizeof(pseudo_type_name), "dt_imageio_module_format_data_%s",
-             module->plugin_name);
-    luaA_Type my_type
-        = luaA_type_add(darktable.lua_state.state, pseudo_type_name, module->params_size(module));
-    module->parameter_lua_type = dt_lua_init_type_type(darktable.lua_state.state, my_type);
-    luaA_struct_type(darktable.lua_state.state, my_type);
-    dt_lua_register_format_type(darktable.lua_state.state, module, my_type);
-#endif
-    module->init(module);
-    if (!module->ready)
-    {
-      goto api_h_error;
-    }
-
-#ifdef USE_LUA
-    lua_pushcfunction(darktable.lua_state.state, dt_lua_type_member_luaautoc);
-    dt_lua_type_register_struct_type(darktable.lua_state.state, my_type);
+    goto api_h_error;
   }
-#endif
 
   return 0;
 }
@@ -144,7 +126,7 @@ static int dt_imageio_load_modules_format(dt_imageio_t *iio)
   dt_loc_get_moduledir(moduledir, sizeof(moduledir));
   g_strlcat(moduledir, "/plugins/imageio/format", sizeof(moduledir));
   GDir *dir = g_dir_open(moduledir, 0, NULL);
-  if(!dir) return 1;
+  if(IS_NULL_PTR(dir)) return 1;
   const int name_offset = strlen(SHARED_MODULE_PREFIX),
             name_end = strlen(SHARED_MODULE_PREFIX) + strlen(SHARED_MODULE_SUFFIX);
   while((d_name = g_dir_read_name(dir)))
@@ -201,37 +183,18 @@ static int dt_imageio_load_module_storage(dt_imageio_module_storage_t *module, c
 
   if(darktable.gui)
   {
-    if(!module->gui_init) goto api_h_error;
+    if(IS_NULL_PTR(module->gui_init)) goto api_h_error;
   }
   else
   {
     module->gui_init = _default_storage_nop;
   }
-  if(!module->dimension) module->dimension = _default_storage_dimension;
-  if(!module->recommended_dimension) module->recommended_dimension = _default_storage_dimension;
+  if(IS_NULL_PTR(module->dimension)) module->dimension = _default_storage_dimension;
+  if(IS_NULL_PTR(module->recommended_dimension)) module->recommended_dimension = _default_storage_dimension;
   if(!module->export_dispatched) module->export_dispatched = _default_storage_nop;
 
   module->widget = NULL;
-  module->parameter_lua_type = LUAA_INVALID_TYPE;
-
-#ifdef USE_LUA
-  {
-    char pseudo_type_name[1024];
-    snprintf(pseudo_type_name, sizeof(pseudo_type_name), "dt_imageio_module_storage_data_%s",
-             module->plugin_name);
-    luaA_Type my_type
-        = luaA_type_add(darktable.lua_state.state, pseudo_type_name, module->params_size(module));
-    module->parameter_lua_type = dt_lua_init_type_type(darktable.lua_state.state, my_type);
-    luaA_struct_type(darktable.lua_state.state, my_type);
-    dt_lua_register_storage_type(darktable.lua_state.state, module, my_type);
-#endif
-    module->init(module);
-#ifdef USE_LUA
-    lua_pushcfunction(darktable.lua_state.state, dt_lua_type_member_luaautoc);
-    dt_lua_type_register_struct_type(darktable.lua_state.state, my_type);
-  }
-#endif
-
+  module->init(module);
   return 0;
 }
 
@@ -244,7 +207,7 @@ static int dt_imageio_load_modules_storage(dt_imageio_t *iio)
   dt_loc_get_moduledir(moduledir, sizeof(moduledir));
   g_strlcat(moduledir, "/plugins/imageio/storage", sizeof(moduledir));
   GDir *dir = g_dir_open(moduledir, 0, NULL);
-  if(!dir) return 1;
+  if(IS_NULL_PTR(dir)) return 1;
   const int name_offset = strlen(SHARED_MODULE_PREFIX),
             name_end = strlen(SHARED_MODULE_PREFIX) + strlen(SHARED_MODULE_SUFFIX);
   while((d_name = g_dir_read_name(dir)))
@@ -309,8 +272,8 @@ dt_imageio_module_format_t *dt_imageio_get_format()
   dt_imageio_module_format_t *format = dt_imageio_get_format_by_name(format_name);
   // if the format from the config isn't available default to jpeg, if that's not available either just use
   // the first we have
-  if(!format) format = dt_imageio_get_format_by_name("jpeg");
-  if(!format) format = iio->plugins_format->data;
+  if(IS_NULL_PTR(format)) format = dt_imageio_get_format_by_name("jpeg");
+  if(IS_NULL_PTR(format)) format = iio->plugins_format->data;
   return format;
 }
 
@@ -321,14 +284,14 @@ dt_imageio_module_storage_t *dt_imageio_get_storage()
   dt_imageio_module_storage_t *storage = dt_imageio_get_storage_by_name(storage_name);
   // if the storage from the config isn't available default to disk, if that's not available either just use
   // the first we have
-  if(!storage) storage = dt_imageio_get_storage_by_name("disk");
-  if(!storage) storage = iio->plugins_storage->data;
+  if(IS_NULL_PTR(storage)) storage = dt_imageio_get_storage_by_name("disk");
+  if(IS_NULL_PTR(storage)) storage = iio->plugins_storage->data;
   return storage;
 }
 
 dt_imageio_module_format_t *dt_imageio_get_format_by_name(const char *name)
 {
-  if(!name) return NULL;
+  if(IS_NULL_PTR(name)) return NULL;
   dt_imageio_t *iio = darktable.imageio;
   for(GList *it = iio->plugins_format; it; it = g_list_next(it))
   {
@@ -340,7 +303,7 @@ dt_imageio_module_format_t *dt_imageio_get_format_by_name(const char *name)
 
 dt_imageio_module_storage_t *dt_imageio_get_storage_by_name(const char *name)
 {
-  if(!name) return NULL;
+  if(IS_NULL_PTR(name)) return NULL;
   dt_imageio_t *iio = darktable.imageio;
   for(GList *it = iio->plugins_storage; it; it = g_list_next(it))
   {
@@ -354,7 +317,7 @@ dt_imageio_module_format_t *dt_imageio_get_format_by_index(int index)
 {
   dt_imageio_t *iio = darktable.imageio;
   GList *it = g_list_nth(iio->plugins_format, index);
-  if(!it) it = iio->plugins_format;
+  if(IS_NULL_PTR(it)) it = iio->plugins_format;
   return (dt_imageio_module_format_t *)it->data;
 }
 
@@ -362,7 +325,7 @@ dt_imageio_module_storage_t *dt_imageio_get_storage_by_index(int index)
 {
   dt_imageio_t *iio = darktable.imageio;
   GList *it = g_list_nth(iio->plugins_storage, index);
-  if(!it) it = iio->plugins_storage;
+  if(IS_NULL_PTR(it)) it = iio->plugins_storage;
   return (dt_imageio_module_storage_t *)it->data;
 }
 
@@ -405,7 +368,7 @@ gchar *dt_imageio_resizing_factor_get_and_parsing(double *num, double *denum)
 
   gchar *pdiv = strchr(scale_str, '/');
 
-  if (pdiv == NULL)
+  if (IS_NULL_PTR(pdiv))
   {
     _num = atof(scale_str);
     _denum = 1;

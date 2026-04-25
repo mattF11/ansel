@@ -325,16 +325,20 @@ typedef struct dt_masks_functions_t
                     float **points, int *points_count);
   int (*get_points_border)(struct dt_develop_t *dev, struct dt_masks_form_t *form, float **points, int *points_count,
                            float **border, int *border_count, int source, const dt_iop_module_t *const module);
-  int (*get_mask)(const dt_iop_module_t *const module, const dt_dev_pixelpipe_iop_t *const piece,
+  int (*get_mask)(const dt_iop_module_t *const module, struct dt_dev_pixelpipe_t *pipe,
+                  const dt_dev_pixelpipe_iop_t *const piece,
                   struct dt_masks_form_t *const form,
                   float **buffer, int *width, int *height, int *posx, int *posy);
-  int (*get_mask_roi)(const dt_iop_module_t *const fmodule, const dt_dev_pixelpipe_iop_t *const piece,
+  int (*get_mask_roi)(const dt_iop_module_t *const fmodule, struct dt_dev_pixelpipe_t *pipe,
+                      const dt_dev_pixelpipe_iop_t *const piece,
                       struct dt_masks_form_t *const form,
                       const dt_iop_roi_t *roi, float *buffer);
-  int (*get_area)(const dt_iop_module_t *const module, const dt_dev_pixelpipe_iop_t *const piece,
+  int (*get_area)(const dt_iop_module_t *const module, struct dt_dev_pixelpipe_t *pipe,
+                  const dt_dev_pixelpipe_iop_t *const piece,
                   struct dt_masks_form_t *const form,
                   int *width, int *height, int *posx, int *posy);
-  int (*get_source_area)(dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, struct dt_masks_form_t *form,
+  int (*get_source_area)(dt_iop_module_t *module, struct dt_dev_pixelpipe_t *pipe,
+                         dt_dev_pixelpipe_iop_t *piece, struct dt_masks_form_t *form,
                          int *width, int *height, int *posx, int *posy);
   gboolean (*get_gravity_center)(const struct dt_masks_form_t *form, float center[2], float *area);
   float (*get_interaction_value)(const struct dt_masks_form_t *form, dt_masks_interaction_t interaction);
@@ -544,7 +548,7 @@ static inline int dt_masks_gui_selected_segment_index(const dt_masks_form_gui_t 
 static inline gboolean dt_masks_gui_change_affects_selected_node_or_all(const dt_masks_form_gui_t *gui,
                                                                         const int index)
 {
-  if(!gui) return TRUE;
+  if(IS_NULL_PTR(gui)) return TRUE;
 
   const int selected_node = dt_masks_gui_selected_node_index(gui);
   return selected_node < 0 || selected_node == index;
@@ -552,7 +556,7 @@ static inline gboolean dt_masks_gui_change_affects_selected_node_or_all(const dt
 
 static inline float dt_masks_get_form_size_from_nodes(const GList *points)
 {
-  if(!points || !points->data) return 0.0f;
+  if(IS_NULL_PTR(points) || IS_NULL_PTR(points->data)) return 0.0f;
 
   // Brush and polygon node payloads both start with `float node[2]`.
   const float *first = (const float *)points->data;
@@ -564,7 +568,7 @@ static inline float dt_masks_get_form_size_from_nodes(const GList *points)
   for(const GList *point_node = points; point_node; point_node = g_list_next(point_node))
   {
     const float *node = (const float *)point_node->data;
-    if(!node) continue;
+    if(IS_NULL_PTR(node)) continue;
     min_x = fminf(min_x, node[0]);
     max_x = fmaxf(max_x, node[0]);
     min_y = fminf(min_y, node[1]);
@@ -678,7 +682,7 @@ static inline gboolean dt_masks_toggle_bezier_node_type(struct dt_iop_module_t *
                                                         float node[2], float ctrl1[2], float ctrl2[2],
                                                         dt_masks_points_states_t *state)
 {
-  if(!mask_form || !mask_gui || !gui_points || !state || node_index < 0) return FALSE;
+  if(IS_NULL_PTR(mask_form) || IS_NULL_PTR(mask_gui) || IS_NULL_PTR(gui_points) || IS_NULL_PTR(state) || node_index < 0) return FALSE;
 
   if(dt_masks_node_is_cusp(gui_points, node_index))
   {
@@ -705,7 +709,7 @@ static inline gboolean dt_masks_reset_bezier_ctrl_points(struct dt_iop_module_t 
                                                          const int node_index,
                                                          dt_masks_points_states_t *state)
 {
-  if(!mask_form || !mask_gui || !gui_points || !state || node_index < 0) return FALSE;
+  if(IS_NULL_PTR(mask_form) || IS_NULL_PTR(mask_gui) || IS_NULL_PTR(gui_points) || IS_NULL_PTR(state) || node_index < 0) return FALSE;
 
   if(*state != DT_MASKS_POINT_STATE_NORMAL && !dt_masks_node_is_cusp(gui_points, node_index))
   {
@@ -829,28 +833,33 @@ int dt_masks_get_points_border(struct dt_develop_t *dev, dt_masks_form_t *form, 
                                float **border, int *border_count, int source, dt_iop_module_t *module);
 
 /** get the rectangle which include the form and his border */
-int dt_masks_get_area(dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, dt_masks_form_t *form,
+int dt_masks_get_area(dt_iop_module_t *module, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                      dt_masks_form_t *form,
                       int *width, int *height, int *posx, int *posy);
-int dt_masks_get_source_area(dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, dt_masks_form_t *form,
+int dt_masks_get_source_area(dt_iop_module_t *module, dt_dev_pixelpipe_t *pipe,
+                             dt_dev_pixelpipe_iop_t *piece, dt_masks_form_t *form,
                              int *width, int *height, int *posx, int *posy);
 /** get the transparency mask of the form and his border */
-static inline int dt_masks_get_mask(const dt_iop_module_t *const module, const dt_dev_pixelpipe_iop_t *const piece,
+static inline int dt_masks_get_mask(const dt_iop_module_t *const module, dt_dev_pixelpipe_t *pipe,
+                      const dt_dev_pixelpipe_iop_t *const piece,
                       dt_masks_form_t *const form,
                       float **buffer, int *width, int *height, int *posx, int *posy)
 {
   return (form->functions && form->functions->get_mask)
-    ? form->functions->get_mask(module, piece, form, buffer, width, height, posx, posy)
+    ? form->functions->get_mask(module, pipe, piece, form, buffer, width, height, posx, posy)
     : 1;
 }
-static inline int dt_masks_get_mask_roi(const dt_iop_module_t *const module, const dt_dev_pixelpipe_iop_t *const piece,
+static inline int dt_masks_get_mask_roi(const dt_iop_module_t *const module, dt_dev_pixelpipe_t *pipe,
+                          const dt_dev_pixelpipe_iop_t *const piece,
                           dt_masks_form_t *const form, const dt_iop_roi_t *roi, float *buffer)
 {
   return (form->functions && form->functions->get_mask_roi)
-    ? form->functions->get_mask_roi(module, piece, form, roi, buffer)
+    ? form->functions->get_mask_roi(module, pipe, piece, form, roi, buffer)
     : 1;
 }
 
-int dt_masks_group_render_roi(dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, dt_masks_form_t *form,
+int dt_masks_group_render_roi(dt_iop_module_t *module, dt_dev_pixelpipe_t *pipe,
+                              const dt_dev_pixelpipe_iop_t *piece, dt_masks_form_t *form,
                               const dt_iop_roi_t *roi, float *buffer);
 
 // returns current masks version
@@ -954,16 +963,30 @@ gboolean dt_masks_gui_form_create_throttled(dt_masks_form_t *form, dt_masks_form
                                             struct dt_iop_module_t *module, float posx, float posy);
 
 /**
- * @brief Delete a mask shape or node form from the GUI.
- * This function is to be used with a popupmenu "Delete" action in the future.
+ * @brief remove a mask shape or node form from the GUI.
+ * This function is used with a popupmenu "Delete" action.
  * 
  * @param module The module owning the mask
- * @param form The form to delete
+ * @param form The form to remove
  * @param gui The GUI state of the form
  * @param parentid The parent ID of the form
- * @return gboolean TRUE if the form was deleted, FALSE otherwise
+ * @return gboolean TRUE if the form was removed, FALSE otherwise
  */
-gboolean dt_masks_gui_delete(struct dt_iop_module_t *module, dt_masks_form_t *form, dt_masks_form_gui_t *gui, const int parentid);
+gboolean dt_masks_gui_remove(struct dt_iop_module_t *module, dt_masks_form_t *form, dt_masks_form_gui_t *gui, const int parentid);
+
+/**
+ * @brief If the form to remove is used once, ask to the user if he wants to delete it from the list or just remove and keep for later reuse.
+ * 
+ * @param module The module owning the mask
+ * @param sel The form to remove
+ * @param parent_id The parent ID of the form
+ * @param mask_gui The GUI state of the form
+ * @param form_id The form ID of the form to remove
+ * @return gboolean TRUE if the form was removed, FALSE otherwise
+ */
+gboolean dt_masks_remove_or_delete(struct dt_iop_module_t *module, dt_masks_form_t *sel, int parent_id,
+                                    dt_masks_form_gui_t *mask_gui, int form_id);
+
 
 // Remove a mask
 gboolean dt_masks_form_cancel_creation(dt_iop_module_t *module, dt_masks_form_gui_t *gui);
@@ -985,7 +1008,7 @@ void dt_masks_iop_combo_populate(GtkWidget *w, void *module);
 void dt_masks_iop_use_same_as(struct dt_iop_module_t *module, struct dt_iop_module_t *src);
 uint64_t dt_masks_group_get_hash(uint64_t hash, dt_masks_form_t *form);
 
-void dt_masks_form_remove(struct dt_iop_module_t *module, dt_masks_form_t *grp, dt_masks_form_t *form);
+void dt_masks_form_delete(struct dt_iop_module_t *module, dt_masks_form_t *grp, dt_masks_form_t *form);
 int dt_masks_form_change_opacity(dt_masks_form_t *form, int parentid, int up, const int flow);
 void dt_masks_form_move(dt_masks_form_t *grp, int formid, int up);
 int dt_masks_form_duplicate(dt_develop_t *dev, int formid);
@@ -1116,10 +1139,10 @@ static inline gboolean _dt_masks_dynbuf_growto(dt_masks_dynbuf_t *a, size_t size
 {
   const size_t newsize = dt_round_size_sse(sizeof(float) * size) / sizeof(float);
   float *newbuf = dt_pixelpipe_cache_alloc_align_float_cache(newsize, 0);
-  if (!newbuf)
+  if (IS_NULL_PTR(newbuf))
   {
     // not much we can do here except emit an error message
-    fprintf(stderr, "critical: out of memory for dynbuf '%s' with size request %zu!\n", a->tag, size);
+    fprintf(stderr, "critical: out of memory for dynbuf '%s' with size request %" G_GSIZE_FORMAT "!\n", a->tag, size);
     return FALSE;
   }
   if (a->buffer)
@@ -1139,14 +1162,14 @@ static inline dt_masks_dynbuf_t *dt_masks_dynbuf_init(size_t size, const char *t
   assert(size > 0);
   dt_masks_dynbuf_t *a = (dt_masks_dynbuf_t *)calloc(1, sizeof(dt_masks_dynbuf_t));
 
-  if(a != NULL)
+  if(!IS_NULL_PTR(a))
   {
     g_strlcpy(a->tag, tag, sizeof(a->tag)); //only for debugging purposes
     a->pos = 0;
     if(_dt_masks_dynbuf_growto(a, size))
       dt_print(DT_DEBUG_MASKS, "[masks dynbuf '%s'] with initial size %lu (is %p)\n", a->tag,
                (unsigned long)a->size, a->buffer);
-    if(a->buffer == NULL)
+    if(IS_NULL_PTR(a->buffer))
     {
       dt_free(a);
     }
@@ -1156,7 +1179,7 @@ static inline dt_masks_dynbuf_t *dt_masks_dynbuf_init(size_t size, const char *t
 
 static inline void dt_masks_dynbuf_add_2(dt_masks_dynbuf_t *a, float value1, float value2)
 {
-  assert(a != NULL);
+  assert(!IS_NULL_PTR(a));
   assert(a->pos <= a->size);
   if(__builtin_expect(a->pos + 2 >= a->size, 0))
   {
@@ -1171,7 +1194,7 @@ static inline void dt_masks_dynbuf_add_2(dt_masks_dynbuf_t *a, float value1, flo
 // The caller should then fill in the reserved elements using the returned pointer.
 static inline float *dt_masks_dynbuf_reserve_n(dt_masks_dynbuf_t *a, const int n)
 {
-  assert(a != NULL);
+  assert(!IS_NULL_PTR(a));
   assert(a->pos <= a->size);
   if(__builtin_expect(a->pos + n >= a->size, 0))
   {
@@ -1191,7 +1214,7 @@ static inline float *dt_masks_dynbuf_reserve_n(dt_masks_dynbuf_t *a, const int n
 
 static inline void dt_masks_dynbuf_add_zeros(dt_masks_dynbuf_t *a, const int n)
 {
-  assert(a != NULL);
+  assert(!IS_NULL_PTR(a));
   assert(a->pos <= a->size);
   if(__builtin_expect(a->pos + n >= a->size, 0))
   {
@@ -1211,7 +1234,7 @@ static inline void dt_masks_dynbuf_add_zeros(dt_masks_dynbuf_t *a, const int n)
 
 static inline float dt_masks_dynbuf_get(dt_masks_dynbuf_t *a, int offset)
 {
-  assert(a != NULL);
+  assert(!IS_NULL_PTR(a));
   // offset: must be negative distance relative to end of buffer
   assert(offset < 0);
   assert((long)a->pos + offset >= 0);
@@ -1220,7 +1243,7 @@ static inline float dt_masks_dynbuf_get(dt_masks_dynbuf_t *a, int offset)
 
 static inline void dt_masks_dynbuf_set(dt_masks_dynbuf_t *a, int offset, float value)
 {
-  assert(a != NULL);
+  assert(!IS_NULL_PTR(a));
   // offset: must be negative distance relative to end of buffer
   assert(offset < 0);
   assert((long)a->pos + offset >= 0);
@@ -1229,21 +1252,21 @@ static inline void dt_masks_dynbuf_set(dt_masks_dynbuf_t *a, int offset, float v
 
 static inline float *dt_masks_dynbuf_buffer(dt_masks_dynbuf_t *a)
 {
-  assert(a != NULL);
+  assert(!IS_NULL_PTR(a));
   return a->buffer;
 }
 
 static inline gboolean dt_masks_center_of_gravity_from_points(const float *points, const int points_count,
                                                               float center[2], float *area)
 {
-  if(!points || !center || !area || points_count <= 0)
+  if(IS_NULL_PTR(points) || IS_NULL_PTR(center) || IS_NULL_PTR(area) || points_count <= 0)
   {
     if(center)
     {
       center[0] = 0.0f;
       center[1] = 0.0f;
     }
-    if(area) *area = 0.0f;
+    if(!IS_NULL_PTR(area)) *area = 0.0f;
     return FALSE;
   }
 
@@ -1306,20 +1329,20 @@ static inline gboolean dt_masks_center_of_gravity_from_points(const float *point
 
 static inline size_t dt_masks_dynbuf_position(dt_masks_dynbuf_t *a)
 {
-  assert(a != NULL);
+  assert(!IS_NULL_PTR(a));
   return a->pos;
 }
 
 static inline void dt_masks_dynbuf_reset(dt_masks_dynbuf_t *a)
 {
-  assert(a != NULL);
+  assert(!IS_NULL_PTR(a));
   a->pos = 0;
 }
 
 static inline float *dt_masks_dynbuf_harvest(dt_masks_dynbuf_t *a)
 {
   // take out data buffer and make dynamic buffer obsolete
-  if(a == NULL) return NULL;
+  if(IS_NULL_PTR(a)) return NULL;
   float *r = a->buffer;
   a->buffer = NULL;
   a->pos = a->size = 0;
@@ -1328,7 +1351,7 @@ static inline float *dt_masks_dynbuf_harvest(dt_masks_dynbuf_t *a)
 
 static inline void dt_masks_dynbuf_free(dt_masks_dynbuf_t *a)
 {
-  if(a == NULL) return;
+  if(IS_NULL_PTR(a)) return;
   dt_print(DT_DEBUG_MASKS, "[masks dynbuf '%s'] freed (was %p)\n", a->tag,
           a->buffer);
   dt_pixelpipe_cache_free_align(a->buffer);
@@ -1429,6 +1452,10 @@ GdkModifierType dt_masks_get_accel_mods(dt_masks_interaction_t interaction);
 
 GtkWidget *dt_masks_create_menu(dt_masks_form_gui_t *gui, dt_masks_form_t *form, const dt_masks_form_group_t *fpt,
                                 const float pzx, const float pzy);
+
+/** Dialogs */
+
+int dt_masks_gui_confirm_delete_form_dialog(const char *form_name);
 
 #ifdef __cplusplus
 }

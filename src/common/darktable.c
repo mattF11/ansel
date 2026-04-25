@@ -102,7 +102,6 @@
 #include "gui/presets.h"
 #include "gui/splash.h"
 
-#include "common/cpuid.h"
 #include "common/file_location.h"
 #include "common/film.h"
 #include "common/grealpath.h"
@@ -120,6 +119,7 @@
 #include "common/tags.h"
 #include "common/styles.h"
 #include "common/undo.h"
+#include "common/fp_mode.h"
 #include "control/conf.h"
 #include "control/control.h"
 #include "control/crawler.h"
@@ -134,7 +134,6 @@
 #include "gui/guides.h"
 #include "gui/presets.h"
 #include "libs/lib.h"
-#include "lua/init.h"
 #include "views/view.h"
 #include "conf_gen.h"
 
@@ -151,7 +150,7 @@
 #include <locale.h>
 #include <limits.h>
 
-#if defined(__SSE__)
+#if defined(__x86_64__) || defined(__i386__)
 #include <xmmintrin.h>
 #endif
 
@@ -171,11 +170,47 @@
 #include <omp.h>
 #endif
 
-#ifdef USE_LUA
-#include "lua/configuration.h"
-#endif
-
 darktable_t darktable;
+
+/**
+ * GLib 2.82 routes GTK/GDK diagnostics through the structured log writer, so
+ * filtering them with g_log_set_handler() is not sufficient here. We drop only
+ * the known harmless startup messages and forward every other record to the
+ * default writer unchanged.
+ */
+static GLogWriterOutput _gtk_log_writer_filter(GLogLevelFlags log_level, const GLogField *fields,
+                                               gsize n_fields, gpointer user_data)
+{
+  const gchar *message = NULL;
+
+  for(gsize k = 0; k < n_fields; k++)
+  {
+    if(g_strcmp0(fields[k].key, "MESSAGE")) continue;
+
+    message = fields[k].value;
+    break;
+  }
+
+  // Silence only warnings/errors that come from default Adwaita CSS or desktop theme
+  // because there is nothing we can do about those.
+  // Yes, default Adwaita GTK CSS is still using deprecated GTK stuff in 2026...
+  // Even those morons can't keep up with the pace of their own deprecations.
+  if(message)
+  {
+    if(!g_strcmp0(message, "Unable to load dot from the cursor theme"))
+      return G_LOG_WRITER_HANDLED;
+
+    if(g_str_has_prefix(message, "Theme parsing error:")
+       && g_str_has_suffix(message, "The :insensitive pseudo-class is deprecated. Use :disabled instead."))
+      return G_LOG_WRITER_HANDLED;
+
+    if(g_str_has_prefix(message, "Theme parsing error:")
+       && g_str_has_suffix(message, "The :inconsistent pseudo-class is deprecated. Use :indeterminate instead."))
+      return G_LOG_WRITER_HANDLED;
+  }
+
+  return g_log_writer_default(log_level, fields, n_fields, user_data);
+}
 
 static int usage(const char *argv0)
 {
@@ -191,8 +226,8 @@ static int usage(const char *argv0)
   printf("  --conf <key>=<value>\n");
   printf("  --configdir <user config directory>\n");
   printf("  -d {all,cache,camctl,camsupport,colorprofile,control,demosaic,dev,history,imageio,import,\n");
-  printf("      input,ioporder,lighttable,lua,masks,memory,nan,opencl,params,\n");
-  printf("      perf,pipe,print,pwstorage,signal,sql,shortcuts,tiling,undo,verbose}\n");
+  printf("      input,ioporder,lighttable,lua,masks,memory,nan,nocache_reuse,opencl,params,\n");
+  printf("      perf,pipe,pipecache,print,pwstorage,signal,sql,shortcuts,tiling,undo,verbose}\n");
   printf("  --d-signal <signal> \n");
   printf("  --d-signal-act <all,raise,connect,disconnect");
   // clang-format on
@@ -211,9 +246,6 @@ static int usage(const char *argv0)
   printf("\n");
   printf("  --library <library file>\n");
   printf("  --localedir <locale directory>\n");
-#ifdef USE_LUA
-  printf("  --luacmd <lua command>\n");
-#endif
   printf("  --moduledir <module directory>\n");
   printf("  --noiseprofiles <noiseprofiles json file>\n");
   printf("  -t <num openmp threads>\n");
@@ -267,10 +299,10 @@ gboolean dt_supported_image(const gchar *filename)
 {
   gboolean supported = FALSE;
   char *ext = g_strrstr(filename, ".");
-  if(!ext)
+  if(IS_NULL_PTR(ext))
     return FALSE;
   ext++;
-  for(const char **i = dt_supported_extensions; *i != NULL; i++)
+  for(const char **i = dt_supported_extensions; !IS_NULL_PTR(*i); i++)
     if(!g_ascii_strncasecmp(ext, *i, strlen(*i)))
     {
       supported = TRUE;
@@ -282,11 +314,11 @@ gboolean dt_supported_image(const gchar *filename)
 int dt_load_from_string(const gchar *input, gboolean open_image_in_dr, gboolean *single_image)
 {
   int32_t id = 0;
-  if(input == NULL || input[0] == '\0') return 0;
+  if(IS_NULL_PTR(input) || input[0] == '\0') return 0;
 
   char *filename = dt_util_normalize_path(input);
 
-  if(filename == NULL)
+  if(IS_NULL_PTR(filename))
   {
     dt_control_log(_("found strange path `%s'"), input);
     return 0;
@@ -321,7 +353,7 @@ int dt_load_from_string(const gchar *input, gboolean open_image_in_dr, gboolean 
       // make sure buffers are loaded (load full for testing)
       dt_mipmap_buffer_t buf;
       dt_mipmap_cache_get(darktable.mipmap_cache, &buf, id, DT_MIPMAP_FULL, DT_MIPMAP_BLOCKING, 'r');
-      gboolean loaded = (buf.buf != NULL);
+      gboolean loaded = (!IS_NULL_PTR(buf.buf));
       dt_mipmap_cache_release(darktable.mipmap_cache, &buf);
       if(!loaded)
       {
@@ -347,59 +379,12 @@ int dt_load_from_string(const gchar *input, gboolean open_image_in_dr, gboolean 
   return id;
 }
 
-static void dt_codepaths_init()
-{
-#ifdef HAVE_BUILTIN_CPU_SUPPORTS
-  __builtin_cpu_init();
-#endif
-
-  memset(&(darktable.codepath), 0, sizeof(darktable.codepath));
-
-#ifndef __arm64__
-  // first, enable whatever codepath this CPU supports
-  {
-#ifdef HAVE_BUILTIN_CPU_SUPPORTS
-    darktable.codepath.SSE2 = (__builtin_cpu_supports("sse") && __builtin_cpu_supports("sse2"));
-#else
-    dt_cpu_flags_t flags = dt_detect_cpu_features();
-    darktable.codepath.SSE2 = ((flags & (CPU_FLAG_SSE)) && (flags & (CPU_FLAG_SSE2)));
-#endif
-  }
-#endif
-
-  // second, apply overrides from conf
-  // NOTE: all intrinsics sets can only be overridden to OFF
-  if(!dt_conf_get_bool("codepaths/sse2")) darktable.codepath.SSE2 = 0;
-
-  // last: do we have any intrinsics sets enabled?
-  darktable.codepath._no_intrinsics = !(darktable.codepath.SSE2);
-
-// if there is no SSE, we must enable plain codepath by default,
-// else, enable it conditionally.
-#if defined(__SSE__)
-  // disabled by default, needs to be manually enabled if needed.
-  // disabling all optimized codepaths enables it automatically.
-  if(dt_conf_get_bool("codepaths/openmp_simd") || darktable.codepath._no_intrinsics)
-#endif
-  {
-    darktable.codepath.OPENMP_SIMD = 1;
-    fprintf(stderr, "[dt_codepaths_init] will be using experimental plain OpenMP SIMD codepath.\n");
-  }
-
-#if defined(__SSE__)
-  if(darktable.codepath._no_intrinsics)
-  {
-    fprintf(stderr, "[dt_codepaths_init] SSE2-optimized codepath is disabled or unavailable.\n");
-  }
-#endif
-}
-
 // Returns total system memory in kiloBytes
 static inline size_t _get_total_memory()
 {
 #if defined(__linux__)
   FILE *f = g_fopen("/proc/meminfo", "rb");
-  if(!f) return 0;
+  if(IS_NULL_PTR(f)) return 0;
   size_t mem = 0;
   char *line = NULL;
   size_t len = 0;
@@ -408,7 +393,7 @@ static inline size_t _get_total_memory()
   while(!found && getline(&line, &len, f) != -1)
   {
     char *colon = strchr(line, ':');
-    if(!colon) continue;
+    if(IS_NULL_PTR(colon)) continue;
     found = !strncmp(line, "MemTotal:", 9);
     if(found || first) mem = atol(colon + 1);
     first = 0;
@@ -449,7 +434,7 @@ void *dt_alloc_align(size_t size)
   return dt_alloc_align_internal(size);
 }
 
-int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load_data, lua_State *L)
+int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load_data)
 {
   double start_wtime = dt_get_wtime();
 
@@ -459,28 +444,9 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
         "WARNING: either your user id or the effective user id are 0. are you running darktable as root?\n");
 #endif
 
-#if defined(__SSE__)
-  // make everything go a lot faster.
-  _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
-#endif
+  dt_fp_init(DT_FP_MODE_FAST);
 
   dt_set_signal_handlers();
-
-  int sse2_supported = 0;
-#ifndef __arm64__
-#ifdef HAVE_BUILTIN_CPU_SUPPORTS
-  // NOTE: _may_i_use_cpu_feature() looks better, but only available in ICC
-  __builtin_cpu_init();
-  sse2_supported = __builtin_cpu_supports("sse2");
-#else
-  sse2_supported = dt_detect_cpu_features() & CPU_FLAG_SSE2;
-#endif
-  if(!sse2_supported)
-  {
-    fprintf(stderr, "[dt_init] SSE2 instruction set is unavailable.\n");
-    fprintf(stderr, "[dt_init] expect a LOT of functionality to be broken. you have been warned.\n");
-  }
-#endif
 
 #ifdef M_MMAP_THRESHOLD
   mallopt(M_MMAP_THRESHOLD, 128 * 1024); /* use mmap() for large allocations */
@@ -527,10 +493,6 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   gboolean print_statistics = (strstr(argv[0], "ansel-cltest") == NULL);
 #endif
 
-#ifdef USE_LUA
-  char *lua_command = NULL;
-#endif
-
   darktable.num_openmp_threads = 1;
 #ifdef _OPENMP
   darktable.num_openmp_threads = omp_get_max_threads();
@@ -556,27 +518,12 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
       }
       else if(!strcmp(argv[k], "--version"))
       {
-#ifdef USE_LUA
-        const char *lua_api_version = strcmp(LUA_API_VERSION_SUFFIX, "") ?
-                                      STR(LUA_API_VERSION_MAJOR) "."
-                                      STR(LUA_API_VERSION_MINOR) "."
-                                      STR(LUA_API_VERSION_PATCH) "-"
-                                      LUA_API_VERSION_SUFFIX :
-                                      STR(LUA_API_VERSION_MAJOR) "."
-                                      STR(LUA_API_VERSION_MINOR) "."
-                                      STR(LUA_API_VERSION_PATCH);
-#endif
         printf("this is %s\ncopyright (c) 2009-2022 Johannes Hanika, (c) 2022-%s Aurélien Pierre\n" PACKAGE_BUGREPORT "\n\ncompile options:\n"
-               "  bit depth is %zu bit\n"
+               "  bit depth is %" G_GSIZE_FORMAT " bit\n"
 #ifdef _DEBUG
                "  debug build\n"
 #else
                "  normal build\n"
-#endif
-#if defined(__SSE2__) && defined(__SSE__)
-               "  SSE2 optimized codepath enabled\n"
-#else
-               "  SSE2 optimized codepath disabled\n"
 #endif
 #ifdef _OPENMP
                "  OpenMP support enabled\n"
@@ -588,12 +535,6 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
                "  OpenCL support enabled\n"
 #else
                "  OpenCL support disabled\n"
-#endif
-
-#ifdef USE_LUA
-               "  Lua support enabled, API version %s\n"
-#else
-               "  Lua support disabled\n"
 #endif
 
 #ifdef USE_COLORDGTK
@@ -623,10 +564,6 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
                darktable_package_string,
                darktable_last_commit_year,
                CHAR_BIT * sizeof(void *)
-#if USE_LUA
-                   ,
-               lua_api_version
-#endif
                );
         return 1;
       }
@@ -690,8 +627,8 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
           darktable.unmuted |= DT_DEBUG_DEV; // develop module
         else if(!strcmp(argv[k + 1], "input"))
           darktable.unmuted |= DT_DEBUG_INPUT; // input devices
-        else if(!strcmp(argv[k + 1], "camctl"))
-          darktable.unmuted |= DT_DEBUG_CAMCTL; // camera control module
+        else if(!strcmp(argv[k + 1], "pipecache"))
+          darktable.unmuted |= DT_DEBUG_PIPECACHE; // pipeline cache
         else if(!strcmp(argv[k + 1], "perf"))
           darktable.unmuted |= DT_DEBUG_PERF; // performance measurements
         else if(!strcmp(argv[k + 1], "pwstorage"))
@@ -716,6 +653,8 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
           darktable.unmuted |= DT_DEBUG_CAMERA_SUPPORT; // camera support warnings are reported on console
         else if(!strcmp(argv[k + 1], "colorprofile"))
           darktable.unmuted |= DT_DEBUG_COLORPROFILE; // color profile handling
+        else if(!strcmp(argv[k + 1], "nocache_reuse"))
+          darktable.unmuted |= DT_DEBUG_NOCACHE_REUSE; // disable reusable pixelpipe cache buffers
         else if(!strcmp(argv[k + 1], "ioporder"))
           darktable.unmuted |= DT_DEBUG_IOPORDER; // iop order information are reported on console
         else if(!strcmp(argv[k + 1], "imageio"))
@@ -786,6 +725,8 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
         CHKSIGDBG(DT_SIGNAL_CONTROL_REDRAW_CENTER);
         CHKSIGDBG(DT_SIGNAL_VIEWMANAGER_VIEW_CHANGED);
         CHKSIGDBG(DT_SIGNAL_VIEWMANAGER_THUMBTABLE_ACTIVATE);
+        CHKSIGDBG(DT_SIGNAL_VIEWMANAGER_FILMSTRIP_ACTIVATE);
+        CHKSIGDBG(DT_SIGNAL_VIEWMANAGER_FILMSTRIP_DRAG_BEGIN);
         CHKSIGDBG(DT_SIGNAL_COLLECTION_CHANGED);
         CHKSIGDBG(DT_SIGNAL_SELECTION_CHANGED);
         CHKSIGDBG(DT_SIGNAL_TAG_CHANGED);
@@ -861,16 +802,6 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
         argv[k-1] = NULL;
         argv[k] = NULL;
       }
-      else if(!strcmp(argv[k], "--luacmd") && argc > k + 1)
-      {
-#ifdef USE_LUA
-        lua_command = argv[++k];
-#else
-        ++k;
-#endif
-        argv[k-1] = NULL;
-        argv[k] = NULL;
-      }
       else if(!strcmp(argv[k], "--disable-opencl"))
       {
 #ifdef HAVE_OPENCL
@@ -905,7 +836,7 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   {
     int k;
     for(k = i; k < argc; k++)
-      if(argv[k] != NULL) break;
+      if(!IS_NULL_PTR(argv[k])) break;
 
     if(k > i)
     {
@@ -922,6 +853,13 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   // get valid directories
   dt_loc_init(datadir_from_command, moduledir_from_command, localedir_from_command, configdir_from_command, cachedir_from_command, tmpdir_from_command, kerneldir_from_command);
 
+  fprintf(stdout, "[build] version: %s\n", darktable_package_string);
+  fprintf(stdout, "[build] type: %s | cpu mode: %s\n", DT_BUILD_TYPE, DT_BUILD_CPU_MODE);
+  fprintf(stdout, "[build] c compiler: %s\n", DT_BUILD_C_COMPILER);
+  fprintf(stdout, "[build] c flags: %s\n", DT_BUILD_C_FLAGS);
+  fprintf(stdout, "[build] c++ compiler: %s\n", DT_BUILD_CXX_COMPILER);
+  fprintf(stdout, "[build] c++ flags: %s\n", DT_BUILD_CXX_FLAGS);
+
   if(darktable.unmuted & DT_DEBUG_MEMORY)
   {
     fprintf(stderr, "[memory] at startup\n");
@@ -937,13 +875,13 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
     const gchar *xdg_data_dirs = g_getenv("XDG_DATA_DIRS");
     gchar *new_xdg_data_dirs = NULL;
     gboolean set_env = TRUE;
-    if(xdg_data_dirs != NULL && *xdg_data_dirs != '\0')
+    if(!IS_NULL_PTR(xdg_data_dirs) && *xdg_data_dirs != '\0')
     {
       // check if sharedir is already in there
       gboolean found = FALSE;
       gchar **tokens = g_strsplit(xdg_data_dirs, G_SEARCHPATH_SEPARATOR_S, 0);
-      // xdg_data_dirs is neither NULL nor empty => tokens != NULL
-      for(char **iter = tokens; *iter != NULL; iter++)
+      // xdg_data_dirs is neither NULL nor empty => !IS_NULL_PTR(tokens)
+      for(char **iter = tokens; !IS_NULL_PTR(*iter); iter++)
         if(!strcmp(sharedir, *iter))
         {
           found = TRUE;
@@ -993,16 +931,12 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
     dt_control_progress_init(darktable.control);
   }
 
-#ifdef USE_LUA
-  dt_lua_init_early(L);
-#endif
-
   // thread-safe init:
   dt_exif_init();
   char datadir[PATH_MAX] = { 0 };
   dt_loc_get_user_config_dir(datadir, sizeof(datadir));
   char anselrc[PATH_MAX] = { 0 };
-  snprintf(anselrc, sizeof(anselrc), "%s/anselrc", datadir);
+  dt_concat_path_file(anselrc, datadir, "anselrc");
 
   // initialize the config backend. this needs to be done first...
   darktable.conf = (dt_conf_t *)calloc(1, sizeof(dt_conf_t));
@@ -1030,13 +964,11 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   // we need this REALLY early so that error messages can be shown, however after gtk_disable_setlocale
   if(init_gui)
   {
+    g_log_set_writer_func(_gtk_log_writer_filter, NULL, NULL);
     gtk_init(&argc, &argv);
 
     darktable.themes = NULL;
   }
-
-  // detect cpu features and decide which codepaths to enable
-  dt_codepaths_init();
 
   // get the list of color profiles
   darktable.color_profiles = dt_colorspaces_init();
@@ -1049,7 +981,7 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   while (recheck_needed)
   {
     darktable.db = dt_database_init(dbfilename_from_command, load_data, init_gui);
-    if(darktable.db == NULL)
+    if(IS_NULL_PTR(darktable.db))
     {
       printf("ERROR : cannot open database\n");
       dt_gui_splash_close();
@@ -1074,8 +1006,8 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
             // make the filename absolute ...
             if(argv[i] == NULL || *argv[i] == '\0') continue;
             gchar *filename = dt_util_normalize_path(argv[i]);
-            if(filename == NULL) continue;
-            if(!connection) connection = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
+            if(IS_NULL_PTR(filename)) continue;
+            if(IS_NULL_PTR(connection)) connection = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
             // ... and send it to the running instance of darktable
             image_loaded_elsewhere = g_dbus_connection_call_sync(connection, "org.darktable.service", "/darktable",
                                                                 "org.darktable.service.Remote", "Open",
@@ -1208,7 +1140,7 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   dt_view_manager_init(darktable.view_manager);
 
   // check whether we were able to load darkroom view. if we failed, we'll crash everywhere later on.
-  if(!darktable.develop)
+  if(IS_NULL_PTR(darktable.develop))
   {
     fprintf(stderr, "ERROR: can't init develop system, aborting.\n");
     dt_gui_splash_close();
@@ -1216,7 +1148,7 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   }
 
   darktable.pixelpipe_cache = dt_dev_pixelpipe_cache_init(darktable.dtresources.pixelpipe_memory);
-  if(!darktable.pixelpipe_cache)
+  if(IS_NULL_PTR(darktable.pixelpipe_cache))
   {
     fprintf(stderr, "ERROR: can't init pixelpipe cache, aborting.\n");
     dt_gui_splash_close();
@@ -1296,12 +1228,6 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
     dt_print_mem_usage();
   }
 
-
-/* init lua last, since it's user made stuff it must be in the real environment */
-#ifdef USE_LUA
-  dt_lua_init(darktable.lua_state.state, lua_command);
-#endif
-
   if(init_gui)
   {
     // we have to call dt_ctl_switch_mode_to() here already to not run into a lua deadlock.
@@ -1346,7 +1272,7 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
 
 void dt_cleanup()
 {
-  const int init_gui = (darktable.gui != NULL);
+  const int init_gui = (!IS_NULL_PTR(darktable.gui));
 
   // Restore selection if exiting on culling mode to be sure it's saved in DB
   if(darktable.gui && darktable.gui->culling_mode)
@@ -1369,10 +1295,6 @@ void dt_cleanup()
   dt_printers_abort_discovery();
 #endif
 
-#ifdef USE_LUA
-  dt_lua_finalize_early();
-#endif
-
   // anything that asks user for input should be placed before this line
 
   if(init_gui)
@@ -1383,22 +1305,19 @@ void dt_cleanup()
     dt_ctl_switch_mode_to("");
     //dt_dbus_destroy(darktable.dbus);
 
+    // Stop control workers before unloading views and libs. They can still be
+    // processing lighttable-side jobs while shutdown is tearing down modules.
+    dt_control_shutdown(darktable.control);
+
     dt_lib_cleanup(darktable.lib);
     dt_free(darktable.lib);
   }
-
-#ifdef USE_LUA
-  dt_lua_finalize();
-#endif
 
   dt_view_manager_cleanup(darktable.view_manager);
   dt_free(darktable.view_manager);
 
   if(init_gui)
   {
-    // Ensure we stop dangling jobs before deleting GUI stuff that may use them
-    dt_control_shutdown(darktable.control);
-
     dt_imageio_cleanup(darktable.imageio);
     dt_free(darktable.imageio);
 
@@ -1532,7 +1451,7 @@ void dt_print(dt_debug_thread_t thread, const char *msg, ...)
     printf("%f ", dt_get_wtime() - darktable.start_wtime);
     va_list ap;
     va_start(ap, msg);
-    vprintf(msg, ap);
+    g_vprintf(msg, ap);
     va_end(ap);
     fflush(stdout);
   }
@@ -1544,7 +1463,7 @@ void dt_print_nts(dt_debug_thread_t thread, const char *msg, ...)
   {
     va_list ap;
     va_start(ap, msg);
-    vprintf(msg, ap);
+    g_vprintf(msg, ap);
     va_end(ap);
     fflush(stdout);
   }
@@ -1557,7 +1476,7 @@ void dt_vprint(dt_debug_thread_t thread, const char *msg, ...)
     printf("%f ", dt_get_wtime() - darktable.start_wtime);
     va_list ap;
     va_start(ap, msg);
-    vprintf(msg, ap);
+    g_vprintf(msg, ap);
     va_end(ap);
     fflush(stdout);
   }
@@ -1634,14 +1553,14 @@ size_t get_usable_memory_bytes()
 size_t get_usable_memory_bytes()
 {
   FILE *f = g_fopen("/proc/meminfo", "r");
-  if(!f) return 0;
+  if(IS_NULL_PTR(f)) return 0;
 
   char line[256];
   size_t available_kb = 0;
 
   while(fgets(line, sizeof(line), f))
   {
-    if(sscanf(line, "MemAvailable: %zu kB", &available_kb) == 1)
+    if(sscanf(line, "MemAvailable: %" G_GSIZE_FORMAT " kB", &available_kb) == 1)
     {
       fclose(f);
       return available_kb * 1024; // kB to bytes
@@ -1670,12 +1589,6 @@ size_t dt_get_available_mem()
   return darktable.pixelpipe_cache->max_memory - darktable.pixelpipe_cache->current_memory;
 }
 
-size_t dt_get_singlebuffer_mem()
-{
-  return 4 * sizeof(float) * 6000 * 4000;
-}
-
-
 size_t dt_get_mipmap_mem()
 {
   return darktable.dtresources.mipmap_memory;
@@ -1690,7 +1603,7 @@ void dt_configure_runtime_performance(dt_sys_resources_t *resources, gboolean in
   const size_t bits = CHAR_BIT * sizeof(void *);
   const gboolean sufficient = (mem >= 4096 && threads >= 2);
 
-  dt_print(DT_DEBUG_MEMORY, "[MEMORY CONFIGURATION] found a %s %zu-bit system with %zu cores\n",
+  dt_print(DT_DEBUG_MEMORY, "[MEMORY CONFIGURATION] found a %s %" G_GSIZE_FORMAT "-bit system with %" G_GSIZE_FORMAT " cores\n",
     (sufficient) ? "sufficient" : "low performance", bits, threads);
 
   // Override RAM detection with user config
@@ -1730,16 +1643,16 @@ void dt_configure_runtime_performance(dt_sys_resources_t *resources, gboolean in
   }
 
   // Print
-  dt_print(DT_DEBUG_MEMORY | DT_DEBUG_CACHE, _("[MEMORY CONFIGURATION] Total system RAM: %lu MiB\n"),
+  dt_print(DT_DEBUG_MEMORY | DT_DEBUG_CACHE, _("[MEMORY CONFIGURATION] Total system RAM: %" G_GSIZE_FORMAT " MiB\n"),
            resources->total_memory / (1024 * 1024));
 
-  dt_print(DT_DEBUG_MEMORY | DT_DEBUG_CACHE, _("[MEMORY CONFIGURATION] OS & Apps RAM headroom: %lu MiB\n"),
+  dt_print(DT_DEBUG_MEMORY | DT_DEBUG_CACHE, _("[MEMORY CONFIGURATION] OS & Apps RAM headroom: %" G_GSIZE_FORMAT " MiB\n"),
            resources->headroom_memory / (1024 * 1024));
 
-  dt_print(DT_DEBUG_MEMORY | DT_DEBUG_CACHE, _("[MEMORY CONFIGURATION] Lightable thumbnails cache size: %lu MiB\n"),
+  dt_print(DT_DEBUG_MEMORY | DT_DEBUG_CACHE, _("[MEMORY CONFIGURATION] Lightable thumbnails cache size: %" G_GSIZE_FORMAT " MiB\n"),
            resources->mipmap_memory / (1024 * 1024));
 
-  dt_print(DT_DEBUG_MEMORY | DT_DEBUG_CACHE, _("[MEMORY CONFIGURATION] Pixelpipe cache size: %lu MiB\n"),
+  dt_print(DT_DEBUG_MEMORY | DT_DEBUG_CACHE, _("[MEMORY CONFIGURATION] Pixelpipe cache size: %" G_GSIZE_FORMAT " MiB\n"),
            resources->pixelpipe_memory / (1024 * 1024));
 
   dt_print(DT_DEBUG_MEMORY | DT_DEBUG_CACHE, _("[MEMORY CONFIGURATION] Worker threads: %i\n"), dt_worker_threads());
@@ -1807,7 +1720,7 @@ void dt_print_mem_usage()
   snprintf(pidstatus, sizeof(pidstatus), "/proc/%u/status", (uint32_t)getpid());
 
   f = g_fopen(pidstatus, "r");
-  if(!f) return;
+  if(IS_NULL_PTR(f)) return;
 
   /* read memory size data from /proc/pid/status */
   while(getline(&line, &len, f) != -1)
@@ -1876,6 +1789,13 @@ void dt_print_mem_usage()
 #else
   fprintf(stderr, "dt_print_mem_usage() currently unsupported on this platform\n");
 #endif
+}
+
+void dt_concat_path_file(char destination[PATH_MAX], const char path[PATH_MAX], const char *const file)
+{
+  g_strlcpy(destination, path, sizeof(char) * PATH_MAX);
+  g_strlcat(destination, G_DIR_SEPARATOR_S, sizeof(char) * PATH_MAX);
+  g_strlcat(destination, file, sizeof(char) * PATH_MAX);  
 }
 
 // clang-format off

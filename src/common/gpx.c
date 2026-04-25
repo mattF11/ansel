@@ -98,7 +98,7 @@ dt_gpx_t *dt_gpx_new(const gchar *filename)
 
   gchar *gpxmf_content = g_mapped_file_get_contents(gpxmf);
   const gint gpxmf_size = g_mapped_file_get_length(gpxmf);
-  if(!gpxmf_content || gpxmf_size < 10) goto error;
+  if(IS_NULL_PTR(gpxmf_content) || gpxmf_size < 10) goto error;
 
   /* allocate new dt_gpx_t context */
   gpx = g_malloc0(sizeof(dt_gpx_t));
@@ -151,7 +151,7 @@ void _track_pts_free(dt_gpx_track_point_t *trkpt)
 
 void dt_gpx_destroy(struct dt_gpx_t *gpx)
 {
-  g_assert(gpx != NULL);
+  g_assert(!IS_NULL_PTR(gpx));
 
   if(gpx->trkpts)
   {
@@ -169,7 +169,7 @@ void dt_gpx_destroy(struct dt_gpx_t *gpx)
 
 gboolean dt_gpx_get_location(struct dt_gpx_t *gpx, GDateTime *timestamp, dt_image_geoloc_t *geoloc)
 {
-  g_assert(gpx != NULL);
+  g_assert(!IS_NULL_PTR(gpx));
 
   /* verify that we got at least 2 trackpoints */
   if(g_list_shorter_than(gpx->trkpts,2)) return FALSE;
@@ -181,7 +181,7 @@ gboolean dt_gpx_get_location(struct dt_gpx_t *gpx, GDateTime *timestamp, dt_imag
     /* if timestamp is out of time range return false but fill
        closest location value start or end point */
     const gint cmp = g_date_time_compare(timestamp, tp->time);
-    if((!item->next && cmp >= 0) || (cmp <= 0))
+    if((IS_NULL_PTR(item->next) && cmp >= 0) || (cmp <= 0))
     {
       geoloc->longitude = tp->longitude;
       geoloc->latitude = tp->latitude;
@@ -255,7 +255,7 @@ gboolean dt_gpx_get_location(struct dt_gpx_t *gpx, GDateTime *timestamp, dt_imag
         geoloc->longitude = lon;
 
         /* make a simple linear interpolation on elevation */
-        if(tp_next->elevation == NAN || tp->elevation == NAN)
+        if(isnan(tp_next->elevation) || isnan(tp->elevation))
           geoloc->elevation = NAN;
         else
           geoloc->elevation = tp->elevation + (tp_next->elevation - tp->elevation) * f;
@@ -337,13 +337,13 @@ void _gpx_parser_start_element(GMarkupParseContext *ctx, const gchar *element_na
   }
   else if(strcmp(element_name, "time") == 0)
   {
-    if(!gpx->current_track_point) goto element_error;
+    if(IS_NULL_PTR(gpx->current_track_point)) goto element_error;
 
     gpx->current_parser_element = GPX_PARSER_ELEMENT_TIME;
   }
   else if(strcmp(element_name, "ele") == 0)
   {
-    if(!gpx->current_track_point) goto element_error;
+    if(IS_NULL_PTR(gpx->current_track_point)) goto element_error;
 
     gpx->current_parser_element = GPX_PARSER_ELEMENT_ELE;
   }
@@ -412,12 +412,12 @@ void _gpx_parser_text(GMarkupParseContext *context, const gchar *text, gsize tex
     gpx->seg_name =  g_strdup(text);
   }
 
-  if(!gpx->current_track_point) return;
+  if(IS_NULL_PTR(gpx->current_track_point)) return;
 
   if(gpx->current_parser_element == GPX_PARSER_ELEMENT_TIME)
   {
     gpx->current_track_point->time = g_date_time_new_from_iso8601(text, NULL);
-    if(!gpx->current_track_point->time)
+    if(IS_NULL_PTR(gpx->current_track_point->time))
     {
       gpx->invalid_track_point = TRUE;
       fprintf(stderr, "broken GPX file, failed to pars is8601 time '%s' for trackpoint\n", text);
@@ -426,7 +426,7 @@ void _gpx_parser_text(GMarkupParseContext *context, const gchar *text, gsize tex
     if(ts)
     {
       ts->nb_trkpt++;
-      if(!ts->start_dt)
+      if(IS_NULL_PTR(ts->start_dt))
       {
         ts->start_dt = gpx->current_track_point->time;
         ts->trkpt = gpx->current_track_point;
@@ -447,10 +447,10 @@ GList *dt_gpx_get_trkpts(struct dt_gpx_t *gpx, const guint segid)
 {
   GList *pts = NULL;
   GList *ts = g_list_nth(gpx->trksegs, segid);
-  if(!ts) return pts;
+  if(IS_NULL_PTR(ts)) return pts;
   dt_gpx_track_segment_t *tsd = (dt_gpx_track_segment_t *)ts->data;
   GList *tps = g_list_find(gpx->trkpts, tsd->trkpt);
-  if(!tps) return pts;
+  if(IS_NULL_PTR(tps)) return pts;
   for(GList *tp = tps; tp; tp = g_list_next(tp))
   {
     dt_gpx_track_point_t *tpd = (dt_gpx_track_point_t *)tp->data;

@@ -43,12 +43,24 @@ jobs:
       fail-fast: false
       matrix:
         build:
-          - { os: macos-14,    xcode: 15.4,   deployment: 14.0 }
+          - { 
+            os: macos-15, 
+            xcode: 26.3, 
+            deployment: 15.0, 
+            tag: "arm64",
+            eco: "-DBINARY_PACKAGE_BUILD=ON -DUSE_GRAPHICSMAGICK=ON -DUSE_IMAGEMAGICK=OFF -DDT_APPLE_X86_TARGET_CLONES=0",
+            } # AppleClang 17, arm64
+          - { 
+            os: macos-15-intel, 
+            xcode: 26.3, 
+            deployment: 15.0, 
+            tag: "intel64",
+            eco: "-DBINARY_PACKAGE_BUILD=ON -DUSE_GRAPHICSMAGICK=ON -DUSE_IMAGEMAGICK=OFF -DDT_APPLE_X86_TARGET_CLONES=1",
+             } # AppleClang 17, intel64
         btype:
-          - Release
+          - RelWithDebInfo
         compiler:
           - { compiler: XCode,   CC: cc, CXX: c++ }
-        eco: [-DBINARY_PACKAGE_BUILD=OFF -DUSE_GRAPHICSMAGICK=ON -DUSE_IMAGEMAGICK=OFF]
         target:
           - skiptest # In the case the generic .ci/ci-script.sh script is used.
                      # But in our case, we invoke the more specific .ci/ci-script-mac.sh script
@@ -64,17 +76,17 @@ jobs:
       SRC_DIR: ${{ github.workspace }}/src
       BUILD_DIR: ${{ github.workspace }}/src/build
       INSTALL_PREFIX: ${{ github.workspace }}/src/install
-      ECO: ${{ matrix.eco }}
+      ECO: ${{ matrix.build.eco }}
       CMAKE_BUILD_TYPE: ${{ matrix.btype }}
       GENERATOR: ${{ matrix.generator }}
       TARGET: ${{ matrix.target }}
       BRANCH: ${{ matrix.branch.code }}
       BUILD_NAME: ${{ matrix.branch.label }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
         with:
           ref: ${{ env.BRANCH }}
-          fetch-depth: 3000
+          fetch-depth: 5000
           submodules: true
           fetch-tags: true
           path: ${{ env.SRC_DIR }}
@@ -91,19 +103,6 @@ jobs:
           cmake -E make_directory "${INSTALL_PREFIX}";
           cd ${SRC_DIR}
           .ci/ci-script-mac.sh;
-      - name: Check if it runs
-        run: |
-          ${INSTALL_PREFIX}/bin/ansel --version || true
-          ${INSTALL_PREFIX}/bin/ansel-cli \
-                 --width 2048 --height 2048 \
-                 --apply-custom-presets false \
-                 "${SRC_DIR}/src/tests/integration/images/mire1.cr2" \
-                 "${SRC_DIR}/src/tests/integration/0000-nop/nop.xmp" \
-                 output.png \
-                 --core --disable-opencl --conf host_memory_limit=8192 \
-                 --conf worker_threads=4 -t 4 \
-                 --conf plugins/lighttable/export/force_lcms2=FALSE \
-                 --conf plugins/lighttable/export/iccintent=0 || true # OpenMP builds crash for most configs
       - name: Build macOS package
         run: |
           ./src/packaging/macosx/3_make_hb_ansel_package.sh
@@ -112,9 +111,9 @@ jobs:
           ./src/packaging/macosx/4_make_hb_ansel_dmg.sh
       - name: Package upload
         if: ${{ success() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: ansel.${{ env.BUILD_NAME }}.mac
+          name: ansel.${{ env.BUILD_NAME }}-${{ matrix.build.tag }}.mac
           path: ${{ env.INSTALL_PREFIX }}/Ansel-*.dmg
           retention-days: 90
 
@@ -127,14 +126,18 @@ jobs:
       TAG: "v0.0.0"
     steps:
       - name: Checkout ansel source
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
           submodules: false
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: ansel.stable.mac
+          name: ansel.stable-intel64.mac
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ansel.stable-arm64.mac
       - name: Update nightly release
         uses: aurelienpierreeng/tip@master
         with:
@@ -150,8 +153,9 @@ jobs:
       - name: Notify Matrix
         if: ${{ success() }}
         run: |
-          FILENAME=$(tr '~' '.' <<< "$(find . -type f -iname "Ansel-*.dmg")")
-          MESSAGE="New dmg package [${FILENAME}](${{ env.REPO }}/releases/download/${{ env.TAG }}/${FILENAME}) built"
+          FILENAME1=$(tr '~' '.' <<< "$(find . -type f -iname "Ansel-*arm64.dmg")")
+          FILENAME2=$(tr '~' '.' <<< "$(find . -type f -iname "Ansel-*i386.dmg")")
+          MESSAGE="New dmg packages [${FILENAME1}](${{ env.REPO }}/releases/download/${{ env.TAG }}/${FILENAME1}) and [${FILENAME2}](${{ env.REPO }}/releases/download/${{ env.TAG }}/${FILENAME2}) built"
           python .ci/matrix.py \
           -m "$MESSAGE" \
           -s ${{ secrets.MATRIX_SERVER }} \

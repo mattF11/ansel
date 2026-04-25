@@ -171,7 +171,7 @@ static void _locations_tree_update(dt_lib_module_t *self, const guint locid)
     {
       GtkTreeIter iter;
       const gchar *tag = ((dt_map_location_t *)stag->data)->tag;
-      if(tag == NULL) continue;
+      if(IS_NULL_PTR(tag)) continue;
       char **tokens;
       tokens = g_strsplit(tag, "|", -1);
       if(tokens)
@@ -352,7 +352,7 @@ static void _shape_button_clicked(GtkButton *button, dt_lib_module_t *self)
   int shape = dt_conf_get_int("plugins/map/locationshape");
   shape++;
   if((shape > G_N_ELEMENTS(location_shapes) - 1) ||
-     (!d->polygons && shape == MAP_LOCATION_SHAPE_POLYGONS))
+     (IS_NULL_PTR(d->polygons) && shape == MAP_LOCATION_SHAPE_POLYGONS))
     shape = 0;
   dt_conf_set_int("plugins/map/locationshape", shape);
 
@@ -480,7 +480,7 @@ static void _view_map_location_changed(gpointer instance, GList *polygons, dt_li
 {
   dt_lib_map_locations_t *d = (dt_lib_map_locations_t *)self->data;
   const int shape = dt_conf_get_int("plugins/map/locationshape");
-  if((shape == MAP_LOCATION_SHAPE_POLYGONS) && !polygons)
+  if((shape == MAP_LOCATION_SHAPE_POLYGONS) && IS_NULL_PTR(polygons))
   {
     g_signal_handler_block (d->shape_button, d->shape_button_handler);
     dtgtk_togglebutton_set_paint((GtkDarktableToggleButton *)d->shape_button,
@@ -670,8 +670,8 @@ static gint _sort_position_names_func(GtkTreeModel *model,
   char *tag_b = NULL;
   gtk_tree_model_get(model, a, DT_MAP_LOCATION_COL_PATH, &tag_a, -1);
   gtk_tree_model_get(model, b, DT_MAP_LOCATION_COL_PATH, &tag_b, -1);
-  if(tag_a == NULL) tag_a = g_strdup("");
-  if(tag_b == NULL) tag_b = g_strdup("");
+  if(IS_NULL_PTR(tag_a)) tag_a = g_strdup("");
+  if(IS_NULL_PTR(tag_b)) tag_b = g_strdup("");
   const gboolean sort = g_ascii_strncasecmp(tag_a, tag_b, -1);
   dt_free(tag_a);
   dt_free(tag_b);

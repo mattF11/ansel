@@ -152,62 +152,13 @@ void init(dt_imageio_module_format_t *self)
 {
   const char *codecName = avifCodecName(AVIF_CODEC_CHOICE_AUTO,
                                         AVIF_CODEC_FLAG_CAN_ENCODE);
-  if(codecName == NULL)
+  if(IS_NULL_PTR(codecName))
   {
     dt_print(DT_DEBUG_IMAGEIO,
              "libavif doesn't offer encoding support!\n");
     self->ready = FALSE;
     return;
   }
-
-#ifdef USE_LUA
-  /* bit depth */
-  dt_lua_register_module_member(darktable.lua_state.state,
-                                self,
-                                dt_imageio_avif_t,
-                                bit_depth,
-                                int);
-  luaA_enum(darktable.lua_state.state,
-            enum avif_color_mode_e);
-  luaA_enum_value(darktable.lua_state.state,
-                  enum avif_color_mode_e,
-                  AVIF_COLOR_MODE_RGB);
-  luaA_enum_value(darktable.lua_state.state,
-                  enum avif_color_mode_e,
-                  AVIF_COLOR_MODE_GRAYSCALE);
-
-  luaA_enum(darktable.lua_state.state,
-            enum avif_tiling_e);
-  luaA_enum_value(darktable.lua_state.state,
-                  enum avif_tiling_e,
-                  AVIF_TILING_ON);
-  luaA_enum_value(darktable.lua_state.state,
-                  enum avif_tiling_e,
-                  AVIF_TILING_OFF);
-
-  /* compression type */
-  luaA_enum(darktable.lua_state.state,
-            enum avif_compression_type_e);
-  luaA_enum_value(darktable.lua_state.state,
-                  enum avif_compression_type_e,
-                  AVIF_COMP_LOSSLESS);
-  luaA_enum_value(darktable.lua_state.state,
-                  enum avif_compression_type_e,
-                  AVIF_COMP_LOSSY);
-
-  dt_lua_register_module_member(darktable.lua_state.state,
-                                self,
-                                dt_imageio_avif_t,
-                                compression_type,
-                                enum avif_compression_type_e);
-
-  /* quality */
-  dt_lua_register_module_member(darktable.lua_state.state,
-                                self,
-                                dt_imageio_avif_t,
-                                quality,
-                                int);
-#endif
 }
 
 void cleanup(dt_imageio_module_format_t *self)
@@ -274,7 +225,7 @@ int write_image(struct dt_imageio_module_data_t *data,
   }
 
   image = avifImageCreate(width, height, bit_depth, format);
-  if(image == NULL)
+  if(IS_NULL_PTR(image))
   {
     dt_print(DT_DEBUG_IMAGEIO,
              "Failed to create AVIF image for writing [%s]\n",
@@ -285,7 +236,7 @@ int write_image(struct dt_imageio_module_data_t *data,
 
   dt_print(DT_DEBUG_IMAGEIO,
            "Exporting AVIF image [%s] "
-           "[width: %zu, height: %zu, bit depth: %zu, comp: %s, quality: %u]\n",
+           "[width: %" G_GSIZE_FORMAT ", height: %" G_GSIZE_FORMAT ", bit depth: %" G_GSIZE_FORMAT ", comp: %s, quality: %u]\n",
            filename,
            width,
            height,
@@ -374,7 +325,7 @@ int write_image(struct dt_imageio_module_data_t *data,
       if(icc_profile_len > 0)
       {
         icc_profile_data = malloc(sizeof(uint8_t) * icc_profile_len);
-        if(icc_profile_data == NULL)
+        if(IS_NULL_PTR(icc_profile_data))
         {
           rc = 1;
           goto out;
@@ -418,12 +369,7 @@ int write_image(struct dt_imageio_module_data_t *data,
     case 12:
     case 10:
     {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(in_data, width, height, out, rowbytes, max_channel_f) \
-  schedule(simd:static) \
-  collapse(2)
-#endif
+    __OMP_PARALLEL_FOR_SIMD__(collapse(2))
     for(size_t y = 0; y < height; y++)
     {
       for(size_t x = 0; x < width; x++)
@@ -440,12 +386,7 @@ int write_image(struct dt_imageio_module_data_t *data,
     }
     case 8:
     {
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(in_data, width, height, out, rowbytes, max_channel_f) \
-  schedule(simd:static) \
-  collapse(2)
-#endif
+    __OMP_PARALLEL_FOR_SIMD__(collapse(2))
     for(size_t y = 0; y < height; y++)
     {
       for(size_t x = 0; x < width; x++)
@@ -481,7 +422,7 @@ int write_image(struct dt_imageio_module_data_t *data,
   }
 
   encoder = avifEncoderCreate();
-  if(encoder == NULL)
+  if(IS_NULL_PTR(encoder))
   {
     dt_print(DT_DEBUG_IMAGEIO,
              "Failed to create AVIF encoder for image [%s]\n",
@@ -578,7 +519,7 @@ int write_image(struct dt_imageio_module_data_t *data,
     goto out;
   }
 
-  if(output.size == 0 || output.data == NULL)
+  if(output.size == 0 || IS_NULL_PTR(output.data))
   {
     dt_print(DT_DEBUG_IMAGEIO,
              "AVIF encoder returned empty data for [%s]\n",
@@ -594,7 +535,7 @@ int write_image(struct dt_imageio_module_data_t *data,
   size_t cnt = 0;
 
   f = g_fopen(filename, "wb");
-  if(f == NULL)
+  if(IS_NULL_PTR(f))
   {
     rc = 1;
     goto out;
@@ -630,7 +571,7 @@ void *get_params(dt_imageio_module_format_t *self)
 {
   dt_imageio_avif_t *d = (dt_imageio_avif_t *)calloc(1, sizeof(dt_imageio_avif_t));
 
-  if(d == NULL)
+  if(IS_NULL_PTR(d))
   {
     return NULL;
   }
@@ -790,7 +731,7 @@ void gui_init(dt_imageio_module_format_t *self)
 
   dt_bauhaus_widget_set_label(gui->bit_depth, N_("bit depth"));
   size_t idx = 0;
-  for(size_t i = 0; avif_bit_depth[i].name != NULL; i++)
+  for(size_t i = 0; !IS_NULL_PTR(avif_bit_depth[i].name); i++)
   {
     dt_bauhaus_combobox_add(gui->bit_depth,  _(avif_bit_depth[i].name));
     if(avif_bit_depth[i].bit_depth == bit_depth)

@@ -62,6 +62,10 @@
 
 
 struct dt_iop_module_t;
+struct dt_iop_color_picker_t;
+struct dt_colorpicker_sample_t;
+struct dt_lib_module_t;
+struct dt_dev_pixelpipe_iop_t;
 
 typedef enum dt_dev_overexposed_colorscheme_t
 {
@@ -102,6 +106,12 @@ typedef enum dt_dev_transform_direction_t
   DT_DEV_TRANSFORM_DIR_BACK_EXCL = 4
 } dt_dev_transform_direction_t;
 
+typedef enum dt_dev_roi_space_t
+{
+  DT_DEV_ROI_PIPELINE = 0,
+  DT_DEV_ROI_GUI_LOGICAL = 1
+} dt_dev_roi_space_t;
+
 typedef enum dt_dev_pixelpipe_display_mask_t
 {
   DT_DEV_PIXELPIPE_DISPLAY_NONE = 0,
@@ -129,12 +139,10 @@ typedef enum dt_dev_pixelpipe_display_mask_t
   DT_DEV_PIXELPIPE_DISPLAY_STICKY = 1 << 16
 } dt_dev_pixelpipe_display_mask_t;
 
-typedef enum dt_develop_detail_mmask_t
+typedef enum dt_develop_detail_mask_t
 {
   DT_DEV_DETAIL_MASK_NONE = 0,
-  DT_DEV_DETAIL_MASK_REQUIRED = 1,
-  DT_DEV_DETAIL_MASK_DEMOSAIC = 2,
-  DT_DEV_DETAIL_MASK_RAWPREPARE = 4
+  DT_DEV_DETAIL_MASK_ENABLED = 1
 } dt_develop_detail_mask_t;
 
 typedef enum dt_clipping_preview_mode_t
@@ -164,8 +172,9 @@ typedef struct dt_develop_t
   struct {
     // width = orig_width - 2 * border_size,
     // height = orig_height - 2 * border_size,
-    // aka the surface actually covered by an image backbuffer (ROI)
-    // set by `dt_dev_configure()`
+    // converted to raster pixels through the GUI ppd factor.
+    // This is the surface actually covered by an image backbuffer (ROI)
+    // and it is set by `dt_dev_configure()`.
     int32_t width, height;
 
     // User-defined scaling factor, related to GUI zoom.
@@ -179,12 +188,12 @@ typedef struct dt_develop_t
     // darkroom border size: ISO 12646 borders or user-defined borders
     int32_t border_size;
 
-    // Those are the darkroom main widget size, aka max paintable area.
-    // This size is allocated by Gtk from the window size minus all panels.
-    // It is NOT the size of the backbuffer/ROI.
+    // Those are the darkroom main widget size in GUI coordinates, aka max
+    // paintable area. This size is allocated by Gtk from the window size
+    // minus all panels. It is NOT the size of the backbuffer/ROI.
     int32_t orig_width, orig_height;
 
-    // Dimensions of the preview backbuffer, depending on the 
+    // Dimensions of the preview backbuffer, depending on the
     // darkroom main widget size and DPI factor.
     // These are computed early, before we have the actual buffer.
     // Use them everywhere in GUI.
@@ -294,7 +303,7 @@ typedef struct dt_develop_t
   // aka dev->forms and dev->all_forms
   dt_pthread_rwlock_t masks_mutex;
 
-  dt_backbuf_t raw_histogram;     // backbuf to prepare the raw histogram (before white balance)
+  dt_backbuf_t raw_histogram;     // preview raw-stage histogram, currently sampled from initialscale output
   dt_backbuf_t output_histogram;  // backbuf to prepare the display-agnostic output histogram (in the middle of colorout)
   dt_backbuf_t display_histogram; // backbuf to prepare the display-referred output histogram (at the far end of the pipe)
   
@@ -305,6 +314,68 @@ typedef struct dt_develop_t
   // Darkroom pipelines are running fulltime in background until leaving darkroom.
   // Set that to TRUE once they get shutdown.
   gboolean pipelines_started;
+
+  /**
+   * @brief Authoritative darkroom color-picker state.
+   *
+   * @details
+   * Picker ownership used to be split between `darktable.lib->proxy.colorpicker`, the preview pipe,
+   * and the module widgets. That made it difficult to tell whether a picker move should:
+   * - dirtify the preview pipe,
+   * - resample a cached buffer directly,
+   * - keep an intermediate cacheline alive on CPU/OpenCL,
+   * - or emit the deferred picker callback once the sample became available.
+   *
+   * The picker state now lives under `dt_develop_t` because the develop module is the only subsystem
+   * that simultaneously knows:
+   * - which GUI module currently captures the picker,
+   * - which preview pipe and cacheline should be sampled,
+   * - which histogram live samples must be refreshed on every preview update,
+   * - and which sampled state must be published when fresh picker data are available.
+   *
+   * Ownership rules:
+   * - `module`, `picker`, and `widget` describe the currently active module picker.
+   * - `primary_sample` is the editable picker drawn in darkroom for that active picker.
+   * - `samples` are the histogram live samples refreshed from the preview backbuffer.
+   * - `piece_hash` remembers which immutable preview-piece contract produced the current picker values.
+   * - `pending_module`, `pending_pipe`, and `piece_hash` hold the ready-to-consume sample locator between
+   *   cache sampling and `DT_SIGNAL_CONTROL_PICKERDATA_READY`.
+ *
+   * We intentionally do not keep a `dt_dev_pixelpipe_iop_t *` across that signal boundary. Piece objects
+   * belong to one concrete pipe graph instance and may disappear when the preview pipe is resynchronized
+   * or rebuilt. The stable locator is therefore the sealed `piece->global_hash`, which lets signal
+   * subscribers reopen the current piece from the current pipe graph when they consume the ready state.
+   *
+   * This state is GUI-only. Export/headless code paths never own or mutate it.
+   */
+  struct
+  {
+    struct dt_iop_module_t *module;
+    struct dt_iop_color_picker_t *picker;
+    GtkWidget *widget;
+    int kind;
+    int picker_cst;
+    gboolean enabled;
+    gboolean update_pending;
+    guint refresh_idle_source;
+
+    struct dt_colorpicker_sample_t *primary_sample;
+    GSList *samples;
+    struct dt_colorpicker_sample_t *selected_sample;
+    gboolean display_samples;
+    gboolean live_samples_enabled;
+    gboolean restrict_histogram;
+    int statistic;
+    struct dt_lib_module_t *histogram_module;
+    gboolean (*refresh_global_picker)(struct dt_lib_module_t *self);
+
+    uint64_t piece_hash;
+    uint64_t wait_input_hash;
+    uint64_t wait_output_hash;
+
+    struct dt_iop_module_t *pending_module;
+    struct dt_dev_pixelpipe_t *pending_pipe;
+  } color_picker;
 
   /* proxy for communication between plugins and develop/darkroom */
   struct
@@ -417,9 +488,6 @@ void dt_dev_init(dt_develop_t *dev, int32_t gui_attached);
 void dt_dev_cleanup(dt_develop_t *dev);
 GList *dt_dev_load_modules(dt_develop_t *dev);
 
-void dt_dev_process_image_job(dt_develop_t *dev);
-void dt_dev_process_preview_job(dt_develop_t *dev);
-
 typedef enum dt_dev_image_storage_t
 {
   DT_DEV_IMAGE_STORAGE_OK = 0,
@@ -460,6 +528,20 @@ void dt_dev_set_backbuf(dt_backbuf_t *backbuf, const int width, const int height
  * @param num_points number of coordinate pairs referenced by points.
  */
 void dt_dev_coordinates_widget_to_image_norm(dt_develop_t *dev, float *points, size_t num_points);
+/**
+ * @brief Convert a widget-space distance to processed-image pixels.
+ *
+ * @details
+ * Mouse drags and GUI handle sizes are expressed in darkroom logical pixels.
+ * Interactive modules compare them against image data, so this helper applies
+ * the current widget zoom once in the develop API instead of duplicating the
+ * same division in every callback.
+ *
+ * @param dev the develop instance
+ * @param points pointer to num_points delta pairs stored as {dx, dy}; data is modified in place.
+ * @param num_points number of delta pairs referenced by points.
+ */
+void dt_dev_coordinates_widget_delta_to_image_delta(dt_develop_t *dev, float *points, size_t num_points);
 void dt_dev_coordinates_image_norm_to_widget(dt_develop_t *dev, float *points, size_t num_points);
 void dt_dev_coordinates_image_norm_to_image_abs(dt_develop_t *dev, float *points, size_t num_points);
 void dt_dev_coordinates_image_abs_to_image_norm(dt_develop_t *dev, float *points, size_t num_points);
@@ -500,11 +582,9 @@ void dt_dev_check_zoom_pos_bounds(dt_develop_t *dev, float *dev_x, float *dev_y,
  * modulegroups helpers
  */
 /** request modulegroups to show the group of the given module */
-void dt_dev_modulegroups_switch(dt_develop_t *dev, struct dt_iop_module_t *module);
-/** update modulegroup visibility */
-void dt_dev_modulegroups_update_visibility(dt_develop_t *dev);
+void dt_dev_modulegroups_switch_tab(dt_develop_t *dev, struct dt_iop_module_t *module);
 /** reorder the module list */
-void dt_dev_reorder_gui_module_list(dt_develop_t *dev);
+void dt_dev_signal_modules_moved(dt_develop_t *dev);
 
 /** request snapshot */
 void dt_dev_snapshot_request(dt_develop_t *dev, const char *filename);
@@ -548,18 +628,18 @@ gchar *dt_history_item_get_label(const struct dt_iop_module_t *module);
 int dt_dev_coordinates_raw_abs_to_image_abs(dt_develop_t *dev, float *points, size_t points_count);
 /** reverse apply all transforms to the specified points (in virtual preview-pipe space) */
 int dt_dev_coordinates_image_abs_to_raw_abs(dt_develop_t *dev, float *points, size_t points_count);
-/** same fct, but we can specify iop with priority between pmin and pmax */
-int dt_dev_distort_transform_plus(dt_develop_t *dev, struct dt_dev_pixelpipe_t *pipe, const double iop_order, const int transf_direction,
+/** reverse apply all transforms to the specified points (in virtual preview-pipe space), but we can specify iop with priority between pmin and pmax. in/out as `dt_dev_coordinates_raw_abs_to_image_abs` */
+int dt_dev_distort_transform_plus(const struct dt_dev_pixelpipe_t *pipe, const double iop_order, const int transf_direction,
                                   float *points, size_t points_count);
 /** same fct, but can only be called from a distort_transform function called by dt_dev_distort_transform_plus */
-int dt_dev_distort_transform_locked(dt_develop_t *dev, struct dt_dev_pixelpipe_t *pipe, const double iop_order,
+int dt_dev_distort_transform_locked(const struct dt_dev_pixelpipe_t *pipe, const double iop_order,
                                     const int transf_direction, float *points, size_t points_count);
-/** same fct as dt_dev_coordinates_image_abs_to_raw_abs, but we can specify iop with priority between pmin and pmax */
-int dt_dev_distort_backtransform_plus(dt_develop_t *dev, struct dt_dev_pixelpipe_t *pipe, const double iop_order, const int transf_direction,
+/** same fct as `dt_dev_coordinates_image_abs_to_raw_abs`, but we can specify iop with priority between pmin and pmax.*/
+int dt_dev_distort_backtransform_plus(const struct dt_dev_pixelpipe_t *pipe, const double iop_order, const int transf_direction,
                                       float *points, size_t points_count);
 
 /** get the iop_pixelpipe instance corresponding to the iop in the given pipe */
-struct dt_dev_pixelpipe_iop_t *dt_dev_distort_get_iop_pipe(dt_develop_t *dev, struct dt_dev_pixelpipe_t *pipe,
+struct dt_dev_pixelpipe_iop_t *dt_dev_distort_get_iop_pipe(struct dt_dev_pixelpipe_t *pipe,
                                                            struct dt_iop_module_t *module);
 
 /*
@@ -618,28 +698,86 @@ gboolean dt_dev_pixelpipe_has_preview_output(const dt_develop_t *dev, const stru
 gboolean dt_dev_pipelines_share_preview_output(dt_develop_t *dev);
 
 /**
- * @brief  Get the overlay scale factor
- * (scaling * natural_scale_on_processed_size * ppd)
- * 
+ * @brief Get the overlay scale factor in GUI logical coordinates.
+ *
+ * @details This is the GUI-space scale used to draw preview overlays from the
+ * raster backbuffer dimensions stored in the pipeline ROI.
+ *
  * @param dev the develop instance
  * @return float :the overlay scale factor
  */
 float dt_dev_get_overlay_scale(dt_develop_t *dev);
 
 /**
- * @brief Get the scale factor to fit the image into the darkroom area.
- * (scaling * natural_scale_on_processed_size)
- * 
+ * @brief Convert a darkroom scaling factor to GUI logical zoom.
+ *
+ * @details
+ * Pipeline zoom is tracked in raster-space units. Gtk callbacks and overlay
+ * drawing operate in logical widget coordinates, so the ppd correction belongs
+ * here rather than at every interactive call site.
+ *
+ * @param dev the develop instance
+ * @param scaling the darkroom scaling factor to evaluate
+ * @return float : the GUI logical zoom
+ */
+float dt_dev_get_widget_zoom_scale(const dt_develop_t *dev, float scaling);
+
+/**
+ * @brief Get the center of the darkroom widget in logical coordinates.
+ *
+ * @param dev the develop instance
+ * @param point returned widget center stored as {x, y}
+ */
+void dt_dev_get_widget_center(const dt_develop_t *dev, float *point);
+
+/**
+ * @brief Get the displayed image rectangle in darkroom widget coordinates.
+ *
+ * @details
+ * Input callbacks often need to know whether the pointer is inside the image
+ * or in the margin area. This exposes the current displayed backbuffer
+ * footprint in logical coordinates, including the ppd conversion.
+ *
+ * @param dev the develop instance
+ * @param width the current darkroom widget width
+ * @param height the current darkroom widget height
+ * @param box returned image box stored as {x, y, width, height}
+ */
+void dt_dev_get_image_box_in_widget(const dt_develop_t *dev, int32_t width, int32_t height, float *box);
+
+/**
+ * @brief Get the scale factor that maps preview-buffer pixels to GUI coordinates.
+ *
+ * @details The pipeline ROI is stored in raster pixels. GUI drawing still
+ * happens in Gtk logical coordinates, so this helper exposes the explicit
+ * raster-to-GUI conversion used by overlays.
+ *
  * @param dev the develop instance
  * @return float : the fit scale factor
  */
 float dt_dev_get_fit_scale(dt_develop_t *dev);
 
-// Get the current zoom factor ( scaling * natural_scale )
+// Get the current pipeline zoom factor in image-space units ( scaling * natural_scale ).
 float dt_dev_get_zoom_level(const dt_develop_t *dev);
 
 // Reset darkroom ROI scaling and position
 void dt_dev_reset_roi(dt_develop_t *dev);
+
+/**
+ * @brief Convert a full ROI object between pipeline raster coordinates and GUI logical coordinates.
+ *
+ * @details The pipeline stores ROI geometry in real buffer pixels while Gtk events and drawing
+ * use logical coordinates. x/y/width/height cross that boundary through the ppd factor, while
+ * roi->scale remains the same because it expresses image-space sampling, not GUI density.
+ *
+ * @param dev the develop instance carrying the ppd factor
+ * @param roi_in the source ROI
+ * @param roi_out the converted ROI
+ * @param from the source coordinate space
+ * @param to the destination coordinate space
+ */
+void dt_dev_convert_roi(const dt_develop_t *dev, const dt_iop_roi_t *roi_in, dt_iop_roi_t *roi_out,
+                        const dt_dev_roi_space_t from, const dt_dev_roi_space_t to);
 
 /**
  * @brief Clip the view to the ROI.

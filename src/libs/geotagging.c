@@ -339,12 +339,12 @@ static void _refresh_images_displayed_on_track(const int segid, const gboolean a
   for(GList *i = d->imgs; active && i; i = g_list_next(i))
   {
     dt_sel_img_t *im = (dt_sel_img_t *)i->data;
-    if(im->segid == segid && im->gl.latitude != NAN)
+    if(im->segid == segid && !isnan(im->gl.latitude))
     {
       count++;
       dt_sel_img_t *next = i->next ? (dt_sel_img_t *)i->next->data
                                    : NULL;
-      if(!im->image && (!next
+      if(IS_NULL_PTR(im->image) && (IS_NULL_PTR(next)
                         || !((next->gl.latitude == im->gl.latitude)
                              && (next->gl.longitude == im->gl.longitude))))
       {
@@ -651,7 +651,7 @@ static void _images_preview_toggled(GtkToggleButton *button, dt_lib_module_t *se
 static void _refresh_track_list(dt_lib_module_t *self)
 {
   dt_lib_geotagging_t *d = (dt_lib_geotagging_t *)self->data;
-  if(!d->map.gpx) return;
+  if(IS_NULL_PTR(d->map.gpx)) return;
 
   GList *trkseg = dt_gpx_get_trkseg(d->map.gpx);
   _remove_images_from_map(self);
@@ -793,7 +793,7 @@ static void _refresh_selected_images_datetime(dt_lib_module_t *self)
   {
     dt_sel_img_t *img = i->data;
     const dt_image_t *cimg = dt_image_cache_get(darktable.image_cache, img->imgid, 'r');
-    if(!cimg) continue;
+    if(IS_NULL_PTR(cimg)) continue;
     dt_datetime_img_to_exif(img->dt, sizeof(img->dt), cimg);
     dt_image_cache_read_release(darktable.image_cache, cimg);
   }
@@ -932,12 +932,12 @@ static void _setup_selected_images_list(dt_lib_module_t *self)
     const int32_t imgid = sqlite3_column_int(stmt, 0);
     const dt_image_t *cimg = dt_image_cache_get(darktable.image_cache, imgid, 'r');
     char dt[DT_DATETIME_LENGTH];
-    if(!cimg) continue;
+    if(IS_NULL_PTR(cimg)) continue;
     dt_datetime_img_to_exif(dt, sizeof(dt), cimg);
     dt_image_cache_read_release(darktable.image_cache, cimg);
 
     dt_sel_img_t *img = g_malloc0(sizeof(dt_sel_img_t));
-    if(!img) continue;
+    if(IS_NULL_PTR(img)) continue;
     memcpy(img->dt, dt, DT_DATETIME_LENGTH);
     img->imgid = imgid;
     d->imgs = g_list_prepend(d->imgs, img);
@@ -974,7 +974,7 @@ static void _choose_gpx_callback(GtkWidget *widget, dt_lib_module_t *self)
   gtk_file_filter_set_name(filter, _("all files"));
   gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(filechooser), filter);
 
-  if(!d->imgs)
+  if(IS_NULL_PTR(d->imgs))
     _setup_selected_images_list(self);
 
   int res = gtk_dialog_run(GTK_DIALOG(filechooser));
@@ -1091,7 +1091,7 @@ static GList *_lib_geotagging_get_timezones(void)
   fp = g_fopen(zone_tab, "r");
   dt_free(zone_tab);
 
-  if(!fp) return NULL;
+  if(IS_NULL_PTR(fp)) return NULL;
 
   while(fgets(line, MAX_LINE_LENGTH, fp))
   {
@@ -1230,28 +1230,43 @@ static void _display_offset(const GTimeSpan offset_int, const gboolean valid, dt
   {
     const gboolean neg = offset_int < 0;
     gtk_label_set_text(GTK_LABEL(d->of.sign), neg ? "- " : "");
-    char text[4];
+
     GTimeSpan off = neg ? -offset_int : offset_int;
-    off2 = off / 1000;  // skip microseconds
-    off = off2;
-    off2 = off / 1000;
-    snprintf(text, sizeof(text), "%03d", (int)(off - off2 * 1000));
+
+    /* normalize to milliseconds */
+    gint64 total_ms = off / 1000;
+
+    /* extract components */
+    gint ms   = total_ms % 1000;
+    gint64 total_s = total_ms / 1000;
+
+    gint s    = total_s % 60;
+    gint64 total_m = total_s / 60;
+
+    gint m    = total_m % 60;
+    gint64 total_h = total_m / 60;
+
+    gint h    = total_h % 24;
+    gint64 total_d = total_h / 24;
+
+    gint D    = total_d % 100;
+
+    /* write fields */
+    char text[8];  // enough for all cases
+
+    g_snprintf(text, sizeof(text), "%03d", ms);
     gtk_entry_set_text(GTK_ENTRY(d->of.widget[6]), text);
-    off = off2;
-    off2 = off / 60;
-    snprintf(text, sizeof(text), "%02d", (int)(off - off2 * 60));
+
+    g_snprintf(text, sizeof(text), "%02d", s);
     gtk_entry_set_text(GTK_ENTRY(d->of.widget[5]), text);
-    off = off2;
-    off2 = off / 60;
-    snprintf(text, sizeof(text), "%02d", (int)(off - off2 * 60));
+
+    g_snprintf(text, sizeof(text), "%02d", m);
     gtk_entry_set_text(GTK_ENTRY(d->of.widget[4]), text);
-    off = off2;
-    off2 = off / 24;
-    snprintf(text, sizeof(text), "%02d", (int)(off - off2 * 24));
+
+    g_snprintf(text, sizeof(text), "%02d", h);
     gtk_entry_set_text(GTK_ENTRY(d->of.widget[3]), text);
-    off = off2;
-    off2 = off / 100;
-    snprintf(text, sizeof(text), "%02d", (int)(off - off2 * 100));
+
+    g_snprintf(text, sizeof(text), "%02d", D);
     gtk_entry_set_text(GTK_ENTRY(d->of.widget[2]), text);
   }
   if(!valid || off2)
@@ -1331,7 +1346,7 @@ static void _new_datetime(GDateTime *datetime, dt_lib_module_t *self)
       g_date_time_unref(d->datetime);
     d->datetime = datetime;
     d->offset = g_date_time_difference(d->datetime, d->datetime0);
-    _display_offset(d->offset, d->datetime != NULL, self);
+    _display_offset(d->offset, !IS_NULL_PTR(d->datetime), self);
 #ifdef HAVE_MAP
       if(dt_conf_get_bool("/views/map/enable") && d->map.view)
       _refresh_track_list(self);
@@ -1385,7 +1400,7 @@ static void _refresh_image_datetime(dt_lib_module_t *self)
   }
   else
   {
-    _display_offset(d->offset = 0, datetime != NULL, self);
+    _display_offset(d->offset = 0, !IS_NULL_PTR(datetime), self);
     if(datetime)
     {
       g_date_time_ref(datetime);
@@ -1501,7 +1516,7 @@ static GtkWidget *_gui_init_datetime(dt_lib_datetime_t *dt, const int type, dt_l
   GtkBox *box = NULL;
   for(int i = 0; i < DT_GEOTAG_PARTS_NB; i++)
   {
-    if(!box) box = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0));
+    if(IS_NULL_PTR(box)) box = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0));
 
     if(i == 0 && type == 2)
     {
@@ -1814,7 +1829,7 @@ void gui_init(dt_lib_module_t *self)
   gtk_cell_layout_set_attributes(GTK_CELL_LAYOUT(tz_selection), renderer, "text", 0, NULL);
 
   gchar *tz = dt_conf_get_string("plugins/lighttable/geotagging/tz");
-  d->tz_camera = (tz == NULL) ? g_time_zone_new_utc() : g_time_zone_new(tz);
+  d->tz_camera = (IS_NULL_PTR(tz)) ? g_time_zone_new_utc() : g_time_zone_new(tz);
   for(GList *iter = d->timezones; iter; iter = g_list_next(iter))
   {
     tz_tuple_t *tz_tuple = (tz_tuple_t *)iter->data;

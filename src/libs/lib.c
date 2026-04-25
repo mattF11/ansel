@@ -62,6 +62,8 @@
 #include "dtgtk/expander.h"
 #include "dtgtk/icon.h"
 
+#include "gui/color_picker_proxy.h"
+#include "libs/colorpicker.h"
 #include "gui/gtk.h"
 #include "gui/presets.h"
 #ifdef GDK_WINDOWING_QUARTZ
@@ -179,10 +181,10 @@ static void edit_preset(const char *name_in, dt_lib_module_info_t *minfo)
 {
   // get the original name of the preset
   gchar *name = NULL;
-  if(name_in == NULL)
+  if(IS_NULL_PTR(name_in))
   {
     name = get_active_preset_name(minfo);
-    if(name == NULL) return;
+    if(IS_NULL_PTR(name)) return;
   }
   else
     name = g_strdup(name_in);
@@ -301,7 +303,7 @@ static void menuitem_manage_presets(GtkMenuItem *menuitem, dt_lib_module_info_t 
 static void menuitem_delete_preset(GtkMenuItem *menuitem, dt_lib_module_info_t *minfo)
 {
   gchar *name = get_active_preset_name(minfo);
-  if(name == NULL) return;
+  if(IS_NULL_PTR(name)) return;
 
   gint res = GTK_RESPONSE_YES;
 
@@ -731,10 +733,7 @@ static int dt_lib_load_module(void *m, const char *libname, const char *module_n
   module->arrow = NULL;
   module->reset_button = NULL;
   module->presets_button = NULL;
-
-#ifdef USE_LUA
-  dt_lua_lib_register(darktable.lua_state.state, module);
-#endif
+  
   if(module->init) module->init(module);
 
   /* pass on the dt_gui_module_t args for bauhaus widgets */
@@ -754,7 +753,7 @@ static void *_update_params(dt_lib_module_t *module,
 {
   // make a copy of the old params so we can free it in the loop
   void *params = malloc(old_params_size);
-  if(params == NULL) return NULL;
+  if(IS_NULL_PTR(params)) return NULL;
   memcpy(params, old_params, old_params_size);
   while(old_version < target_version)
   {
@@ -762,7 +761,7 @@ static void *_update_params(dt_lib_module_t *module,
     int version;
     void *new_params = module->legacy_params(module, params, old_params_size, old_version, &version, &size);
     dt_free(params);
-    if(new_params == NULL) return NULL;
+    if(IS_NULL_PTR(new_params)) return NULL;
     params = new_params;
     old_version = version;
     old_params_size = size;
@@ -783,7 +782,7 @@ void dt_lib_init_presets(dt_lib_module_t *module)
   //   - module has legacy_params -> try to update
   //   - module doesn't have legacy_params -> delete it
 
-  if(module->set_params == NULL)
+  if(IS_NULL_PTR(module->set_params))
   {
     if(!_lib_presets_delete_operation_stmt)
     {
@@ -931,7 +930,21 @@ static void dt_lib_init_module(void *m)
         accel_group = darktable.gui->accels->lighttable_accels;
         label = g_strdup("Lighttable/Toolboxes");
       }
-      // TODO: handle the other views
+      else if(!g_strcmp0(*view, "map"))
+      {
+        accel_group = darktable.gui->accels->map_accels;
+        label = g_strdup("Map/Toolboxes");
+      }
+      else if(!g_strcmp0(*view, "print"))
+      {
+        accel_group = darktable.gui->accels->print_accels;
+        label = g_strdup("Print/Toolboxes");
+      }
+      else if(!g_strcmp0(*view, "slideshow"))
+      {
+        accel_group = darktable.gui->accels->slideshow_accels;
+        label = g_strdup("Slideshow/Toolboxes");
+      }
 
       if(accel_group && label)
         dt_accels_new_action_shortcut(darktable.gui->accels, _lib_plugin_focus_accel, m,
@@ -971,7 +984,7 @@ static void presets_popup_callback(GtkButton *button, dt_lib_module_t *module)
   mi->version = module->version();
   mi->module = module;
   mi->params = module->get_params ? module->get_params(module, &mi->params_size) : NULL;
-  if(!mi->params)
+  if(IS_NULL_PTR(mi->params))
   {
     // this is a valid case, for example in location.c when nothing got selected
     // fprintf(stderr, "something went wrong: &params=%p, size=%i\n", mi->params, mi->params_size);
@@ -984,10 +997,27 @@ static void presets_popup_callback(GtkButton *button, dt_lib_module_t *module)
   if(button) dtgtk_button_set_active(DTGTK_BUTTON(button), FALSE);
 }
 
+static void _lib_module_expander_gone(gpointer user_data, GObject *where_the_object_was)
+{
+  dt_lib_module_t *module = (dt_lib_module_t *)user_data;
+  if(IS_NULL_PTR(module)) return;
+  if(module->expander == (GtkWidget *)where_the_object_was) module->expander = NULL;
+  if(darktable.gui)
+  {
+    if(darktable.gui->scroll_to[0] == (GtkWidget *)where_the_object_was) darktable.gui->scroll_to[0] = NULL;
+    if(darktable.gui->scroll_to[1] == (GtkWidget *)where_the_object_was) darktable.gui->scroll_to[1] = NULL;
+  }
+}
+
 
 void dt_lib_gui_set_expanded(dt_lib_module_t *module, gboolean expanded)
 {
-  if(!module->expander) return;
+  if(IS_NULL_PTR(module->expander)) return;
+  if(!DTGTK_IS_EXPANDER(module->expander))
+  {
+    module->expander = NULL;
+    return;
+  }
 
   dtgtk_expander_set_expanded(DTGTK_EXPANDER(module->expander), expanded);
 
@@ -1019,7 +1049,20 @@ void dt_lib_gui_set_expanded(dt_lib_module_t *module, gboolean expanded)
 gboolean dt_lib_gui_get_expanded(dt_lib_module_t *module)
 {
   if(!module->expandable(module)) return true;
-  if(!module->expander) return true;
+  if(IS_NULL_PTR(module->expander)) return true;
+  if(!DTGTK_IS_EXPANDER(module->expander))
+  {
+    module->expander = NULL;
+    if(!module->widget)
+    {
+      char var[1024];
+      const dt_view_t *current_view = dt_view_manager_get_current_view(darktable.view_manager);
+      if(IS_NULL_PTR(current_view)) return true;
+      snprintf(var, sizeof(var), "plugins/%s/%s/expanded", current_view->module_name, module->plugin_name);
+      return dt_conf_get_bool(var);
+    }
+    return true;
+  }
   if(!module->widget)
   {
     char var[1024];
@@ -1065,19 +1108,20 @@ static gboolean _lib_plugin_header_button_press(GtkWidget *w, GdkEventButton *e,
 
         if(m != module && container == m->container(m) && m->expandable(m) && dt_lib_is_visible_in_view(m, v))
         {
-          all_other_closed = all_other_closed && !dtgtk_expander_get_expanded(DTGTK_EXPANDER(m->expander));
+          if(m->expander && DTGTK_IS_EXPANDER(m->expander))
+            all_other_closed = all_other_closed && !dtgtk_expander_get_expanded(DTGTK_EXPANDER(m->expander));
           dt_lib_gui_set_expanded(m, FALSE);
         }
       }
       if(all_other_closed)
-        dt_lib_gui_set_expanded(module, !dtgtk_expander_get_expanded(DTGTK_EXPANDER(module->expander)));
+        dt_lib_gui_set_expanded(module, !dt_lib_gui_get_expanded(module));
       else
         dt_lib_gui_set_expanded(module, TRUE);
     }
     else
     {
       /* else just toggle */
-      dt_lib_gui_set_expanded(module, !dtgtk_expander_get_expanded(DTGTK_EXPANDER(module->expander)));
+      dt_lib_gui_set_expanded(module, !dt_lib_gui_get_expanded(module));
     }
 
     return TRUE;
@@ -1176,6 +1220,7 @@ GtkWidget *dt_lib_gui_get_expander(dt_lib_module_t *module)
   gtk_widget_show_all(GTK_WIDGET(module->widget));
   dt_gui_add_class(module->widget, "dt_plugin_ui_main");
   module->expander = expander;
+  g_object_weak_ref(G_OBJECT(expander), _lib_module_expander_gone, module);
 
   gtk_widget_set_hexpand(module->widget, FALSE);
   gtk_widget_set_vexpand(module->widget, FALSE);
@@ -1198,7 +1243,7 @@ void dt_lib_cleanup(dt_lib_t *lib)
     dt_lib_module_t *module = (dt_lib_module_t *)(lib->plugins->data);
     if(module)
     {
-      if(module->data != NULL)
+      if(!IS_NULL_PTR(module->data))
       {
         module->gui_cleanup(module);
         module->data = NULL;
@@ -1247,8 +1292,9 @@ void dt_lib_presets_add(const char *name, const char *plugin_name, const int32_t
 
 static gchar *_get_lib_view_path(dt_lib_module_t *module, char *suffix)
 {
-  if(!darktable.view_manager) return NULL;
+  if(IS_NULL_PTR(darktable.view_manager) || !module || IS_NULL_PTR(suffix) || module->plugin_name[0] == '\0') return NULL;
   const dt_view_t *cv = dt_view_manager_get_current_view(darktable.view_manager);
+  if(IS_NULL_PTR(cv) || cv->module_name[0] == '\0') return NULL;
   // in lighttable, we store panels states per layout
   char lay[32] = "";
   if(g_strcmp0(cv->module_name, "lighttable") == 0)
@@ -1277,8 +1323,11 @@ void dt_lib_set_visible(dt_lib_module_t *module, gboolean visible)
 {
   gchar *key = _get_lib_view_path(module, "_visible");
   GtkWidget *widget;
-  dt_conf_set_bool(key, visible);
-  dt_free(key);
+  if(key)
+  {
+    dt_conf_set_bool(key, visible);
+    dt_free(key);
+  }
   if(module->widget)
   {
     if(module->expander)
@@ -1298,7 +1347,7 @@ gchar *dt_lib_get_localized_name(const gchar *plugin_name)
 {
   // Prepare mapping op -> localized name
   static GHashTable *module_names = NULL;
-  if(module_names == NULL)
+  if(IS_NULL_PTR(module_names))
   {
     module_names = g_hash_table_new(g_str_hash, g_str_equal);
     for(const GList *lib = darktable.lib->plugins; lib; lib = g_list_next(lib))
@@ -1313,15 +1362,38 @@ gchar *dt_lib_get_localized_name(const gchar *plugin_name)
 
 void dt_lib_colorpicker_set_box_area(dt_lib_t *lib, const dt_boundingbox_t box)
 {
-  if(!lib->proxy.colorpicker.module || !lib->proxy.colorpicker.set_sample_box_area) return;
-  lib->proxy.colorpicker.set_sample_box_area(lib->proxy.colorpicker.module, box);
+  dt_develop_t *const dev = darktable.develop;
+  dt_colorpicker_sample_t *const sample = dev ? dev->color_picker.primary_sample : NULL;
+  if(IS_NULL_PTR(sample)) return;
+
+  gboolean changed = (sample->size != DT_LIB_COLORPICKER_SIZE_BOX);
+  sample->size = DT_LIB_COLORPICKER_SIZE_BOX;
+  for(int k = 0; k < 4; k++)
+  {
+    changed |= (sample->box[k] != box[k]);
+    sample->box[k] = box[k];
+  }
+
+  if(!changed) return;
+  dt_iop_color_picker_request_update();
   dt_gui_refocus_center();
 }
 
 void dt_lib_colorpicker_set_point(dt_lib_t *lib, const float pos[2])
 {
-  if(!lib->proxy.colorpicker.module || !lib->proxy.colorpicker.set_sample_point) return;
-  lib->proxy.colorpicker.set_sample_point(lib->proxy.colorpicker.module, pos);
+  dt_develop_t *const dev = darktable.develop;
+  dt_colorpicker_sample_t *const sample = dev ? dev->color_picker.primary_sample : NULL;
+  if(IS_NULL_PTR(sample)) return;
+
+  const gboolean changed = sample->size != DT_LIB_COLORPICKER_SIZE_POINT
+                        || sample->point[0] != pos[0]
+                        || sample->point[1] != pos[1];
+  sample->size = DT_LIB_COLORPICKER_SIZE_POINT;
+  sample->point[0] = pos[0];
+  sample->point[1] = pos[1];
+
+  if(!changed) return;
+  dt_iop_color_picker_request_update();
   dt_gui_refocus_center();
 }
 

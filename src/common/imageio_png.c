@@ -46,7 +46,7 @@ int read_header(const char *filename, dt_imageio_png_t *png)
 {
   png->f = g_fopen(filename, "rb");
 
-  if(!png->f) return 1;
+  if(IS_NULL_PTR(png->f)) return 1;
 
 #define NUM_BYTES_CHECK (8)
 
@@ -62,14 +62,14 @@ int read_header(const char *filename, dt_imageio_png_t *png)
 
   png->png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
 
-  if(!png->png_ptr)
+  if(IS_NULL_PTR(png->png_ptr))
   {
     fclose(png->f);
     return 1;
   }
 
   png->info_ptr = png_create_info_struct(png->png_ptr);
-  if(!png->info_ptr)
+  if(IS_NULL_PTR(png->info_ptr))
   {
     fclose(png->f);
     png_destroy_read_struct(&png->png_ptr, NULL, NULL);
@@ -176,17 +176,18 @@ dt_imageio_retval_t dt_imageio_open_png(dt_image_t *img, const char *filename, d
   height = img->height = image.height;
   bpp = image.bit_depth;
 
-  img->buf_dsc.channels = 4;
-  img->buf_dsc.datatype = TYPE_FLOAT;
-  img->buf_dsc.cst = IOP_CS_RGB; // png is always RGB
-  img->buf_dsc.filters = 0u;
+  img->dsc.channels = 4;
+  img->dsc.datatype = TYPE_FLOAT;
+  img->dsc.bpp = 4 * sizeof(float);
+  img->dsc.cst = IOP_CS_RGB; // png is always RGB
+  img->dsc.filters = 0u;
   img->flags &= ~DT_IMAGE_RAW;
   img->flags &= ~DT_IMAGE_S_RAW;
   img->flags &= ~DT_IMAGE_HDR;
   img->flags |= DT_IMAGE_LDR;
   img->loader = LOADER_PNG;
 
-  if(!mbuf)
+  if(IS_NULL_PTR(mbuf))
   {
     png_destroy_read_struct(&image.png_ptr, &image.info_ptr, NULL);
     fclose(image.f);
@@ -194,7 +195,7 @@ dt_imageio_retval_t dt_imageio_open_png(dt_image_t *img, const char *filename, d
   }
 
   float *mipbuf = (float *)dt_mipmap_cache_alloc(mbuf, img);
-  if(!mipbuf)
+  if(IS_NULL_PTR(mipbuf))
   {
     fclose(image.f);
     png_destroy_read_struct(&image.png_ptr, &image.info_ptr, NULL);
@@ -206,7 +207,7 @@ dt_imageio_retval_t dt_imageio_open_png(dt_image_t *img, const char *filename, d
       (size_t)image.height * png_get_rowbytes(image.png_ptr, image.info_ptr),
       0);
 
-  if(!buf)
+  if(IS_NULL_PTR(buf))
   {
     fclose(image.f);
     png_destroy_read_struct(&image.png_ptr, &image.info_ptr, NULL);

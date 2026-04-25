@@ -109,7 +109,7 @@ int write_image(dt_imageio_module_data_t *d_tmp, const char *filename, const voi
     if(profile_len > 0)
     {
       profile = malloc(profile_len);
-      if(!profile)
+      if(IS_NULL_PTR(profile))
       {
         rc = 1;
         goto exit;
@@ -133,7 +133,7 @@ int write_image(dt_imageio_module_data_t *d_tmp, const char *filename, const voi
   tif = TIFFOpen(filename, "wl");
 #endif
 
-  if(!tif)
+  if(IS_NULL_PTR(tif))
   {
     rc = 1;
     goto exit;
@@ -173,7 +173,7 @@ int write_image(dt_imageio_module_data_t *d_tmp, const char *filename, const voi
     TIFFSetField(tif, TIFFTAG_ZIPQUALITY, (uint16_t)d->compresslevel);
   }
 
-  if(profile != NULL)
+  if(!IS_NULL_PTR(profile))
   {
     TIFFSetField(tif, TIFFTAG_ICCPROFILE, (uint32_t)profile_len, profile);
   }
@@ -360,7 +360,7 @@ int write_image(dt_imageio_module_data_t *d_tmp, const char *filename, const voi
     tif = TIFFOpen(filename, "al");
 #endif
 
-    if(!tif)
+    if(IS_NULL_PTR(tif))
     {
       rc = 1;
       goto exit;
@@ -392,7 +392,7 @@ int write_image(dt_imageio_module_data_t *d_tmp, const char *filename, const voi
 
 
         size_t w = d->global.width, h = d->global.height;
-        if(!raster_mask)
+        if(IS_NULL_PTR(raster_mask))
         {
           // this should never happen
           w = missing_raster_mask_w;
@@ -782,10 +782,8 @@ static void compress_level_changed(GtkWidget *slider, gpointer user_data)
 
 void init(dt_imageio_module_format_t *self)
 {
-#ifdef USE_LUA
-  dt_lua_register_module_member(darktable.lua_state.state, self, dt_imageio_tiff_t, bpp, int);
-#endif
 }
+
 void cleanup(dt_imageio_module_format_t *self)
 {
 }

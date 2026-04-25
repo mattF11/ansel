@@ -24,8 +24,6 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "common/extra_optimizations.h"
-
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -191,7 +189,7 @@ int default_group()
   return IOP_GROUP_REPAIR;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -201,13 +199,10 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   memcpy(piece->data, p1, self->params_size);
 }
 
+__DT_CLONE_TARGETS__
 static void normalize_manifolds(const float *const restrict blurred_in, float *const restrict blurred_manifold_lower, float *const restrict blurred_manifold_higher, const size_t width, const size_t height, const dt_iop_cacorrectrgb_guide_channel_t guide)
 {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-dt_omp_firstprivate(blurred_in, blurred_manifold_lower, blurred_manifold_higher, width, height, guide) \
-  schedule(simd:static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < width * height; k++)
   {
     const float weighth = fmaxf(blurred_manifold_higher[k * 4 + 3], 1E-2f);
@@ -270,8 +265,8 @@ static int get_manifolds(const float* const restrict in, const size_t width, con
   float *const restrict blurred_manifold_higher = dt_pixelpipe_cache_alloc_align_float_cache(width * height * 4, 0);
   float *const restrict blurred_manifold_lower = dt_pixelpipe_cache_alloc_align_float_cache(width * height * 4, 0);
 
-  if(blurred_in == NULL || manifold_higher == NULL || manifold_lower == NULL ||
-     blurred_manifold_higher == NULL || blurred_manifold_lower == NULL)
+  if(IS_NULL_PTR(blurred_in) || IS_NULL_PTR(manifold_higher) || IS_NULL_PTR(manifold_lower) ||
+     IS_NULL_PTR(blurred_manifold_higher) || IS_NULL_PTR(blurred_manifold_lower))
   {
     err = 1;
     goto error;
@@ -283,7 +278,7 @@ static int get_manifolds(const float* const restrict in, const size_t width, con
   // later on
   const float blur_size = refine_manifolds ? sigma2 : sigma;
   dt_gaussian_t *g = dt_gaussian_init(width, height, 4, max, min, blur_size, 0);
-  if(!g)
+  if(IS_NULL_PTR(g))
   {
     err = 1;
     goto error;
@@ -294,11 +289,7 @@ static int get_manifolds(const float* const restrict in, const size_t width, con
   // higher manifold is the blur of all pixels that are above average,
   // lower manifold is the blur of all pixels that are below average
   // we use the guide channel to categorize the pixels as above or below average
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, width, height, guide) \
-  schedule(simd:static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < width * height; k++)
   {
     const float pixelg = fmaxf(in[k * 4 + guide], 1E-6f);
@@ -357,7 +348,7 @@ dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, width, heig
   if(refine_manifolds)
   {
     g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
-    if(!g)
+    if(IS_NULL_PTR(g))
     {
       err = 1;
       goto error;
@@ -367,11 +358,7 @@ dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, width, heig
     // refine the manifolds
     // improve result especially on very degraded images
     // we use a blur of normal size for this step
-  #ifdef _OPENMP
-  #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, blurred_manifold_lower, blurred_manifold_higher, width, height, guide) \
-    schedule(simd:static)
-  #endif
+    __OMP_PARALLEL_FOR__()
     for(size_t k = 0; k < width * height; k++)
     {
       // in order to refine the manifolds, we will compute weights
@@ -510,11 +497,7 @@ dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, width, heig
   }
 
   // store all manifolds in the same structure to make upscaling faster
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(manifolds, blurred_manifold_lower, blurred_manifold_higher, width, height, guide) \
-  schedule(simd:static) aligned(manifolds, blurred_manifold_lower, blurred_manifold_higher:64)
-#endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(manifolds, blurred_manifold_lower, blurred_manifold_higher:64))
   for(size_t k = 0; k < width * height; k++)
   {
     for(size_t c = 0; c < 3; c++)
@@ -543,11 +526,7 @@ static void apply_correction(const float* const restrict in,
                           float* const restrict out)
 
 {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-dt_omp_firstprivate(in, width, height, guide, manifolds, out, sigma, mode) \
-  schedule(simd:static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < width * height; k++)
   {
     const float high_guide = fmaxf(manifolds[k * 6 + guide], 1E-6f);
@@ -608,6 +587,7 @@ dt_omp_firstprivate(in, width, height, guide, manifolds, out, sigma, mode) \
   }
 }
 
+__DT_CLONE_TARGETS__
 static int reduce_artifacts(const float* const restrict in,
                             const size_t width, const size_t height, const float sigma,
                             const dt_iop_cacorrectrgb_guide_channel_t guide,
@@ -622,17 +602,12 @@ static int reduce_artifacts(const float* const restrict in,
   // it allows to blur all channels in one 4-channel gaussian blur instead of 2
   float *const restrict DT_ALIGNED_PIXEL in_out = dt_pixelpipe_cache_alloc_align_float_cache(width * height * 4, 0);
   float *const restrict blurred_in_out = dt_pixelpipe_cache_alloc_align_float_cache(width * height * 4, 0);
-  if(blurred_in_out == NULL || in_out == NULL)
+  if(IS_NULL_PTR(blurred_in_out) || IS_NULL_PTR(in_out))
   {
     err = 1;
     goto error;
   }
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(in, out, in_out, width, height, guide)        \
-  schedule(simd:static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < width * height; k++)
   {
     for(size_t kc = 0; kc <= 1; kc++)
@@ -647,7 +622,7 @@ static int reduce_artifacts(const float* const restrict in,
   dt_aligned_pixel_t max = { INFINITY, INFINITY, INFINITY, INFINITY };
   dt_aligned_pixel_t min = {0.0f, 0.0f, 0.0f, 0.0f};
   g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
-  if(!g)
+  if(IS_NULL_PTR(g))
   {
     err = 1;
     goto error;
@@ -663,11 +638,7 @@ static int reduce_artifacts(const float* const restrict in,
   // the local averages are very different.
   // we use the same weight for all channels, as using different weights
   // introduces artifacts in practice.
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-dt_omp_firstprivate(in, out, blurred_in_out, width, height, guide, safety) \
-  schedule(simd:static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < width * height; k++)
   {
     float w = 1.0f;
@@ -691,7 +662,7 @@ error:;
   return err;
 }
 
-static int reduce_chromatic_aberrations(const float* const restrict in,
+static inline __attribute__((always_inline)) int reduce_chromatic_aberrations(const float* const restrict in,
                           const size_t width, const size_t height,
                           const size_t ch, const float sigma, const float sigma2,
                           const dt_iop_cacorrectrgb_guide_channel_t guide,
@@ -711,7 +682,7 @@ static int reduce_chromatic_aberrations(const float* const restrict in,
   // we use only one variable for both higher and lower manifolds in order
   // to save time by doing only one bilinear interpolation instead of 2.
   float *const restrict ds_manifolds = dt_pixelpipe_cache_alloc_align_float_cache(ds_width * ds_height * 6, 0);
-  if(ds_manifolds == NULL || ds_in == NULL || manifolds == NULL)
+  if(IS_NULL_PTR(ds_manifolds) || IS_NULL_PTR(ds_in) || IS_NULL_PTR(manifolds))
   {
     err = 1;
     goto error;
@@ -744,17 +715,15 @@ error:;
   return err;
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
-             const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid)
 {
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
-                                         ivoid, ovoid, roi_in, roi_out))
-    return 0; // ivoid has been copied to ovoid and the module's trouble flag has been set
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
 
   dt_iop_cacorrectrgb_params_t *d = (dt_iop_cacorrectrgb_params_t *)piece->data;
   // used to adjuste blur level depending on size. Don't amplify noise if magnified > 100%
-  const float scale = fmaxf(1.f / roi_in->scale, 1.f);
-  const int ch = piece->colors;
+  const float scale = fmaxf(dt_dev_get_module_scale(pipe, roi_in), 1.f);
+  const int ch = piece->dsc_in.channels;
   const size_t width = roi_out->width;
   const size_t height = roi_out->height;
   const float* in = (float*)ivoid;
@@ -787,7 +756,7 @@ void reload_defaults(dt_iop_module_t *module)
   d->refine_manifolds = FALSE;
 
   dt_iop_cacorrectrgb_gui_data_t *g = (dt_iop_cacorrectrgb_gui_data_t *)module->gui_data;
-  if(g)
+  if(!IS_NULL_PTR(g))
   {
     dt_bauhaus_combobox_set_default(g->guide_channel, d->guide_channel);
     dt_bauhaus_slider_set_default(g->radius, d->radius);

@@ -46,9 +46,9 @@ const char *_ui_panel_config_names[]
 gchar * panels_get_view_path(char *suffix)
 {
 
-  if(!darktable.view_manager) return NULL;
+  if(IS_NULL_PTR(darktable.view_manager)) return NULL;
   const dt_view_t *cv = dt_view_manager_get_current_view(darktable.view_manager);
-  if(!cv) return NULL;
+  if(IS_NULL_PTR(cv)) return NULL;
   char lay[32] = "";
 
   if(!strcmp(cv->module_name, "lighttable"))
@@ -62,7 +62,7 @@ gchar * panels_get_view_path(char *suffix)
 gchar * panels_get_panel_path(dt_ui_panel_t panel, char *suffix)
 {
   gchar *v = panels_get_view_path("");
-  if(!v) return NULL;
+  if(IS_NULL_PTR(v)) return NULL;
   return dt_util_dstrcat(v, "%s%s", _ui_panel_config_names[panel], suffix);
 }
 
@@ -316,7 +316,7 @@ static void _ui_panel_size_changed(GtkAdjustment *adjustment, GParamSpec *pspec,
   if(height == last_height[side]) return;
   last_height[side] = height;
 
-  if(!darktable.gui->scroll_to[side]) return;
+  if(IS_NULL_PTR(darktable.gui->scroll_to[side])) return;
 
   if(GTK_IS_WIDGET(darktable.gui->scroll_to[side]))
   {
@@ -748,7 +748,7 @@ void dt_ui_init_global_menu(dt_ui_t *ui)
 
 void dt_ui_set_image_info_label(dt_ui_t *ui, const char *label)
 {
-  if(!ui || !ui->header || !GTK_IS_LABEL(ui->header->image_info)) return;
+  if(IS_NULL_PTR(ui) || IS_NULL_PTR(ui->header) || !GTK_IS_LABEL(ui->header->image_info)) return;
   gtk_label_set_markup(GTK_LABEL(ui->header->image_info), label);
 }
 
@@ -760,7 +760,7 @@ void dt_ui_set_window_buttons_visible(dt_ui_t *ui, gboolean visible)
 
 void dt_hinter_set_message(dt_ui_t *ui, const char *message)
 {
-  if(!ui || !ui->header || !GTK_IS_LABEL(ui->header->hinter)) return;
+  if(IS_NULL_PTR(ui) || IS_NULL_PTR(ui->header) || !GTK_IS_LABEL(ui->header->hinter)) return;
   // Remove hacky attempts of line wrapping with hardcoded newline :
   // Line wrap is handled by Gtk at the label scope.
   char **split = g_strsplit(message, "\n", -1);

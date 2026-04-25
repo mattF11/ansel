@@ -84,14 +84,14 @@ static inline char *dt_conf_get_var(const char *name)
   dt_pthread_mutex_lock(&darktable.conf->mutex);
 
   str = (char *)g_hash_table_lookup(darktable.conf->override_entries, name);
-  if(str) goto fin;
+  if(!IS_NULL_PTR(str)) goto fin;
 
   str = (char *)g_hash_table_lookup(darktable.conf->table, name);
-  if(str) goto fin;
+  if(!IS_NULL_PTR(str)) goto fin;
 
   // not found, try defaults
   str = (char *)dt_confgen_get(name, DT_DEFAULT);
-  if(str)
+  if(!IS_NULL_PTR(str))
   {
     char *str_new = g_strdup(str);
     g_hash_table_insert(darktable.conf->table, g_strdup(name), str_new);
@@ -210,7 +210,7 @@ int dt_conf_get_int_fast(const char *name)
   {
     //we've got garbage, check default
     const char *def_val = dt_confgen_get(name, DT_DEFAULT);
-    if(def_val)
+    if(!IS_NULL_PTR(def_val))
     {
       new_value = dt_calculator_solve(1, def_val);
       if(isnan(new_value))
@@ -255,7 +255,7 @@ int64_t dt_conf_get_int64_fast(const char *name)
   {
     //we've got garbage, check default
     const char *def_val = dt_confgen_get(name, DT_DEFAULT);
-    if(def_val)
+    if(!IS_NULL_PTR(def_val))
     {
       new_value = dt_calculator_solve(1, def_val);
       if(isnan(new_value))
@@ -300,7 +300,7 @@ float dt_conf_get_float_fast(const char *name)
   {
     //we've got garbage, check default
     const char *def_val = dt_confgen_get(name, DT_DEFAULT);
-    if(def_val)
+    if(!IS_NULL_PTR(def_val))
     {
       new_value = dt_calculator_solve(1, def_val);
       if(isnan(new_value))
@@ -382,7 +382,7 @@ const char *dt_conf_get_string_const(const char *name)
 gboolean dt_conf_key_not_empty(const char *name)
 {
   const char *val = dt_conf_get_string_const(name);
-  if(val == NULL)      return FALSE;
+  if(IS_NULL_PTR(val))      return FALSE;
   if(strlen(val) == 0) return FALSE;
   return TRUE;
 }
@@ -390,7 +390,7 @@ gboolean dt_conf_key_not_empty(const char *name)
 gboolean dt_conf_get_folder_to_file_chooser(const char *name, GtkFileChooser *chooser)
 {
   const gchar *folder = dt_conf_get_string_const(name);
-  if (folder)
+  if (!IS_NULL_PTR(folder))
   {
     gtk_file_chooser_set_current_folder(chooser, folder);
     return TRUE;
@@ -408,7 +408,7 @@ static char *_sanitize_confgen(const char *name, const char *value)
 {
   const dt_confgen_value_t *item = g_hash_table_lookup(darktable.conf->x_confgen, name);
 
-  if(!item) return g_strdup(value);
+  if(IS_NULL_PTR(item)) return g_strdup(value);
 
   char *result = NULL;
 
@@ -495,7 +495,7 @@ void dt_conf_init(dt_conf_t *cf, const char *filename, GSList *override_entries)
 
   // if file has been found, parse it
 
-  if(f)
+  if(!IS_NULL_PTR(f))
   {
     while(!feof(f))
     {
@@ -538,7 +538,7 @@ void dt_conf_init(dt_conf_t *cf, const char *filename, GSList *override_entries)
     }
   }
 
-  if(override_entries)
+  if(!IS_NULL_PTR(override_entries))
   {
     for(GSList *p = override_entries; p; p = g_slist_next(p))
     {
@@ -604,7 +604,7 @@ dt_confgen_type_t dt_confgen_type(const char *name)
 {
   const dt_confgen_value_t *item = g_hash_table_lookup(darktable.conf->x_confgen, name);
 
-  if(item)
+  if(!IS_NULL_PTR(item))
     return item->type;
   else
     return DT_STRING;
@@ -613,19 +613,19 @@ dt_confgen_type_t dt_confgen_type(const char *name)
 gboolean dt_confgen_value_exists(const char *name, dt_confgen_value_kind_t kind)
 {
   const dt_confgen_value_t *item = g_hash_table_lookup(darktable.conf->x_confgen, name);
-  if(item == NULL)
+  if(IS_NULL_PTR(item))
     return FALSE;
 
   switch(kind)
   {
      case DT_DEFAULT:
-       return item->def != NULL;
+       return !IS_NULL_PTR(item->def);
      case DT_MIN:
-       return item->min != NULL;
+       return !IS_NULL_PTR(item->min);
      case DT_MAX:
-       return item->max != NULL;
+       return !IS_NULL_PTR(item->max);
      case DT_VALUES:
-       return item->enum_values != NULL;
+       return !IS_NULL_PTR(item->enum_values);
   }
   return FALSE;
 }
@@ -634,7 +634,7 @@ const char *dt_confgen_get(const char *name, dt_confgen_value_kind_t kind)
 {
   const dt_confgen_value_t *item = g_hash_table_lookup(darktable.conf->x_confgen, name);
 
-  if(item)
+  if(!IS_NULL_PTR(item))
   {
     switch(kind)
     {
@@ -656,7 +656,7 @@ const char *dt_confgen_get_label(const char *name)
 {
   const dt_confgen_value_t *item = g_hash_table_lookup(darktable.conf->x_confgen, name);
 
-  if(item)
+  if(!IS_NULL_PTR(item))
   {
     return item->shortdesc;
   }
@@ -668,7 +668,7 @@ const char *dt_confgen_get_tooltip(const char *name)
 {
   const dt_confgen_value_t *item = g_hash_table_lookup(darktable.conf->x_confgen, name);
 
-  if(item)
+  if(!IS_NULL_PTR(item))
   {
     return item->longdesc;
   }
@@ -864,7 +864,7 @@ static void dt_conf_print(const gchar *key, const gchar *val, FILE *f)
 void dt_conf_save(dt_conf_t *cf)
 {
   FILE *f = g_fopen(cf->filename, "wb");
-  if(f)
+  if(!IS_NULL_PTR(f))
   {
     GList *keys = g_hash_table_get_keys(cf->table);
     GList *sorted = g_list_sort(keys, (GCompareFunc)g_strcmp0);

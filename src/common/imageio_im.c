@@ -55,9 +55,9 @@ static gboolean _supported_image(const gchar *filename)
                                          "miff", "mng",  "pbm", "pnm", "ppm", "pgm", "webp", NULL };
   gboolean supported = FALSE;
   char *ext = g_strrstr(filename, ".");
-  if(!ext) return FALSE;
+  if(IS_NULL_PTR(ext)) return FALSE;
   ext++;
-  for(const char **i = extensions_whitelist; *i != NULL; i++)
+  for(const char **i = extensions_whitelist; !IS_NULL_PTR(*i); i++)
     if(!g_ascii_strncasecmp(ext, *i, strlen(*i)))
     {
       supported = TRUE;
@@ -78,7 +78,7 @@ dt_imageio_retval_t dt_imageio_open_im(dt_image_t *img, const char *filename, dt
   if(!img->exif_inited) (void)dt_exif_read(img, filename);
 
   image = NewMagickWand();
-  if (image == NULL) goto error;
+  if (IS_NULL_PTR(image)) goto error;
 
   ret = MagickReadImage(image, filename);
   if (ret != MagickTrue) {
@@ -102,10 +102,11 @@ dt_imageio_retval_t dt_imageio_open_im(dt_image_t *img, const char *filename, dt
   img->width = MagickGetImageWidth(image);
   img->height = MagickGetImageHeight(image);
 
-  img->buf_dsc.channels = 4;
-  img->buf_dsc.datatype = TYPE_FLOAT;
-  img->buf_dsc.cst = IOP_CS_RGB;
-  img->buf_dsc.filters = 0u;
+  img->dsc.channels = 4;
+  img->dsc.datatype = TYPE_FLOAT;
+  img->dsc.bpp = 4 * sizeof(float);
+  img->dsc.cst = IOP_CS_RGB;
+  img->dsc.filters = 0u;
   img->flags &= ~DT_IMAGE_RAW;
   img->flags &= ~DT_IMAGE_S_RAW;
   img->flags &= ~DT_IMAGE_HDR;
@@ -113,14 +114,14 @@ dt_imageio_retval_t dt_imageio_open_im(dt_image_t *img, const char *filename, dt
 
   img->loader = LOADER_IM;
 
-  if(!mbuf)
+  if(IS_NULL_PTR(mbuf))
   {
     DestroyMagickWand(image);
     return DT_IMAGEIO_OK;
   }
 
   float *mipbuf = dt_mipmap_cache_alloc(mbuf, img);
-  if (mipbuf == NULL) {
+  if (IS_NULL_PTR(mipbuf)) {
     fprintf(stderr,
         "[ImageMagick_open] could not alloc full buffer for image `%s'\n",
         img->filename);
@@ -138,7 +139,7 @@ dt_imageio_retval_t dt_imageio_open_im(dt_image_t *img, const char *filename, dt
   size_t profile_length;
   uint8_t *profile_data = (uint8_t *)MagickGetImageProfile(image, "icc", &profile_length);
   /* no alias support like GraphicsMagick, have to check both locations */
-  if(profile_data == NULL)
+  if(IS_NULL_PTR(profile_data))
     profile_data = (uint8_t *)MagickGetImageProfile(image, "icm", &profile_length);
   if(profile_data)
   {

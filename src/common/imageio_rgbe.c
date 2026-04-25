@@ -372,7 +372,7 @@ int RGBE_WritePixels_RLE(FILE *fp, float *data, int scanline_width,
     /* run length encoding is not allowed so write flat*/
     return RGBE_WritePixels(fp,data,scanline_width*num_scanlines);
   buffer = (unsigned char *)malloc(sizeof(unsigned char)*4*scanline_width);
-  if (buffer == NULL)
+  if (IS_NULL_PTR(buffer))
     /* no buffer space so write flat */
     return RGBE_WritePixels(fp,data,scanline_width*num_scanlines);
   while(num_scanlines-- > 0)
@@ -443,9 +443,9 @@ int RGBE_ReadPixels_RLE(FILE *fp, float *data, int scanline_width, int num_scanl
       dt_free(scanline_buffer);
       return rgbe_error(rgbe_format_error, "wrong scanline width");
     }
-    if(scanline_buffer == NULL)
+    if(IS_NULL_PTR(scanline_buffer))
       scanline_buffer = (unsigned char *)malloc(sizeof(unsigned char) * 4 * scanline_width);
-    if(scanline_buffer == NULL) return rgbe_error(rgbe_memory_error, "unable to allocate buffer space");
+    if(IS_NULL_PTR(scanline_buffer)) return rgbe_error(rgbe_memory_error, "unable to allocate buffer space");
 
     unsigned char *ptr = &scanline_buffer[0];
     /* read each of the four channels for the scanline into the buffer */
@@ -605,29 +605,30 @@ dt_imageio_retval_t dt_imageio_open_rgbe(dt_image_t *img, const char *filename, 
   if(strncmp(ext, ".hdr", 4) && strncmp(ext, ".HDR", 4) && strncmp(ext, ".Hdr", 4))
     return DT_IMAGEIO_FILE_CORRUPTED;
   FILE *f = g_fopen(filename, "rb");
-  if(!f) return DT_IMAGEIO_FILE_CORRUPTED;
+  if(IS_NULL_PTR(f)) return DT_IMAGEIO_FILE_CORRUPTED;
 
   rgbe_header_info info;
   if(RGBE_ReadHeader(f, &img->width, &img->height, &info)) goto error_corrupt;
 
-  img->buf_dsc.channels = 4;
-  img->buf_dsc.datatype = TYPE_FLOAT;
-  img->buf_dsc.cst = IOP_CS_RGB;
-  img->buf_dsc.filters = 0u;
+  img->dsc.channels = 4;
+  img->dsc.datatype = TYPE_FLOAT;
+  img->dsc.bpp = 4 * sizeof(float);
+  img->dsc.cst = IOP_CS_RGB;
+  img->dsc.filters = 0u;
   img->flags &= ~DT_IMAGE_LDR;
   img->flags &= ~DT_IMAGE_RAW;
   img->flags &= ~DT_IMAGE_S_RAW;
   img->flags |= DT_IMAGE_HDR;
   img->loader = LOADER_RGBE;
 
-  if(!mbuf)
+  if(IS_NULL_PTR(mbuf))
   {
     fclose(f);
     return DT_IMAGEIO_OK;
   }
 
   float *buf = (float *)dt_mipmap_cache_alloc(mbuf, img);
-  if(!buf) goto error_cache_full;
+  if(IS_NULL_PTR(buf)) goto error_cache_full;
   if(RGBE_ReadPixels_RLE(f, buf, img->width, img->height))
   {
     goto error_corrupt;

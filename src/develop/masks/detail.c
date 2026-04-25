@@ -41,21 +41,19 @@
   A threshold value of 0.0 means bypassing.
 
   So the first important point is:
-  We make sure taking the input data for the DM right from the demosaicer for normal raws
-  or from rawprepare in case of monochromes. This means some additional housekeeping for the
-  pixelpipe.
+  We make sure taking the input data for the DM from a dedicated hidden pipeline stage placed
+  right after demosaic. This means some additional housekeeping for the pixelpipe.
   If any mask in any module selects a threshold of != 0.0 we leave a flag in the pipe struct
-  telling a) we want a DM and b) we want it from either demosaic or from rawprepare.
-  If such a flag has not been previously set we will force a pipeline reprocessing.
+  telling that we want a DM from that dedicated stage. If such a flag has not been previously
+  set we will force a pipeline reprocessing.
 
-  gboolean dt_dev_write_rawdetail_mask(dt_dev_pixelpipe_iop_t *piece, float *const rgb, const dt_iop_roi_t *const roi_in, const int mode, const dt_aligned_pixel_t wb);
-  or it's _cl equivalent write a preliminary mask holding signal-change values for every pixel.
+  The hidden `detailmask` module writes a preliminary mask holding signal-change values for every pixel
+  in its CPU and OpenCL `process()` callbacks.
   These mask values are calculated as
   a) get Y0 for every pixel
   b) apply a scharr operator on it
 
-  This raw detail mask (RM) is not scaled but only cropped to the roi of the writing module (demosaic
-  or rawprepare).
+  This raw detail mask (RM) is not scaled but only cropped to the roi of the writing module.
   The pipe gets roi copy of the writing module so we can later scale/distort the LM.
 
   Calculating the RM is done for performance and lower mem pressure reasons, so we don't have to
@@ -79,8 +77,8 @@
   All other refinements and parametric parameters are untouched.
 
   Some additional comments:
-  1. intentionally this details mask refinement has only been implemented for raws. Especially for compressed
-     inmages like jpegs or 8bit input the algo didn't work as good because of input precision and compression artifacts.
+  1. the detail mask is authored from the RGBA float pipeline stage immediately after demosaic,
+     which keeps the source buffer format stable across RAW and non-RAW inputs.
   2. In the gui the slider is above the rest of the refinemt sliders to emphasize that blurring & feathering use the
      mask corrected by detail refinemnt.
   3. Of course credit goes to Ingo @heckflosse from rt team for the original idea. (in the rt world this is knowb
@@ -90,15 +88,12 @@
   hanno@schwalm-brmouseemen.de 21/04/29
 */
 
+__DT_CLONE_TARGETS__
 void dt_masks_extend_border(float *const restrict mask, const int width, const int height, const int border)
 {
   if(border <= 0) return;
   const int max_col = width - border - 1;
-#ifdef _OPENMP
-  #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(mask, width, height, border, max_col) \
-  schedule(simd:static) aligned(mask : 64) if((size_t)width * height > 10000)
- #endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(mask : 64) if((size_t)width * height > 10000))
   for(int row = border; row < height - border; row++)
   {
     float *const rowptr = mask + (size_t)(row * width);
@@ -110,11 +105,7 @@ void dt_masks_extend_border(float *const restrict mask, const int width, const i
   }
   const float *const top_row = mask + (size_t)(border * width);
   const float *const bot_row = mask + (size_t)(height - border - 1) * width;
-#ifdef _OPENMP
-  #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(mask, width, height, border, max_col, top_row, bot_row) \
-  schedule(simd:static) aligned(mask : 64) if((size_t)width * height > 10000)
- #endif
+  __OMP_FOR_SIMD__(aligned(mask : 64) if((size_t)width * height > 10000))
   for(int col = 0; col < width; col++)
   {
     const int c = MIN(max_col, MAX(col, border));
@@ -148,13 +139,10 @@ void _masks_blur_5x5_coeff(float *c, const float sigma)
     }
   }
   for(int i = 0; i < 5; i++)
-  {
-#if defined(__GNUC__)
-  #pragma GCC ivdep
-#endif
     for(int j = 0; j < 5; j++)
       kernel[i][j] /= sum;
-  }
+
+  // FIXME: are you for real ? managing arrays with loops and index shift much ?
   /* c21 */ c[0]  = kernel[0][1];
   /* c20 */ c[1]  = kernel[0][2];
   /* c11 */ c[2]  = kernel[1][1];
@@ -188,13 +176,10 @@ void dt_masks_blur_9x9_coeff(float *c, const float sigma)
     }
   }
   for(int i = 0; i < 9; i++)
-  {
-#if defined(__GNUC__)
-  #pragma GCC ivdep
-#endif
     for(int j = 0; j < 9; j++)
       kernel[i][j] /= sum;
-  }
+
+  // FIXME: are you for real ? managing arrays with loops and index shift much ?
   /* c00 */ c[0]  = kernel[4][4];
   /* c10 */ c[1]  = kernel[3][4];
   /* c11 */ c[2]  = kernel[3][3];
@@ -210,6 +195,7 @@ void dt_masks_blur_9x9_coeff(float *c, const float sigma)
   /* c42 */ c[12] = kernel[0][2];
 }
 
+// FIMXE: ever heard about loop unrolling ???
 #define FAST_BLUR_9 ( \
   blurmat[12] * (src[i - w4 - 2] + src[i - w4 + 2] + src[i - w2 - 4] + src[i - w2 + 4] + src[i + w2 - 4] + src[i + w2 + 4] + src[i + w4 - 2] + src[i + w4 + 2]) + \
   blurmat[11] * (src[i - w4 - 1] + src[i - w4 + 1] + src[i - w1 - 4] + src[i - w1 + 4] + src[i + w1 - 4] + src[i + w1 + 4] + src[i + w4 - 1] + src[i + w4 + 1]) + \
@@ -234,11 +220,7 @@ void dt_masks_blur_9x9(float *const restrict src, float *const restrict out, con
   const int w2 = 2*width;
   const int w3 = 3*width;
   const int w4 = 4*width;
-#ifdef _OPENMP
-  #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(blurmat, src, out, width, height, w1, w2, w3, w4) \
-  schedule(simd:static) aligned(src, out : 64) if((size_t)width * height > 50000)
- #endif
+  __OMP_FOR_SIMD__(aligned(src, out : 64) if((size_t)width * height > 50000))
   for(int row = 4; row < height - 4; row++)
   {
     const int row_off = row * width;
@@ -271,13 +253,10 @@ void _masks_blur_13x13_coeff(float *c, const float sigma)
     }
   }
   for(int i = 0; i < 13; i++)
-  {
-#if defined(__GNUC__)
-  #pragma GCC ivdep
-#endif
     for(int j = 0; j < 13; j++)
       kernel[i][j] /= sum;
-  }
+  
+  // FIXME: are you for real ? managing arrays with loops and index shift much ?
   /* c60 */ c[0]  = kernel[0][6];
   /* c53 */ c[1]  = kernel[1][3];
   /* c52 */ c[2]  = kernel[1][4];
@@ -300,15 +279,12 @@ void _masks_blur_13x13_coeff(float *c, const float sigma)
 }
 
 
+__DT_CLONE_TARGETS__
 void dt_masks_calc_rawdetail_mask(float *const restrict src, float *const restrict mask, float *const restrict tmp,
                                   const int width, const int height, const dt_aligned_pixel_t wb)
 {
   const int msize = width * height;
-#ifdef _OPENMP
-  #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(tmp, src, msize, wb) \
-  schedule(simd:static) aligned(tmp, src : 64) if(msize > 50000)
-#endif
+  __OMP_FOR_SIMD__(aligned(tmp, src : 64) if(msize > 50000))
   for(int idx =0; idx < msize; idx++)
   {
     const float val = 0.333333333f * (fmaxf(src[4 * idx], 0.0f) / wb[0] + fmaxf(src[4 * idx + 1], 0.0f) / wb[1] + fmaxf(src[4 * idx + 2], 0.0f) / wb[2]);
@@ -316,11 +292,7 @@ void dt_masks_calc_rawdetail_mask(float *const restrict src, float *const restri
   }
 
   const float scale = 1.0f / 16.0f;
-#ifdef _OPENMP
-  #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(mask, tmp, width, height, scale) \
-  schedule(simd:static) aligned(mask, tmp : 64) if((size_t)width * height > 50000)
- #endif
+  __OMP_PARALLEL_FOR_SIMD__(aligned(mask, tmp : 64) if((size_t)width * height > 50000))
   for(int row = 1; row < height - 1; row++)
   {
     for(int col = 1, idx = row * width + col; col < width - 1; col++, idx++)
@@ -353,11 +325,7 @@ static inline float calcBlendFactor(float val, float threshold)
 void dt_masks_calc_detail_mask(float *const restrict src, float *const restrict out, float *const restrict tmp, const int width, const int height, const float threshold, const gboolean detail)
 {
   const int msize = width * height;
-#ifdef _OPENMP
-  #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(src, tmp, msize, threshold, detail, out) \
-  schedule(simd:static) aligned(src, tmp, out : 64) if(msize > 50000)
-#endif
+  __OMP_FOR_SIMD__(aligned(src, tmp, out : 64) if(msize > 50000))
   for(int idx = 0; idx < msize; idx++)
   {
     const float blend = calcBlendFactor(src[idx], threshold);

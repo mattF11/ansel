@@ -35,9 +35,12 @@ static float slider2contrast(float slider)
 {
   return 0.005f * powf(slider, 1.1f);
 }
-static int dual_demosaic(dt_dev_pixelpipe_iop_t *piece, float *const restrict rgb_data, const float *const restrict raw_data,
-                          dt_iop_roi_t *const roi_out, const dt_iop_roi_t *const roi_in, const uint32_t filters, const uint8_t (*const xtrans)[6],
-                          const gboolean dual_mask, float dual_threshold)
+__DT_CLONE_TARGETS__
+static int dual_demosaic(const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece,
+                         float *const restrict rgb_data, const float *const restrict raw_data,
+                         dt_iop_roi_t *const roi_out, const dt_iop_roi_t *const roi_in,
+                         const uint32_t filters, const uint8_t (*const xtrans)[6],
+                         const gboolean dual_mask, float dual_threshold)
 {
   const int width = roi_in->width;
   const int height = roi_in->height;
@@ -46,10 +49,10 @@ static int dual_demosaic(dt_dev_pixelpipe_iop_t *piece, float *const restrict rg
   // If the threshold is zero and we don't want to see the blend mask we don't do anything
   if(dual_threshold <= 0.0f) return 0;
 
-  float *blend = dt_pixelpipe_cache_alloc_align_float((size_t) width * height, piece->pipe);
-  float *tmp = dt_pixelpipe_cache_alloc_align_float((size_t) width * height, piece->pipe);
-  float *vng_image = dt_pixelpipe_cache_alloc_align_float((size_t) 4 * width * height, piece->pipe);
-  if(!blend || !tmp || !vng_image)
+  float *blend = dt_pixelpipe_cache_alloc_align_float((size_t) width * height, pipe);
+  float *tmp = dt_pixelpipe_cache_alloc_align_float((size_t) width * height, pipe);
+  float *vng_image = dt_pixelpipe_cache_alloc_align_float((size_t) 4 * width * height, pipe);
+  if(IS_NULL_PTR(blend) || IS_NULL_PTR(tmp) || IS_NULL_PTR(vng_image))
   {
     dt_pixelpipe_cache_free_align(tmp);
     dt_pixelpipe_cache_free_align(blend);
@@ -58,7 +61,7 @@ static int dual_demosaic(dt_dev_pixelpipe_iop_t *piece, float *const restrict rg
     return 1;
   }
   const gboolean info = ((darktable.unmuted & (DT_DEBUG_DEMOSAIC | DT_DEBUG_PERF))
-                         && (piece->pipe->type == DT_DEV_PIXELPIPE_FULL));
+                         && (pipe->type == DT_DEV_PIXELPIPE_FULL));
 
   if(vng_interpolate(vng_image, raw_data, roi_out, roi_in, filters, xtrans, FALSE))
   {
@@ -74,17 +77,13 @@ static int dual_demosaic(dt_dev_pixelpipe_iop_t *piece, float *const restrict rg
 
   const float contrastf = slider2contrast(dual_threshold);
 
-  dt_masks_calc_rawdetail_mask(rgb_data, blend, tmp, width, height, piece->pipe->dsc.temperature.coeffs);
+  dt_masks_calc_rawdetail_mask(rgb_data, blend, tmp, width, height, piece->dsc_in.temperature.coeffs);
   dt_masks_calc_detail_mask(blend, blend, tmp, width, height, contrastf, TRUE);
 
   if(dual_mask)
   {
-    piece->pipe->mask_display = DT_DEV_PIXELPIPE_DISPLAY_PASSTHRU;
-#ifdef _OPENMP
-  #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(blend, rgb_data, vng_image, width, height) \
-  schedule(simd:static) aligned(blend, vng_image, rgb_data : 64)
-#endif
+    ((dt_dev_pixelpipe_t *)pipe)->mask_display = DT_DEV_PIXELPIPE_DISPLAY_PASSTHRU;
+    __OMP_FOR_SIMD__(aligned(blend, vng_image, rgb_data : 64))
     for(int idx = 0; idx < width * height; idx++)
     {
       for(int c = 0; c < 4; c++)
@@ -93,11 +92,7 @@ static int dual_demosaic(dt_dev_pixelpipe_iop_t *piece, float *const restrict rg
   }
   else
   {
-#ifdef _OPENMP
-  #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(blend, rgb_data, vng_image, width, height) \
-  schedule(simd:static) aligned(blend, vng_image, rgb_data : 64)
-#endif
+    __OMP_FOR_SIMD__(aligned(blend, vng_image, rgb_data : 64))
     for(int idx = 0; idx < width * height; idx++)
     {
       const int oidx = 4 * idx;
@@ -117,20 +112,23 @@ static int dual_demosaic(dt_dev_pixelpipe_iop_t *piece, float *const restrict rg
 }
 
 #ifdef HAVE_OPENCL
-gboolean dual_demosaic_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem detail, cl_mem blend, cl_mem high_image, cl_mem low_image, cl_mem out, const int width, const int height, const int showmask)
+gboolean dual_demosaic_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                          const dt_dev_pixelpipe_iop_t *piece, cl_mem detail, cl_mem blend,
+                          cl_mem high_image, cl_mem low_image, cl_mem out, const int width,
+                          const int height, const int showmask)
 {
-  const int devid = piece->pipe->devid;
+  const int devid = pipe->devid;
   dt_iop_demosaic_data_t *data = (dt_iop_demosaic_data_t *)piece->data;
   dt_iop_demosaic_global_data_t *gd = (dt_iop_demosaic_global_data_t *)self->global_data;
 
   const float contrastf = slider2contrast(data->dual_thrs);
   if(showmask)
-    piece->pipe->mask_display = DT_DEV_PIXELPIPE_DISPLAY_PASSTHRU;
+    ((dt_dev_pixelpipe_t *)pipe)->mask_display = DT_DEV_PIXELPIPE_DISPLAY_PASSTHRU;
 
   {
     size_t sizes[3] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
-    const dt_aligned_pixel_t wb = { piece->pipe->dsc.temperature.coeffs[0], piece->pipe->dsc.temperature.coeffs[1],
-                                    piece->pipe->dsc.temperature.coeffs[2] };
+    const dt_aligned_pixel_t wb = { piece->dsc_in.temperature.coeffs[0], piece->dsc_in.temperature.coeffs[1],
+                                    piece->dsc_in.temperature.coeffs[2] };
     const int kernel = darktable.opencl->blendop->kernel_calc_Y0_mask;
     dt_opencl_set_kernel_arg(devid, kernel, 0, sizeof(cl_mem), &detail);
     dt_opencl_set_kernel_arg(devid, kernel, 1, sizeof(cl_mem), &high_image);
@@ -173,7 +171,7 @@ gboolean dual_demosaic_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *
     dt_masks_blur_9x9_coeff(blurmat, 2.0f);
     cl_mem dev_blurmat = NULL;
     dev_blurmat = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 13, blurmat);
-    if(dev_blurmat != NULL)
+    if(!IS_NULL_PTR(dev_blurmat))
     {
       size_t sizes[3] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
       const int clkernel = darktable.opencl->blendop->kernel_mask_blur;

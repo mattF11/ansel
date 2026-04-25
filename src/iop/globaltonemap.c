@@ -127,9 +127,17 @@ int default_group()
   return IOP_GROUP_TONES;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
+}
+
+void input_format(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece,
+                  dt_iop_buffer_dsc_t *dsc)
+{
+  default_input_format(self, pipe, piece, dsc);
+  dsc->channels = 4;
+  dsc->datatype = TYPE_FLOAT;
 }
 
 int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version,
@@ -148,21 +156,16 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
   return 1;
 }
 
-static inline void process_reinhard(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+__DT_CLONE_TARGETS__
+static inline void process_reinhard(struct dt_iop_module_t *self, const dt_dev_pixelpipe_iop_t *piece,
                                     const void *const ivoid, void *const ovoid,
                                     const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out,
                                     dt_iop_global_tonemap_data_t *data)
 {
   float *in = (float *)ivoid;
   float *out = (float *)ovoid;
-  const int ch = piece->colors;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, roi_out) \
-  shared(in, out, data) \
-  schedule(static)
-#endif
+  const int ch = 4;
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < (size_t)roi_out->width * roi_out->height; k++)
   {
     float *inp = in + ch * k;
@@ -174,14 +177,17 @@ static inline void process_reinhard(struct dt_iop_module_t *self, dt_dev_pixelpi
   }
 }
 
-static inline void process_drago(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
-                                 const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
-                                 const dt_iop_roi_t *const roi_out, dt_iop_global_tonemap_data_t *data)
+__DT_CLONE_TARGETS__
+static inline void process_drago(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                                 const dt_dev_pixelpipe_iop_t *piece,
+                                 const void *const ivoid, void *const ovoid,
+                                 const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out,
+                                 dt_iop_global_tonemap_data_t *data)
 {
   dt_iop_global_tonemap_gui_data_t *g = (dt_iop_global_tonemap_gui_data_t *)self->gui_data;
   float *in = (float *)ivoid;
   float *out = (float *)ovoid;
-  const int ch = piece->colors;
+  const int ch = 4;
 
   /* precalcs */
   const float eps = 0.0001f;
@@ -191,7 +197,7 @@ static inline void process_drago(struct dt_iop_module_t *self, dt_dev_pixelpipe_
   // Drago needs the absolute Lmax value of the image. In pixelpipe FULL we can not reliably get this value
   // as the pixelpipe might only see part of the image (region of interest). Therefore we try to get lwmax from
   // the PREVIEW pixelpipe which luckily stores it for us.
-  if(self->dev->gui_attached && g && !dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, roi_out))
+  if(self->dev->gui_attached && !IS_NULL_PTR(g) && !dt_dev_pixelpipe_has_preview_output(self->dev, pipe, roi_out))
   {
     dt_iop_gui_enter_critical_section(self);
     const uint64_t hash = g->hash;
@@ -213,11 +219,7 @@ static inline void process_drago(struct dt_iop_module_t *self, dt_dev_pixelpipe_
   if(isnan(tmp_lwmax))
   {
     lwmax = eps;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(roi_out, in, ch) reduction(max : lwmax)      \
-  schedule(static)
-#endif
+    __OMP_PARALLEL_FOR__(reduction(max : lwmax)      )
     for(size_t k = 0; k < (size_t)roi_out->width * roi_out->height; k++)
     {
       const float *inp = in + ch * k;
@@ -230,7 +232,7 @@ static inline void process_drago(struct dt_iop_module_t *self, dt_dev_pixelpipe_
   }
 
   // PREVIEW pixelpipe stores lwmax
-  if(self->dev->gui_attached && g && dt_dev_pixelpipe_has_preview_output(self->dev, piece->pipe, roi_out))
+  if(self->dev->gui_attached && !IS_NULL_PTR(g) && dt_dev_pixelpipe_has_preview_output(self->dev, pipe, roi_out))
   {
     uint64_t hash = piece->global_hash;
     dt_iop_gui_enter_critical_section(self);
@@ -241,13 +243,7 @@ static inline void process_drago(struct dt_iop_module_t *self, dt_dev_pixelpipe_
 
   const float ldc = data->drago.max_light * 0.01 / log10f(lwmax + 1);
   const float bl = logf(fmaxf(eps, data->drago.bias)) / logf(0.5);
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, bl, ldc, roi_out, eps) \
-  shared(in, out, lwmax) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < (size_t)roi_out->width * roi_out->height; k++)
   {
     float *inp = in + ch * k;
@@ -260,21 +256,16 @@ static inline void process_drago(struct dt_iop_module_t *self, dt_dev_pixelpipe_
   }
 }
 
-static inline void process_filmic(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+__DT_CLONE_TARGETS__
+static inline void process_filmic(struct dt_iop_module_t *self, const dt_dev_pixelpipe_iop_t *piece,
                                   const void *const ivoid, void *const ovoid,
                                   const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out,
                                   dt_iop_global_tonemap_data_t *data)
 {
   float *in = (float *)ivoid;
   float *out = (float *)ovoid;
-  const int ch = piece->colors;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, roi_out) \
-  shared(in, out, data) \
-  schedule(static)
-#endif
+  const int ch = 4;
+  __OMP_PARALLEL_FOR__()
   for(size_t k = 0; k < (size_t)roi_out->width * roi_out->height; k++)
   {
     float *inp = in + ch * k;
@@ -287,11 +278,13 @@ static inline void process_filmic(struct dt_iop_module_t *self, dt_dev_pixelpipe
   }
 }
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_global_tonemap_data_t *data = (dt_iop_global_tonemap_data_t *)piece->data;
-  const float scale = fmaxf(1.f / roi_in->scale, 1.f);
+  const float scale = fmaxf(dt_dev_get_module_scale(pipe, roi_in), 1.f);
   const float sigma_r = 8.0f; // does not depend on scale
   const float iw = piece->buf_in.width / scale;
   const float ih = piece->buf_in.height / scale;
@@ -300,7 +293,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
   if(data->detail != 0.0f)
   {
     b = dt_bilateral_init(roi_in->width, roi_in->height, sigma_s, sigma_r);
-    if(!b) return 1;
+    if(IS_NULL_PTR(b)) return 1;
     // get detail from unchanged input buffer
     dt_bilateral_splat(b, (float *)ivoid);
   }
@@ -311,7 +304,7 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
       process_reinhard(self, piece, ivoid, ovoid, roi_in, roi_out, data);
       break;
     case OPERATOR_DRAGO:
-      process_drago(self, piece, ivoid, ovoid, roi_in, roi_out, data);
+      process_drago(self, pipe, piece, ivoid, ovoid, roi_in, roi_out, data);
       break;
     case OPERATOR_FILMIC:
       process_filmic(self, piece, ivoid, ovoid, roi_in, roi_out, data);
@@ -326,17 +319,16 @@ int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const v
     dt_bilateral_free(b);
   }
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
   return 0;
 }
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+void tiling_callback(struct dt_iop_module_t *self, const struct dt_dev_pixelpipe_t *pipe, const struct dt_dev_pixelpipe_iop_t *piece, struct dt_develop_tiling_t *tiling)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   dt_iop_global_tonemap_data_t *d = (dt_iop_global_tonemap_data_t *)piece->data;
 
-  const float scale = 1.f / roi_in->scale;
+  const float scale = dt_dev_get_module_scale(pipe, roi_in);
   const float iw = piece->buf_in.width / scale;
   const float ih = piece->buf_in.height / scale;
   const float sigma_s = fminf(iw, ih) * 0.03f;
@@ -345,7 +337,7 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
 
   const int width = roi_in->width;
   const int height = roi_in->height;
-  const int channels = piece->colors;
+  const int channels = 4;
 
   const size_t basebuffer = sizeof(float) * channels * width * height;
 
@@ -391,7 +383,7 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
   dt_iop_global_tonemap_gui_data_t *g = (dt_iop_global_tonemap_gui_data_t *)self->gui_data;
   dt_iop_global_tonemap_params_t *p = (dt_iop_global_tonemap_params_t *)self->params;
 
-  if(!w || w == g->operator)
+  if(IS_NULL_PTR(w) || w == g->operator)
   {
     gtk_widget_set_visible(g->drago.bias, p->operator == OPERATOR_DRAGO);
     gtk_widget_set_visible(g->drago.max_light, p->operator == OPERATOR_DRAGO);

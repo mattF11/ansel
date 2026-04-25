@@ -134,7 +134,7 @@ static gboolean draw_image_callback(GtkWidget *widget, cairo_t *cr, gpointer use
   clear_background(cr);
 
   // done when no image is loaded
-  if(!image->image)
+  if(IS_NULL_PTR(image->image))
   {
     draw_no_image(cr, widget);
     return FALSE;
@@ -145,7 +145,7 @@ static gboolean draw_image_callback(GtkWidget *widget, cairo_t *cr, gpointer use
   draw_image(cr, image);
 
   // done when no chart was loaded
-  if(!chart) return FALSE;
+  if(IS_NULL_PTR(chart)) return FALSE;
 
   // draw overlay
   point_t bb[4];
@@ -208,7 +208,7 @@ static gboolean motion_notify_callback_reference(GtkWidget *widget, GdkEventMoti
 
 static gboolean handle_motion(GtkWidget *widget, GdkEventMotion *event, dt_lut_t *self, image_t *image)
 {
-  if(!(event->state & GDK_BUTTON1_MASK) || !image->image) return FALSE;
+  if(!(event->state & GDK_BUTTON1_MASK) || IS_NULL_PTR(image->image)) return FALSE;
 
   // mouse -> 0..1
   float x, y;
@@ -313,7 +313,7 @@ static gboolean open_source_image(dt_lut_t *self, const char *filename)
 {
   gboolean res = open_image(&self->source, filename);
   gtk_widget_set_sensitive(self->cht_button, res);
-  if(!res) gtk_file_chooser_unselect_all(GTK_FILE_CHOOSER(self->image_button));
+  if(IS_NULL_PTR(res)) gtk_file_chooser_unselect_all(GTK_FILE_CHOOSER(self->image_button));
   gtk_widget_queue_draw(self->source.drawing_area);
 
   return res;
@@ -338,12 +338,12 @@ static char *get_filename_base(const char *filename)
 
 static gboolean open_reference_image(dt_lut_t *self, const char *filename)
 {
-  const gboolean initial_loading = (self->reference.xyz == NULL);
+  const gboolean initial_loading = (IS_NULL_PTR(self->reference.xyz));
   const gboolean res = open_image(&self->reference, filename);
   gtk_widget_set_sensitive(self->process_button, res);
   gtk_widget_set_sensitive(self->export_button, FALSE);
   gtk_widget_set_sensitive(self->export_raw_button, FALSE);
-  if(!res)
+  if(IS_NULL_PTR(res))
     gtk_file_chooser_unselect_all(GTK_FILE_CHOOSER(self->reference_image_button));
   else
   {
@@ -368,11 +368,11 @@ static gboolean open_image(image_t *image, const char *filename)
 
   free_image(image);
 
-  if(!filename) return FALSE;
+  if(IS_NULL_PTR(filename)) return FALSE;
 
   float *pfm = read_pfm(filename, &width, &height);
 
-  if(!pfm)
+  if(IS_NULL_PTR(pfm))
   {
     fprintf(stderr, "error reading image `%s'\n", filename);
     return FALSE;
@@ -428,7 +428,7 @@ static gboolean open_cht(dt_lut_t *self, const char *filename)
   init_table(self);
 
   // reset it8/reference entry
-  if(!res) gtk_file_chooser_unselect_all(GTK_FILE_CHOOSER(self->cht_button));
+  if(IS_NULL_PTR(res)) gtk_file_chooser_unselect_all(GTK_FILE_CHOOSER(self->cht_button));
   gtk_file_chooser_unselect_all(GTK_FILE_CHOOSER(self->it8_button));
   gtk_file_chooser_unselect_all(GTK_FILE_CHOOSER(self->reference_image_button));
 
@@ -487,7 +487,7 @@ static void it8_changed_callback(GtkFileChooserButton *widget, gpointer user_dat
 
 static gboolean open_it8(dt_lut_t *self, const char *filename)
 {
-  if(!self->chart || !filename) return FALSE;
+  if(IS_NULL_PTR(self->chart) || !filename) return FALSE;
   const gboolean res = parse_it8(filename, self->chart);
   collect_source_patches(self);
   update_table(self);
@@ -495,7 +495,7 @@ static gboolean open_it8(dt_lut_t *self, const char *filename)
   gtk_widget_set_sensitive(self->process_button, FALSE);
   gtk_widget_set_sensitive(self->export_button, FALSE);
   gtk_widget_set_sensitive(self->export_raw_button, FALSE);
-  if(!res)
+  if(IS_NULL_PTR(res))
     gtk_file_chooser_unselect_all(GTK_FILE_CHOOSER(self->it8_button));
   else
   {
@@ -616,7 +616,7 @@ static void print_patches(dt_lut_t *self, FILE *fd, GList *patch_names)
     char *key = (char *)iter->data;
     box_t *source_patch = (box_t *)g_hash_table_lookup(self->picked_source_patches, key);
     box_t *reference_patch = (box_t *)g_hash_table_lookup(self->chart->box_table, key);
-    if(!source_patch || !reference_patch)
+    if(IS_NULL_PTR(source_patch) || IS_NULL_PTR(reference_patch))
     {
       fprintf(stderr, "error: missing patch `%s'\n", key);
       continue;
@@ -656,7 +656,7 @@ static void export_style(dt_lut_t *self, const char *filename, const char *name,
   int num = 0;
 
   FILE *fd = g_fopen(filename, "w");
-  if(!fd) return;
+  if(IS_NULL_PTR(fd)) return;
 
   fprintf(fd, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
   fprintf(fd, "<darktable_style version=\"1.0\">\n");
@@ -703,7 +703,7 @@ static void export_raw(dt_lut_t *self, char *filename, char *name, char *descrip
   gpointer key, value;
 
   FILE *fd = g_fopen(filename, "w");
-  if(!fd) return;
+  if(IS_NULL_PTR(fd)) return;
 
   GList *patch_names = NULL;
 
@@ -725,7 +725,7 @@ static void export_raw(dt_lut_t *self, char *filename, char *name, char *descrip
 static void export_raw_button_clicked_callback(GtkButton *button, gpointer user_data)
 {
   dt_lut_t *self = (dt_lut_t *)user_data;
-  if(!self->chart) return;
+  if(IS_NULL_PTR(self->chart)) return;
 
   char *name = NULL, *description = NULL;
   char *filename = get_export_filename(self, ".csv", &name, &description, NULL, NULL, NULL, NULL);
@@ -738,7 +738,7 @@ static void export_raw_button_clicked_callback(GtkButton *button, gpointer user_
 static void export_button_clicked_callback(GtkButton *button, gpointer user_data)
 {
   dt_lut_t *self = (dt_lut_t *)user_data;
-  if(!self->tonecurve_encoded || !self->colorchecker_encoded) return;
+  if(!self->tonecurve_encoded || IS_NULL_PTR(self->colorchecker_encoded)) return;
 
   char *name = NULL, *description = NULL;
   gboolean include_basecurve, include_colorchecker, include_colorin, include_tonecurve;
@@ -760,7 +760,7 @@ static void add_patches_to_array(dt_lut_t *self, GList *patch_names, int *N, int
     const char *key = (char *)iter->data;
     box_t *source_patch = (box_t *)g_hash_table_lookup(self->picked_source_patches, key);
     box_t *reference_patch = (box_t *)g_hash_table_lookup(self->chart->box_table, key);
-    if(!source_patch || !reference_patch)
+    if(IS_NULL_PTR(source_patch) || IS_NULL_PTR(reference_patch))
     {
       fprintf(stderr, "error: missing patch `%s'\n", key);
       continue;
@@ -1070,7 +1070,7 @@ static void process_data(dt_lut_t *self, double *target_L, double *target_a, dou
   double avgerr, maxerr;
   sparsity = thinplate_match(&tonecurve, 3, N, colorchecker_Lab, target, sparsity, perm, coeff, &avgerr, &maxerr);
 
-  if (self->result_label != NULL)
+  if (!IS_NULL_PTR(self->result_label))
   {
     // TODO: is the rank interesting, too?
     char *result_string = g_strdup_printf(_("average dE: %.02f\nmax dE: %.02f"), avgerr, maxerr);
@@ -1112,7 +1112,7 @@ static void process_button_clicked_callback(GtkButton *button, gpointer user_dat
   self->tonecurve_encoded = NULL;
   self->colorchecker_encoded = NULL;
 
-  if(!self->chart) return;
+  if(IS_NULL_PTR(self->chart)) return;
 
   int i = 0;
   int N = g_hash_table_size(self->chart->box_table);
@@ -1452,7 +1452,7 @@ static void init_table(dt_lut_t *self)
 
   gtk_list_store_clear(GTK_LIST_STORE(self->model));
 
-  if(!self->chart) return;
+  if(IS_NULL_PTR(self->chart)) return;
 
   GList *patch_names = g_hash_table_get_keys(self->chart->box_table);
   patch_names = g_list_sort(patch_names, (GCompareFunc)g_strcmp0);
@@ -1504,7 +1504,7 @@ static void collect_reference_patches_foreach(gpointer key, gpointer value, gpoi
 static box_t *find_patch(GHashTable *table, gpointer key)
 {
   box_t *patch = (box_t *)g_hash_table_lookup(table, key);
-  if(!patch)
+  if(IS_NULL_PTR(patch))
   {
     // the patch won't be found in the first pass
     patch = (box_t *)calloc(1, sizeof(box_t));
@@ -1523,7 +1523,7 @@ static void get_xyz_sample_from_image(const image_t *const image, float shrink, 
 
   xyz[0] = xyz[1] = xyz[2] = 0.0;
 
-  if(!box) return;
+  if(IS_NULL_PTR(box)) return;
 
   get_boundingbox(image, bb);
   get_homography(bb_ref, bb, homography);
@@ -1542,15 +1542,7 @@ static void get_xyz_sample_from_image(const image_t *const image, float shrink, 
 
   double sample_x = 0.0, sample_y = 0.0, sample_z = 0.0;
   size_t n_samples = 0;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(image) \
-  shared(corners, x_start, y_start, x_end, y_end) \
-  dt_omp_sharedconst(delta_x_top, delta_y_top, delta_x_bottom, delta_y_bottom, delta_x_left, \
-                     delta_y_left, delta_x_right, delta_y_right) \
-  reduction(+ : n_samples, sample_x, sample_y, sample_z) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__(reduction(+ : n_samples, sample_x, sample_y, sample_z) )
   for(int y = y_start; y < y_end; y++)
     for(int x = x_start; x < x_end; x++)
     {
@@ -1651,7 +1643,7 @@ static void init_image(dt_lut_t *self, image_t *image, GCallback motion_cb)
 
 static void free_image(image_t *image)
 {
-  if(!image) return;
+  if(IS_NULL_PTR(image)) return;
   reset_bb(image);
   if(image->image) cairo_pattern_destroy(image->image);
   if(image->surface) cairo_surface_destroy(image->surface);
@@ -1663,12 +1655,7 @@ static void free_image(image_t *image)
 
 static void image_lab_to_xyz(float *image, const int width, const int height)
 {
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(height, width) \
-  shared(image) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__(shared(image) )
   for(int y = 0; y < height; y++)
     for(int x = 0; x < width; x++)
     {
@@ -1758,7 +1745,7 @@ static int parse_csv(dt_lut_t *self, const char *filename, double **target_L_ptr
   *description = NULL;
 
   FILE *f = g_fopen(filename, "rb");
-  if(!f) return 0;
+  if(IS_NULL_PTR(f)) return 0;
   int N = 0;
   while(fscanf(f, "%*[^\n]\n") != EOF) N++;
   fseek(f, 0, SEEK_SET);

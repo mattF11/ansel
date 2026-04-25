@@ -41,7 +41,7 @@ static dt_digraph_node_t *_get_or_create_node(GHashTable *by_id, const char *id)
 dt_digraph_node_t *dt_digraph_node_new(const char *id)
 {
   dt_digraph_node_t *n = g_new0(dt_digraph_node_t, 1);
-  if(!n) return NULL;
+  if(IS_NULL_PTR(n)) return NULL;
   n->id = g_strdup(id);
   n->tag = NULL;
   n->previous = NULL;
@@ -51,17 +51,17 @@ dt_digraph_node_t *dt_digraph_node_new(const char *id)
 
 int flatten_nodes(GList *input_nodes, GList **out_nodes)
 {
-  if(!out_nodes) return 1;
+  if(IS_NULL_PTR(out_nodes)) return 1;
   *out_nodes = NULL;
 
   GHashTable *by_id = g_hash_table_new(g_str_hash, g_str_equal);
-  if(!by_id) return 1;
+  if(IS_NULL_PTR(by_id)) return 1;
 
   // 1) Create canonical nodes for every id we see (and keep first non-NULL user_data)
   for(GList *it = g_list_first(input_nodes); it; it = g_list_next(it))
   {
     dt_digraph_node_t *in = (dt_digraph_node_t *)it->data;
-    if(!in || !in->id) continue;
+    if(IS_NULL_PTR(in) || !in->id) continue;
 
     dt_digraph_node_t *canon = _get_or_create_node(by_id, in->id);
     if(!canon->user_data && in->user_data) canon->user_data = in->user_data;
@@ -87,14 +87,14 @@ int flatten_nodes(GList *input_nodes, GList **out_nodes)
   for(GList *it = g_list_first(input_nodes); it; it = g_list_next(it))
   {
     dt_digraph_node_t *in = (dt_digraph_node_t *)it->data;
-    if(!in || !in->id) continue;
+    if(IS_NULL_PTR(in) || !in->id) continue;
 
     dt_digraph_node_t *self = _get_or_create_node(by_id, in->id);
 
     for(GList *p = g_list_first(in->previous); p; p = g_list_next(p))
     {
       dt_digraph_node_t *pred = (dt_digraph_node_t *)p->data;
-      if(!pred || !pred->id) continue;
+      if(IS_NULL_PTR(pred) || !pred->id) continue;
 
       dt_digraph_node_t *cpred = _get_or_create_node(by_id, pred->id);
 
@@ -110,7 +110,7 @@ int flatten_nodes(GList *input_nodes, GList **out_nodes)
 
   // 3) Build output list with unique nodes, preserving first-seen order from input_nodes
   GHashTable *added = g_hash_table_new(g_str_hash, g_str_equal);
-  if(!added)
+  if(IS_NULL_PTR(added))
   {
     g_hash_table_destroy(by_id);
     return 1;
@@ -119,7 +119,7 @@ int flatten_nodes(GList *input_nodes, GList **out_nodes)
   for(GList *it = g_list_first(input_nodes); it; it = g_list_next(it))
   {
     dt_digraph_node_t *in = (dt_digraph_node_t *)it->data;
-    if(!in || !in->id) continue;
+    if(IS_NULL_PTR(in) || !in->id) continue;
 
     if(g_hash_table_contains(added, in->id)) continue;
 
@@ -154,7 +154,7 @@ int flatten_nodes(GList *input_nodes, GList **out_nodes)
 /*
   Constraint semantics used here (common with this structure):
     - Each dt_digraph_node_constraints_t is stored in node->constraints, so "self" is the owner.
-    - If c->previous != NULL: edge (c->previous -> self)
+    - If !IS_NULL_PTR(c->previous): edge (c->previous -> self)
     - If c->next     != NULL: edge (self -> c->next)
 
   Returns 0 on success, 1 on cycle / unsatisfiable.
@@ -169,7 +169,7 @@ typedef enum
 
 static gboolean _add_edge(GHashTable *outgoing, dt_digraph_node_t *from, dt_digraph_node_t *to)
 {
-  if(!from || !to) return FALSE;
+  if(IS_NULL_PTR(from) || IS_NULL_PTR(to)) return FALSE;
 
   GList *lst = (GList *)g_hash_table_lookup(outgoing, from);
   lst = g_list_prepend(lst, to);
@@ -192,13 +192,13 @@ static GList *_toposort_extract_cycle_from_stack(const GList *dfs_stack, const d
    * - The returned list container is newly allocated and must be freed with g_list_free() by the caller.
    * - The node pointers are not owned (they belong to the canonical node graph).
    */
-  if(!dfs_stack || !gray) return NULL;
+  if(IS_NULL_PTR(dfs_stack) || IS_NULL_PTR(gray)) return NULL;
 
   GList *cycle = NULL;
   for(const GList *it = dfs_stack; it; it = g_list_next(it))
   {
     dt_digraph_node_t *n = (dt_digraph_node_t *)it->data;
-    if(!n) continue;
+    if(IS_NULL_PTR(n)) continue;
     cycle = g_list_prepend(cycle, n);
     if(n == gray) break;
   }
@@ -256,7 +256,7 @@ static gboolean _dfs_visit(dt_digraph_node_t *n,
 
 int topological_sort(GList *nodes, GList **sorted, GList **cycle_out)
 {
-  if(!sorted) return 1;
+  if(IS_NULL_PTR(sorted)) return 1;
   *sorted = NULL;
   if(cycle_out) *cycle_out = NULL;
 
@@ -290,7 +290,7 @@ int topological_sort(GList *nodes, GList **sorted, GList **cycle_out)
 
   GHashTable *outgoing = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, NULL);
   GHashTable *color = g_hash_table_new(g_direct_hash, g_direct_equal);
-  if(!outgoing || !color)
+  if(IS_NULL_PTR(outgoing) || IS_NULL_PTR(color))
   {
     if(outgoing) g_hash_table_destroy(outgoing);
     if(color) g_hash_table_destroy(color);
@@ -301,7 +301,7 @@ int topological_sort(GList *nodes, GList **sorted, GList **cycle_out)
   for(GList *it = g_list_first(nodes); it; it = g_list_next(it))
   {
     dt_digraph_node_t *n = (dt_digraph_node_t *)it->data;
-    if(!n) continue;
+    if(IS_NULL_PTR(n)) continue;
 
     if(!g_hash_table_contains(outgoing, n)) g_hash_table_insert(outgoing, n, NULL);
     if(!g_hash_table_contains(color, n)) g_hash_table_insert(color, n, GINT_TO_POINTER(DT_VISIT_WHITE));
@@ -311,12 +311,12 @@ int topological_sort(GList *nodes, GList **sorted, GList **cycle_out)
   for(GList *it = g_list_first(nodes); it; it = g_list_next(it))
   {
     dt_digraph_node_t *self = (dt_digraph_node_t *)it->data;
-    if(!self) continue;
+    if(IS_NULL_PTR(self)) continue;
 
     for(GList *p = g_list_first(self->previous); p; p = g_list_next(p))
     {
       dt_digraph_node_t *pred = (dt_digraph_node_t *)p->data;
-      if(!pred) continue;
+      if(IS_NULL_PTR(pred)) continue;
 
       if(!g_hash_table_contains(outgoing, pred)) g_hash_table_insert(outgoing, pred, NULL);
       if(!g_hash_table_contains(color, pred))
@@ -406,7 +406,7 @@ int topological_sort(GList *nodes, GList **sorted, GList **cycle_out)
 
 static void dt_digraph_node_free_full(dt_digraph_node_t *node, dt_node_user_data_destroy_t user_destroy)
 {
-  if(!node) return;
+  if(IS_NULL_PTR(node)) return;
 
   if(node->previous)
   {
@@ -436,7 +436,7 @@ static void _dt_digraph_nodes_free_full(GList *nodes, dt_node_user_data_destroy_
 
 static void _dt_digraph_nodes_hashtable_free_full(GHashTable *ht, dt_node_user_data_destroy_t user_destroy)
 {
-  if(!ht) return;
+  if(IS_NULL_PTR(ht)) return;
 
   GHashTableIter iter;
   gpointer key, val;

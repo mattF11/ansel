@@ -30,9 +30,6 @@
 #include "control/control.h"
 #include "develop/imageop.h"
 #include "dwt.h"
-#if defined(__SSE__)
-#include <xmmintrin.h>
-#endif
 
 /* Based on the original source code of GIMP's Wavelet Decompose plugin, by Marco Rossini
  *
@@ -45,7 +42,7 @@ dwt_params_t *dt_dwt_init(float *image, const int width, const int height, const
                           const float preview_scale, const int use_sse)
 {
   dwt_params_t *p = (dwt_params_t *)malloc(sizeof(dwt_params_t));
-  if(!p) return NULL;
+  if(IS_NULL_PTR(p)) return NULL;
 
   p->image = image;
   p->ch = ch;
@@ -63,11 +60,12 @@ dwt_params_t *dt_dwt_init(float *image, const int width, const int height, const
 
 void dt_dwt_free(dwt_params_t *p)
 {
-  if(!p) return;
+  if(IS_NULL_PTR(p)) return;
 
   dt_free(p);
 }
 
+__DT_CLONE_TARGETS__
 static int _get_max_scale(const int width, const int height, const float preview_scale)
 {
   int maxscale = 0;
@@ -93,6 +91,7 @@ int dwt_get_max_scale(dwt_params_t *p)
   return _get_max_scale(p->width / p->preview_scale, p->height / p->preview_scale, p->preview_scale);
 }
 
+__DT_CLONE_TARGETS__
 static int _first_scale_visible(const int num_scales, const float preview_scale)
 {
   int first_scale = 0;
@@ -116,22 +115,18 @@ int dt_dwt_first_scale_visible(dwt_params_t *p)
   return _first_scale_visible(p->scales, p->preview_scale);
 }
 
-static void dwt_get_image_layer(float *const layer, dwt_params_t *const p)
+static inline __attribute__((always_inline)) void dwt_get_image_layer(float *const layer, dwt_params_t *const p)
 {
   if(p->image != layer) memcpy(p->image, layer, sizeof(float) * p->width * p->height * p->ch);
 }
 
 // first, "vertical" pass of wavelet decomposition
+__DT_CLONE_TARGETS__
 static void dwt_decompose_vert(float *const restrict out, const float *const restrict in,
                                const size_t height, const size_t width, const size_t lev)
 {
   const size_t vscale = MIN(1 << lev, height-1);
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(height, width, vscale) \
-  dt_omp_sharedconst(in, out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int rowid = 0; rowid < height ; rowid++)
   {
     const size_t row = dwt_interleave_rows(rowid,height,vscale);
@@ -159,16 +154,12 @@ static void dwt_decompose_vert(float *const restrict out, const float *const res
 
 // second, horizontal pass of wavelet decomposition; generates 'coarse' into the output buffer and overwrites
 //   the input buffer with 'details'
+__DT_CLONE_TARGETS__
 static void dwt_decompose_horiz(float *const restrict out, float *const restrict in, float *const temp,
                                 const size_t height, const size_t width, const size_t lev)
 {
   const int hscale = MIN(1 << lev, width);  //(int because we need a signed difference below)
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(height, width, hscale) \
-  dt_omp_sharedconst(in, out, temp) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int row = 0; row < height ; row++)
   {
     // perform a weighted sum of the current pixel with the ones 'scale' pixels to the left and right, using
@@ -219,7 +210,7 @@ static void dwt_decompose_horiz(float *const restrict out, float *const restrict
 }
 
 // split input into 'coarse' and 'details'; put 'details' back into the input buffer
-static void dwt_decompose_layer(float *const restrict out, float *const restrict in, float *const temp, const int lev,
+static inline __attribute__((always_inline)) void dwt_decompose_layer(float *const restrict out, float *const restrict in, float *const temp, const int lev,
                                 const dwt_params_t *const p)
 {
   dwt_decompose_vert(out, in, p->height, p->width, lev);
@@ -228,6 +219,7 @@ static void dwt_decompose_layer(float *const restrict out, float *const restrict
 }
 
 /* actual decomposing algorithm */
+__DT_CLONE_TARGETS__
 static int dwt_wavelet_decompose(float *img, dwt_params_t *const p, _dwt_layer_func layer_func)
 {
   float *temp = NULL;
@@ -253,7 +245,7 @@ static int dwt_wavelet_decompose(float *img, dwt_params_t *const p, _dwt_layer_f
   // scratch buffer for decomposition
   temp = dt_pixelpipe_cache_alloc_align_float_cache(darktable.num_openmp_threads * 4 * p->width, 0);
 
-  if(buffer[1] == NULL || layers == NULL || temp == NULL)
+  if(buffer[1] == NULL || IS_NULL_PTR(layers) || IS_NULL_PTR(temp))
   {
     printf("not enough memory for wavelet decomposition");
     err = 1;
@@ -264,7 +256,7 @@ static int dwt_wavelet_decompose(float *img, dwt_params_t *const p, _dwt_layer_f
   if(p->merge_from_scale > 0)
   {
     merged_layers = dt_pixelpipe_cache_alloc_align_float_cache((size_t)p->width * p->height * p->ch, 0);
-    if(merged_layers == NULL)
+    if(IS_NULL_PTR(merged_layers))
     {
       printf("not enough memory for wavelet decomposition");
       err = 1;
@@ -412,16 +404,12 @@ int dwt_decompose(dwt_params_t *p, _dwt_layer_func layer_func)
 }
 
 // first, "vertical" pass of wavelet decomposition
+__DT_CLONE_TARGETS__
 static void dwt_denoise_vert_1ch(float *const restrict out, const float *const restrict in,
                                  const size_t height, const size_t width, const size_t lev)
 {
   const int vscale = MIN(1 << lev, height);
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(height, width, vscale) \
-  dt_omp_sharedconst(in, out) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int rowid = 0; rowid < height ; rowid++)
   {
     const int row = dwt_interleave_rows(rowid,height,vscale);
@@ -436,9 +424,7 @@ static void dwt_denoise_vert_1ch(float *const restrict out, const float *const r
     const float *const restrict above =  in + abs(row - vscale) * width;
     const float *const restrict below = in + below_row * width;
     float* const restrict outrow = out + rowstart;
-#ifdef _OPENMP
-#pragma omp simd
-#endif
+    __OMP_SIMD__()
     for (int col= 0; col < width; col++)
     {
       outrow[col] = 2.f * center[col] + above[col] + below[col];
@@ -448,17 +434,13 @@ static void dwt_denoise_vert_1ch(float *const restrict out, const float *const r
 
 // second, horizontal pass of wavelet decomposition; generates 'coarse' into the output buffer and overwrites
 //   the input buffer with 'details'
+__DT_CLONE_TARGETS__
 static void dwt_denoise_horiz_1ch(float *const restrict out, float *const restrict in,
                                   float *const restrict accum, const size_t height, const size_t width,
                                   const size_t lev, const float thold, const int last)
 {
   const int hscale = MIN(1 << lev, width);
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(height, width, hscale, thold, last) \
-  dt_omp_sharedconst(in, out, accum) \
-  schedule(static)
-#endif
+  __OMP_PARALLEL_FOR__()
   for(int row = 0; row < height ; row++)
   {
     // perform a weighted sum of the current pixel with the ones 'scale' pixels to the left and right, using
@@ -471,9 +453,7 @@ static void dwt_denoise_horiz_1ch(float *const restrict out, float *const restri
     float *const restrict coarse = out + rowindex;
     float *const restrict accum_row = accum + rowindex;
     // handle reflection at left edge
-#ifdef _OPENMP
-#pragma omp simd
-#endif
+    __OMP_SIMD__()
     for (int col = 0; col < hscale; col++)
     {
       // add up left/center/right, and renormalize by dividing by the total weight of all numbers added together
@@ -487,9 +467,7 @@ static void dwt_denoise_horiz_1ch(float *const restrict out, float *const restri
       //const float excess = diff < 0.0 ? MIN(diff + thold, 0.0f) : MAX(diff - thold, 0.0f);
       accum_row[col] += MAX(diff - thold,0.0f) + MIN(diff + thold, 0.0f);
     }
-#ifdef _OPENMP
-#pragma omp simd
-#endif
+    __OMP_SIMD__()
     for (int col = hscale; col < width - hscale; col++)
     {
       // add up left/center/right, and renormalize by dividing by the total weight of all numbers added together
@@ -504,9 +482,7 @@ static void dwt_denoise_horiz_1ch(float *const restrict out, float *const restri
       accum_row[col] += MAX(diff - thold,0.0f) + MIN(diff + thold, 0.0f);
     }
     // handle reflection at right edge
-#ifdef _OPENMP
-#pragma omp simd
-#endif
+    __OMP_SIMD__()
     for (int col = width - hscale; col < width; col++)
     {
       const float right = coarse[2*width - 2 - (col+hscale)];
@@ -533,10 +509,11 @@ static void dwt_denoise_horiz_1ch(float *const restrict out, float *const restri
  * recomposing the result from just the portion of each scale which exceeds the magnitude of the given
  * threshold for that scale.
  */
+__DT_CLONE_TARGETS__
 int dwt_denoise(float *const img, const int width, const int height, const int bands, const float *const noise)
 {
   float *const details = dt_pixelpipe_cache_alloc_align_float_cache((size_t)2 * width * height, 0);
-  if(details == NULL) return 1;
+  if(IS_NULL_PTR(details)) return 1;
   float *const interm = details + width * height;	// temporary storage for use during each pass
 
   // zero the accumulator
@@ -573,7 +550,7 @@ dt_dwt_cl_global_t *dt_dwt_init_cl_global()
 
 void dt_dwt_free_cl_global(dt_dwt_cl_global_t *g)
 {
-  if(!g) return;
+  if(IS_NULL_PTR(g)) return;
 
   // destroy kernels
   dt_opencl_free_kernel(g->kernel_dwt_add_img_to_layer);
@@ -590,7 +567,7 @@ dwt_params_cl_t *dt_dwt_init_cl(const int devid, cl_mem image, const int width, 
                                 const float preview_scale)
 {
   dwt_params_cl_t *p = (dwt_params_cl_t *)malloc(sizeof(dwt_params_cl_t));
-  if(!p) return NULL;
+  if(IS_NULL_PTR(p)) return NULL;
 
   p->global = darktable.opencl->dwt;
   p->devid = devid;
@@ -609,7 +586,7 @@ dwt_params_cl_t *dt_dwt_init_cl(const int devid, cl_mem image, const int width, 
 
 void dt_dwt_free_cl(dwt_params_cl_t *p)
 {
-  if(!p) return;
+  if(IS_NULL_PTR(p)) return;
 
   // be sure we're done with the memory:
   dt_opencl_finish(p->devid);
@@ -716,7 +693,7 @@ static cl_int dwt_wavelet_decompose_cl(cl_mem img, dwt_params_cl_t *const p, _dw
 
   // buffer to reconstruct the image
   layers = dt_opencl_alloc_device_buffer(devid, sizeof(float) * p->ch * p->width * p->height);
-  if(layers == NULL)
+  if(IS_NULL_PTR(layers))
   {
     printf("not enough memory for wavelet decomposition");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -740,7 +717,7 @@ static cl_int dwt_wavelet_decompose_cl(cl_mem img, dwt_params_cl_t *const p, _dw
   if(p->merge_from_scale > 0)
   {
     merged_layers = dt_opencl_alloc_device_buffer(devid, sizeof(float) * p->ch * p->width * p->height);
-    if(merged_layers == NULL)
+    if(IS_NULL_PTR(merged_layers))
     {
       printf("not enough memory for wavelet decomposition");
       err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -772,7 +749,7 @@ static cl_int dwt_wavelet_decompose_cl(cl_mem img, dwt_params_cl_t *const p, _dw
     // when (*layer_func) uses too much memory I get a -4 error, so alloc and free for each scale
     // setup a temp buffer
     temp = dt_opencl_alloc_device_buffer(devid, sizeof(float) * p->ch * p->width * p->height);
-    if(temp == NULL)
+    if(IS_NULL_PTR(temp))
     {
       printf("not enough memory for wavelet decomposition");
       err = CL_MEM_OBJECT_ALLOCATION_FAILURE;

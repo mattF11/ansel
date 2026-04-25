@@ -87,8 +87,8 @@ static gboolean _opencl_splash_active = FALSE;
 
 static inline void _opencl_splash_update_compile(const char *programname)
 {
-  if(!programname) return;
-  if(!darktable.gui) return;
+  if(IS_NULL_PTR(programname)) return;
+  if(IS_NULL_PTR(darktable.gui)) return;
 
   if(!_opencl_splash_active)
   {
@@ -130,7 +130,7 @@ int dt_opencl_get_device_info(dt_opencl_t *cl, cl_device_id device, cl_device_in
   {
     // both of these sizes make no sense. either i failed to parse spec, or opencl implementation bug?
     dt_print(DT_DEBUG_OPENCL,
-             "[dt_opencl_get_device_info] ERROR: no size returned, or zero size returned for data %d: %zu\n",
+             "[dt_opencl_get_device_info] ERROR: no size returned, or zero size returned for data %d: %" G_GSIZE_FORMAT "\n",
              param_name, *param_value_size);
     err = CL_INVALID_VALUE; // FIXME: anything better?
     goto error;
@@ -139,10 +139,10 @@ int dt_opencl_get_device_info(dt_opencl_t *cl, cl_device_id device, cl_device_in
   // 3. make sure that *param_value points to big-enough memory block
   {
     void *ptr = realloc(*param_value, *param_value_size);
-    if(!ptr)
+    if(IS_NULL_PTR(ptr))
     {
       dt_print(DT_DEBUG_OPENCL,
-               "[dt_opencl_get_device_info] memory allocation failed! tried to allocate %zu bytes for data %d: %i",
+               "[dt_opencl_get_device_info] memory allocation failed! tried to allocate %" G_GSIZE_FORMAT " bytes for data %d: %i",
                *param_value_size, param_name, err);
       err = CL_OUT_OF_HOST_MEMORY;
       goto error;
@@ -555,18 +555,18 @@ static int dt_opencl_device_init(dt_opencl_t *cl, const int dev, cl_device_id *d
 
   dt_print_nts(DT_DEBUG_OPENCL, "   GLOBAL MEM SIZE:          %.0f MB\n", (double)cl->dev[dev].max_global_mem / 1024.0 / 1024.0);
   dt_print_nts(DT_DEBUG_OPENCL, "   MAX MEM ALLOC:            %.0f MB\n", (double)cl->dev[dev].max_mem_alloc / 1024.0 / 1024.0);
-  dt_print_nts(DT_DEBUG_OPENCL, "   MAX IMAGE SIZE:           %zd x %zd\n", cl->dev[dev].max_image_width, cl->dev[dev].max_image_height);
+  dt_print_nts(DT_DEBUG_OPENCL, "   MAX IMAGE SIZE:           %" G_GSIZE_FORMAT " x %" G_GSIZE_FORMAT "\n", cl->dev[dev].max_image_width, cl->dev[dev].max_image_height);
   (cl->dlocl->symbols->dt_clGetDeviceInfo)(devid, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(infoint), &infoint, NULL);
-  dt_print_nts(DT_DEBUG_OPENCL, "   MAX WORK GROUP SIZE:      %zu\n", infoint);
+  dt_print_nts(DT_DEBUG_OPENCL, "   MAX WORK GROUP SIZE:      %" G_GSIZE_FORMAT "\n", infoint);
   (cl->dlocl->symbols->dt_clGetDeviceInfo)(devid, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, sizeof(infoint), &infoint, NULL);
-  dt_print_nts(DT_DEBUG_OPENCL, "   MAX WORK ITEM DIMENSIONS: %zu\n", infoint);
+  dt_print_nts(DT_DEBUG_OPENCL, "   MAX WORK ITEM DIMENSIONS: %" G_GSIZE_FORMAT "\n", infoint);
 
   size_t infointtab_size;
   err = dt_opencl_get_device_info(cl, devid, CL_DEVICE_MAX_WORK_ITEM_SIZES, (void **)&infointtab, &infointtab_size);
   if(err == CL_SUCCESS)
   {
     dt_print_nts(DT_DEBUG_OPENCL, "   MAX WORK ITEM SIZES:      [ ");
-    for(size_t i = 0; i < infoint; i++) dt_print_nts(DT_DEBUG_OPENCL, "%zu ", infointtab[i]);
+    for(size_t i = 0; i < infoint; i++) dt_print_nts(DT_DEBUG_OPENCL, "%" G_GSIZE_FORMAT " ", infointtab[i]);
     dt_free(infointtab);
     dt_print_nts(DT_DEBUG_OPENCL, "]\n");
   }
@@ -580,7 +580,7 @@ static int dt_opencl_device_init(dt_opencl_t *cl, const int dev, cl_device_id *d
 
   const gboolean pinning = (cl->dev[dev].pinned_memory & DT_OPENCL_PINNING_ON);
   dt_print_nts(DT_DEBUG_OPENCL, "   PINNED MEMORY TRANSFER:   %s\n", pinning ? "WANTED" : "NO");
-  dt_print_nts(DT_DEBUG_OPENCL, "   FORCED HEADROOM:          %lu\n", cl->dev[dev].forced_headroom);
+  dt_print_nts(DT_DEBUG_OPENCL, "   FORCED HEADROOM:          %" G_GSIZE_FORMAT "\n", cl->dev[dev].forced_headroom);
   dt_print_nts(DT_DEBUG_OPENCL, "   AVOID ATOMICS:            %s\n", (cl->dev[dev].avoid_atomics) ? "YES" : "NO");
   dt_print_nts(DT_DEBUG_OPENCL, "   MICRO NAP:                %i\n", cl->dev[dev].micro_nap);
   dt_print_nts(DT_DEBUG_OPENCL, "   ROUNDUP WIDTH:            %i\n", cl->dev[dev].clroundup_wd);
@@ -644,7 +644,7 @@ static int dt_opencl_device_init(dt_opencl_t *cl, const int dev, cl_device_id *d
     goto end;
   }
 
-  snprintf(filename, PATH_MAX * sizeof(char), "%s" G_DIR_SEPARATOR_S "programs.conf", kerneldir);
+  dt_concat_path_file(filename, kerneldir, "programs.conf");
 
   char *escapedkerneldir = NULL;
 #ifndef __APPLE__
@@ -722,7 +722,7 @@ static int dt_opencl_device_init(dt_opencl_t *cl, const int dev, cl_device_id *d
     while(!feof(f))
     {
       int prog = -1;
-      gchar *confline_pattern = g_strdup_printf("%%%zu[^\n]\n", PATH_MAX * sizeof(char) - 1);
+      gchar *confline_pattern = g_strdup_printf("%%%" G_GSIZE_FORMAT "[^\n]\n", PATH_MAX * sizeof(char) - 1);
       int rd = fscanf(f, confline_pattern, confentry);
       dt_free(confline_pattern);
       if(rd != 1) continue;
@@ -754,14 +754,16 @@ static int dt_opencl_device_init(dt_opencl_t *cl, const int dev, cl_device_id *d
 
       prog = programnumber ? strtol(programnumber, NULL, 10) : -1;
 
-      if(!programname || programname[0] == '\0' || prog < 0)
+      if(IS_NULL_PTR(programname) || programname[0] == '\0' || prog < 0)
       {
         dt_print(DT_DEBUG_OPENCL, "[dt_opencl_device_init] malformed entry in programs.conf `%s'; ignoring it!\n", confentry);
         continue;
       }
+      dt_concat_path_file(filename, kerneldir, programname);
+      gchar *program_bin = g_strdup_printf("%s.bin", programname);
+      dt_concat_path_file(binname, cachedir, program_bin);
+      dt_free(program_bin);
 
-      snprintf(filename, PATH_MAX * sizeof(char), "%s" G_DIR_SEPARATOR_S "%s", kerneldir, programname);
-      snprintf(binname, PATH_MAX * sizeof(char), "%s" G_DIR_SEPARATOR_S "%s.bin", cachedir, programname);
       dt_vprint(DT_DEBUG_OPENCL, "[dt_opencl_device_init] testing program `%s' ..\n", programname);
       int loaded_cached;
       char md5sum[33];
@@ -942,7 +944,7 @@ void dt_opencl_init(dt_opencl_t *cl, const gboolean exclude_opencl, const gboole
   {
     cl->dev = (dt_opencl_device_t *)malloc(sizeof(dt_opencl_device_t) * num_devices);
     devices = (cl_device_id *)malloc(sizeof(cl_device_id) * num_devices);
-    if(!cl->dev || !devices)
+    if(IS_NULL_PTR(cl->dev) || IS_NULL_PTR(devices))
     {
       dt_free(cl->dev);
       dt_free(devices);
@@ -1003,8 +1005,8 @@ void dt_opencl_init(dt_opencl_t *cl, const gboolean exclude_opencl, const gboole
 
     // only check successful malloc in debug mode; darktable will crash anyhow sooner or later if mallocs that
     // small would fail
-    assert(cl->dev_priority_image != NULL && cl->dev_priority_preview != NULL
-           && cl->dev_priority_export != NULL && cl->dev_priority_thumbnail != NULL);
+    assert(!IS_NULL_PTR(cl->dev_priority_image) && !IS_NULL_PTR(cl->dev_priority_preview)
+           && !IS_NULL_PTR(cl->dev_priority_export) && !IS_NULL_PTR(cl->dev_priority_thumbnail));
 
     dt_print_nts(DT_DEBUG_OPENCL, "[opencl_init] OpenCL successfully initialized.\n");
     dt_print_nts(DT_DEBUG_OPENCL, "[opencl_init] here are the internal numbers and names of OpenCL devices available to Ansel:\n");
@@ -1071,7 +1073,7 @@ void dt_opencl_cleanup_device(dt_opencl_t *cl, int i)
 
   if(cl->print_statistics && (darktable.unmuted & DT_DEBUG_MEMORY))
   {
-    dt_print_nts(DT_DEBUG_OPENCL, " [opencl_summary_statistics] device '%s' (%d): peak memory usage %zu bytes (%.1f MB)\n",
+    dt_print_nts(DT_DEBUG_OPENCL, " [opencl_summary_statistics] device '%s' (%d): peak memory usage %" G_GSIZE_FORMAT " bytes (%.1f MB)\n",
                 cl->dev[i].name, i, cl->dev[i].peak_memory, (float)cl->dev[i].peak_memory/(1024*1024));
   }
 
@@ -1223,11 +1225,11 @@ static int _device_by_cname(const char *name)
 
 static char *_ascii_str_canonical(const char *in, char *out, int maxlen)
 {
-  if(out == NULL)
+  if(IS_NULL_PTR(out))
   {
     maxlen = strlen(in) + 1;
     out = malloc(maxlen);
-    if(out == NULL) return NULL;
+    if(IS_NULL_PTR(out)) return NULL;
   }
 
   int len = 0;
@@ -1255,7 +1257,7 @@ static void dt_opencl_priority_parse(dt_opencl_t *cl, char *configstr, int *prio
   int mnd = 0;
 
   // NULL or empty configstring?
-  if(configstr == NULL || *configstr == '\0')
+  if(IS_NULL_PTR(configstr) || *configstr == '\0')
   {
     priority_list[0] = -1;
     *mandatory = 0;
@@ -1277,7 +1279,7 @@ static void dt_opencl_priority_parse(dt_opencl_t *cl, char *configstr, int *prio
   gchar **tokens = g_strsplit(configstr, ",", 0);
   gchar **tokens_ptr = tokens;
 
-  while(tokens != NULL && *tokens_ptr != NULL && count < devs + 1 && full[0] != -1)
+  while(!IS_NULL_PTR(tokens) && !IS_NULL_PTR(*tokens_ptr) && count < devs + 1 && full[0] != -1)
   {
     gchar *str = *tokens_ptr;
     int not = 0;
@@ -1463,7 +1465,7 @@ void dt_opencl_unlock_device(const int dev)
 static FILE *fopen_stat(const char *filename, struct stat *st)
 {
   FILE *f = g_fopen(filename, "rb");
-  if(!f)
+  if(IS_NULL_PTR(f))
   {
     dt_print(DT_DEBUG_OPENCL, "[opencl_fopen_stat] could not open file `%s'!\n", filename);
     return NULL;
@@ -1492,12 +1494,12 @@ void dt_opencl_md5sum(const char **files, char **md5sums)
       continue;
     }
 
-    snprintf(filename, sizeof(filename), "%s" G_DIR_SEPARATOR_S "%s", kerneldir, *files);
+    dt_concat_path_file(filename, kerneldir, *files);
 
     struct stat filestat;
     FILE *f = fopen_stat(filename, &filestat);
 
-    if(!f)
+    if(IS_NULL_PTR(f))
     {
       dt_print(DT_DEBUG_OPENCL, "[opencl_md5sums] could not open file `%s'!\n", filename);
       *md5sums = NULL;
@@ -1507,7 +1509,7 @@ void dt_opencl_md5sum(const char **files, char **md5sums)
     size_t filesize = filestat.st_size;
     char *file = (char *)malloc(filesize);
 
-    if(!file)
+    if(IS_NULL_PTR(file))
     {
       dt_print(DT_DEBUG_OPENCL, "[opencl_md5sums] could not allocate buffer for file `%s'!\n", filename);
       *md5sums = NULL;
@@ -1557,7 +1559,7 @@ int dt_opencl_load_program(const int dev, const int prog, const char *filename, 
   }
 
   FILE *f = fopen_stat(filename, &filestat);
-  if(!f) return 0;
+  if(IS_NULL_PTR(f)) return 0;
 
   size_t filesize = filestat.st_size;
   char *file = (char *)malloc(filesize + 2048);
@@ -1669,7 +1671,7 @@ int dt_opencl_load_program(const int dev, const int prog, const char *filename, 
     if(linkedfile_len > 0)
     {
       char link_dest[PATH_MAX] = { 0 };
-      snprintf(link_dest, sizeof(link_dest), "%s" G_DIR_SEPARATOR_S "%s", cachedir, linkedfile);
+      dt_concat_path_file(link_dest, cachedir, linkedfile);
       g_unlink(link_dest);
     }
     g_unlink(binname);
@@ -1800,7 +1802,7 @@ int dt_opencl_build_program(const int dev, const int prog, const char *binname, 
           char link_dest[PATH_MAX] = { 0 };
           snprintf(link_dest, sizeof(link_dest), "%s" G_DIR_SEPARATOR_S "%s", cachedir, md5sum);
           FILE *f = g_fopen(link_dest, "wb");
-          if(!f) goto ret;
+          if(IS_NULL_PTR(f)) goto ret;
           size_t bytes_written = fwrite(binaries[i], sizeof(char), binary_sizes[i], f);
           if(bytes_written != binary_sizes[i]) goto ret;
           fclose(f);
@@ -2193,7 +2195,7 @@ void dt_opencl_release_mem_object(cl_mem mem)
 
   // the OpenCL specs are not absolutely clear if clReleaseMemObject(NULL) is a no-op. we take care of the
   // case in a centralized way at this place
-  if(mem == NULL) return;
+  if(IS_NULL_PTR(mem)) return;
 
   dt_opencl_memory_statistics(-1, mem, OPENCL_MEMORY_SUB);
 
@@ -2357,7 +2359,7 @@ void *dt_opencl_alloc_device_buffer(const int devid, const size_t size)
 size_t dt_opencl_get_mem_object_size(cl_mem mem)
 {
   size_t size;
-  if(mem == NULL) return 0;
+  if(IS_NULL_PTR(mem)) return 0;
 
   cl_int err = (darktable.opencl->dlocl->symbols->dt_clGetMemObjectInfo)(mem, CL_MEM_SIZE, sizeof(size), &size, NULL);
 
@@ -2367,7 +2369,7 @@ size_t dt_opencl_get_mem_object_size(cl_mem mem)
 int dt_opencl_get_mem_context_id(cl_mem mem)
 {
   cl_context context;
-  if(mem == NULL) return -1;
+  if(IS_NULL_PTR(mem)) return -1;
 
   cl_int err = (darktable.opencl->dlocl->symbols->dt_clGetMemObjectInfo)(mem, CL_MEM_CONTEXT, sizeof(context), &context, NULL);
   if(err != CL_SUCCESS)
@@ -2384,7 +2386,7 @@ int dt_opencl_get_mem_context_id(cl_mem mem)
 
 cl_mem_flags dt_opencl_get_mem_flags(cl_mem mem)
 {
-  if(!darktable.opencl->inited || mem == NULL) return 0;
+  if(!darktable.opencl->inited || IS_NULL_PTR(mem)) return 0;
   cl_mem_flags flags = 0;
   cl_int err = (darktable.opencl->dlocl->symbols->dt_clGetMemObjectInfo)(mem, CL_MEM_FLAGS, sizeof(flags), &flags, NULL);
   if(err != CL_SUCCESS) return 0;
@@ -2394,7 +2396,7 @@ cl_mem_flags dt_opencl_get_mem_flags(cl_mem mem)
 int dt_opencl_get_image_width(cl_mem mem)
 {
   size_t size;
-  if(mem == NULL) return 0;
+  if(IS_NULL_PTR(mem)) return 0;
 
   cl_int err = (darktable.opencl->dlocl->symbols->dt_clGetImageInfo)(mem, CL_IMAGE_WIDTH, sizeof(size), &size, NULL);
   if(size > INT_MAX) size = 0;
@@ -2405,7 +2407,7 @@ int dt_opencl_get_image_width(cl_mem mem)
 int dt_opencl_get_image_height(cl_mem mem)
 {
   size_t size;
-  if(mem == NULL) return 0;
+  if(IS_NULL_PTR(mem)) return 0;
 
   cl_int err = (darktable.opencl->dlocl->symbols->dt_clGetImageInfo)(mem, CL_IMAGE_HEIGHT, sizeof(size), &size, NULL);
   if(size > INT_MAX) size = 0;
@@ -2416,7 +2418,7 @@ int dt_opencl_get_image_height(cl_mem mem)
 int dt_opencl_get_image_element_size(cl_mem mem)
 {
   size_t size;
-  if(mem == NULL) return 0;
+  if(IS_NULL_PTR(mem)) return 0;
 
   cl_int err = (darktable.opencl->dlocl->symbols->dt_clGetImageInfo)(mem, CL_IMAGE_ELEMENT_SIZE, sizeof(size), &size,
                                                               NULL);
@@ -2447,7 +2449,7 @@ void dt_opencl_memory_statistics(int devid, cl_mem mem, dt_opencl_memory_t actio
 
   if((darktable.unmuted & DT_DEBUG_MEMORY) && (darktable.unmuted & DT_DEBUG_OPENCL))
     dt_print(DT_DEBUG_OPENCL,
-              "[opencl memory] device %d: %zu bytes (%.1f MB) in use\n", devid, darktable.opencl->dev[devid].memory_in_use,
+              "[opencl memory] device %d: %" G_GSIZE_FORMAT " bytes (%.1f MB) in use\n", devid, darktable.opencl->dev[devid].memory_in_use,
                                       (float)darktable.opencl->dev[devid].memory_in_use/(1024*1024));
 }
 
@@ -2462,7 +2464,7 @@ void dt_opencl_check_tuning(const int devid)
   cl->dev[devid].used_available = MAX(0ul, cl->dev[devid].max_global_mem - headroom * 1024 * 1024);
 
   dt_print(DT_DEBUG_OPENCL | DT_DEBUG_MEMORY,
-      "[dt_opencl_check_tuning] use %lu MiB on device `%s' id=%i\n",
+      "[dt_opencl_check_tuning] use %" G_GSIZE_FORMAT " MiB on device `%s' id=%i\n",
       cl->dev[devid].used_available / (1024 * 1024),
       cl->dev[devid].name, devid);
 }
@@ -2501,8 +2503,10 @@ gboolean dt_opencl_image_fits_device(const int devid, const size_t width, const 
   if(_opencl_get_device_memalloc(devid) < required)
   {
     dt_print(DT_DEBUG_OPENCL,
-             "[opencl] trying to allocate a buffer of %lu MiB while the vRAM has %lu MiB total\n",
-             required / (1024 * 1024), _opencl_get_device_memalloc(devid) / (1024 * 1024));
+             "[opencl] trying to allocate %" PRIu64 " MiB of memory while the vRAM has %" PRIu64
+             " MiB total\n",
+             (uint64_t)(required / (1024 * 1024)),
+             (uint64_t)(_opencl_get_device_memalloc(devid) / (1024 * 1024)));
     return FALSE;
   }
 
@@ -2510,8 +2514,10 @@ gboolean dt_opencl_image_fits_device(const int devid, const size_t width, const 
     return TRUE;
 
   dt_print(DT_DEBUG_OPENCL,
-            "[opencl] trying to allocate a buffer of %lu MiB while the vRAM has %lu MiB left\n",
-            total / (1024 * 1024), dt_opencl_get_device_available(devid) / (1024 * 1024));
+            "[opencl] trying to allocate %" PRIu64 " MiB of memory while the vRAM has %" PRIu64
+            " MiB left\n",
+            (uint64_t)(total / (1024 * 1024)),
+            (uint64_t)(dt_opencl_get_device_available(devid) / (1024 * 1024)));
 
   return FALSE;
 }
@@ -2609,7 +2615,7 @@ cl_event *dt_opencl_events_get_slot(const int devid, const char *tag)
   int *totallost = &(cl->dev[devid].totallost);
   int *maxeventslot = &(cl->dev[devid].maxeventslot);
   // if first time called: allocate initial buffers
-  if(*eventlist == NULL)
+  if(IS_NULL_PTR(*eventlist))
   {
     int newevents = DT_OPENCL_EVENTLISTSIZE;
     *eventlist = calloc(newevents, sizeof(cl_event));
@@ -2631,7 +2637,7 @@ cl_event *dt_opencl_events_get_slot(const int devid, const char *tag)
   {
     (*lostevents)++;
     (*totallost)++;
-    if(tag != NULL)
+    if(!IS_NULL_PTR(tag))
     {
       g_strlcpy((*eventtags)[*numevents - 1].tag, tag, DT_OPENCL_EVENTNAMELENGTH);
     }
@@ -2654,7 +2660,7 @@ cl_event *dt_opencl_events_get_slot(const int devid, const char *tag)
     int newevents = *maxevents + DT_OPENCL_EVENTLISTSIZE;
     cl_event *neweventlist = calloc(newevents, sizeof(cl_event));
     dt_opencl_eventtag_t *neweventtags = calloc(newevents, sizeof(dt_opencl_eventtag_t));
-    if(!neweventlist || !neweventtags)
+    if(!neweventlist || IS_NULL_PTR(neweventtags))
     {
       dt_print(DT_DEBUG_OPENCL, "[dt_opencl_events_get_slot] NO new eventlist with size %i for device %i\n",
          newevents, devid);
@@ -2674,7 +2680,7 @@ cl_event *dt_opencl_events_get_slot(const int devid, const char *tag)
   // init next event slot and return it
   (*numevents)++;
   memcpy((*eventlist) + *numevents - 1, zeroevent, sizeof(cl_event));
-  if(tag != NULL)
+  if(!IS_NULL_PTR(tag))
   {
     g_strlcpy((*eventtags)[*numevents - 1].tag, tag, DT_OPENCL_EVENTNAMELENGTH);
   }
@@ -2704,7 +2710,7 @@ void dt_opencl_events_reset(const int devid)
   int *lostevents = &(cl->dev[devid].lostevents);
   cl_int *summary = &(cl->dev[devid].summary);
 
-  if(*eventlist == NULL || *numevents == 0) return; // nothing to do
+  if(IS_NULL_PTR(*eventlist) || *numevents == 0) return; // nothing to do
 
   // release all remaining events in eventlist, not to waste resources
   for(int k = *eventsconsolidated; k < *numevents; k++)
@@ -2736,7 +2742,7 @@ void dt_opencl_events_wait_for(const int devid)
   int *totallost = &(cl->dev[devid].totallost);
   int *eventsconsolidated = &(cl->dev[devid].eventsconsolidated);
 
-  if(*eventlist == NULL || *numevents == 0) return; // nothing to do
+  if(IS_NULL_PTR(*eventlist) || *numevents == 0) return; // nothing to do
 
   // check if last event slot was actually used and correct numevents if needed
   if(!memcmp((*eventlist) + *numevents - 1, zeroevent, sizeof(cl_event)))
@@ -2782,7 +2788,7 @@ cl_int dt_opencl_events_flush(const int devid, const int reset)
 
   cl_int *summary = &(cl->dev[devid].summary);
 
-  if(*eventlist == NULL || *numevents == 0) return CL_COMPLETE; // nothing to do, no news is good news
+  if(IS_NULL_PTR(*eventlist) || *numevents == 0) return CL_COMPLETE; // nothing to do, no news is good news
 
   // Wait for command queue to terminate (side effect: might adjust *numevents)
   dt_opencl_events_wait_for(devid);
@@ -2868,7 +2874,7 @@ void dt_opencl_events_profiling(const int devid, const int aggregated)
   int *eventsconsolidated = &(cl->dev[devid].eventsconsolidated);
   int *lostevents = &(cl->dev[devid].lostevents);
 
-  if(*eventlist == NULL || *numevents == 0 || *eventtags == NULL || *eventsconsolidated == 0)
+  if(IS_NULL_PTR(*eventlist) || *numevents == 0 || IS_NULL_PTR(*eventtags) || *eventsconsolidated == 0)
     return; // nothing to do
 
   char **tags = malloc(sizeof(char *) * (*eventsconsolidated + 1));

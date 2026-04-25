@@ -62,9 +62,6 @@
 
 #include <gtk/gtk.h>
 #include <inttypes.h>
-#if defined(__SSE__)
-#include <xmmintrin.h>
-#endif
 
 DT_MODULE_INTROSPECTION(1, dt_iop_dither_params_t)
 
@@ -142,9 +139,9 @@ int flags()
   return IOP_FLAGS_ONE_INSTANCE;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece)
 {
-  return IOP_CS_RGB;
+  return IOP_CS_RGB_DISPLAY;
 }
 
 void init_presets(dt_iop_module_so_t *self)
@@ -171,9 +168,7 @@ void reload_defaults(dt_iop_module_t *module)
 }
 
 
-#ifdef _OPENMP
-#pragma omp declare simd simdlen(4)
-#endif
+__OMP_DECLARE_SIMD__(simdlen(4))
 static inline float _quantize(const float val, const float f, const float rf)
 {
   return rf * ceilf((val * f) - 0.5); // round up only if frac(x) strictly greater than 0.5
@@ -183,17 +178,13 @@ static inline float _quantize(const float val, const float f, const float rf)
   //return rf * (itmp + ((tmp - itmp > 0.5f) ? 1.0f : 0.0f));
 }
 
-#ifdef _OPENMP
-#pragma omp declare simd
-#endif
+__OMP_DECLARE_SIMD__()
 static inline float _rgb_to_gray(const float *const restrict val)
 {
   return 0.30f * val[0] + 0.59f * val[1] + 0.11f * val[2]; // RGB -> GRAY
 }
 
-#ifdef _OPENMP
-#pragma omp declare simd
-#endif
+__OMP_DECLARE_SIMD__()
 static inline void nearest_color(float *const restrict val, float *const restrict err, int graymode,
                                  const float f, const float rf)
 {
@@ -202,10 +193,7 @@ static inline void nearest_color(float *const restrict val, float *const restric
     // dither pixel into gray, with f=levels-1 and rf=1/f, return err=old-new
     const float in = _rgb_to_gray(val);
     const float new = _quantize(in,f,rf);
-
-#ifdef _OPENMP
-#pragma omp simd aligned(val, err : 16)
-#endif
+    __OMP_SIMD__(aligned(val, err : 16))
     for(int c = 0; c < 4; c++)
     {
       err[c] = val[c] - new;
@@ -215,9 +203,7 @@ static inline void nearest_color(float *const restrict val, float *const restric
   else
   {
     // dither pixel into RGB, with f=levels-1 and rf=1/f, return err=old-new
-#ifdef _OPENMP
-#pragma omp simd aligned(val, err : 16)
-#endif
+  __OMP_SIMD__(aligned(val, err : 16))
   for(int c = 0; c < 4; c++)
   {
     const float old = val[c];
@@ -228,56 +214,23 @@ static inline void nearest_color(float *const restrict val, float *const restric
   }
 }
 
-#if defined(__SSE2__)
-static inline __m128 nearest_color_sse(float *const restrict val, int graymode, const float f, const float rf)
-{
-  if (graymode)
-  {
-    // dither pixel into gray, with f=levels-1 and rf=1/f, return err=old-new
-    const float in = _rgb_to_gray(val);
-    __m128 new = _mm_set1_ps(_quantize(in,f,rf));
-    __m128 err = _mm_load_ps(val) - new;
-    _mm_store_ps(val, new);
-    return err;
-  }
-  else
-  {
-    // dither pixel into RGB, with f=levels-1 and rf=1/f, return err=old-new
-    __m128 old = _mm_load_ps(val);
-    __m128 tmp = old * _mm_set1_ps(f);        // old * f
-    __m128 itmp = _mm_cvtepi32_ps(_mm_cvtps_epi32(tmp)); // floor(tmp)
-    __m128 new = _mm_set1_ps(rf) *
-      (itmp +_mm_and_ps(_mm_cmpgt_ps((tmp - itmp), // (tmp - itmp > 0.5f ? itmp + 1 : itmp) * rf
-                                         _mm_set1_ps(0.5f)),
-                        _mm_set1_ps(1.0f)));
-
-    _mm_store_ps(val, new);
-    return old - new; // return err
-  }
-}
-#endif
-
 static inline void _diffuse_error(float *const restrict val, const float *const restrict err, const float factor)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(val, err)
-#endif
+  __OMP_SIMD__(aligned(val, err))
   for(int c = 0; c < 4; c++)
   {
     val[c] += err[c] * factor;
   }
 }
 
-#if defined(__SSE__)
+#if defined(__x86_64__) || defined(__i386__)
 static inline void _diffuse_error_sse(float *val, const __m128 err, const float factor)
 {
   _mm_store_ps(val, _mm_load_ps(val) + (err * _mm_set1_ps(factor))); // *val += err * factor
 }
 #endif
 
-#ifdef _OPENMP
-#pragma omp declare simd
-#endif
+__OMP_DECLARE_SIMD__()
 static inline float clipnan(const float x)
 {
   // convert NaN to 0.5, otherwise clamp to between 0.0 and 1.0
@@ -290,9 +243,7 @@ static inline float clipnan(const float x)
 
 static inline void clipnan_pixel(float *const restrict out, const float *const restrict in)
 {
-#ifdef _OPENMP
-#pragma omp simd aligned(in, out : 16)
-#endif
+  __OMP_SIMD__(aligned(in, out : 16))
   for (int c = 0; c < 4; c++)
     out[c] = clipnan(in[c]);
 }
@@ -300,13 +251,14 @@ static inline void clipnan_pixel(float *const restrict out, const float *const r
 // clipnan_pixel proves to vectorize just fine, so don't bother implementing a separate SSE version
 #define clipnan_pixel_sse clipnan_pixel
 
-static int get_dither_parameters(const dt_iop_dither_data_t *const data, const dt_dev_pixelpipe_iop_t *const piece,
+static inline __attribute__((always_inline)) int get_dither_parameters(const dt_iop_dither_data_t *const data, const dt_dev_pixelpipe_t *const pipe,
+                                 const dt_dev_pixelpipe_iop_t *const piece,
                                  const float scale, unsigned int *const restrict levels)
 {
   int graymode = -1;
   *levels = 65536;
   const int l1 = floorf(1.0f + dt_log2f(1.0f / scale));
-  const int bds = (piece->pipe->type != DT_DEV_PIXELPIPE_EXPORT) ? l1 * l1 : 1;
+  const int bds = (pipe->type != DT_DEV_PIXELPIPE_EXPORT) ? l1 * l1 : 1;
 
   switch(data->dither_type)
   {
@@ -327,7 +279,7 @@ static int get_dither_parameters(const dt_iop_dither_data_t *const data, const d
       *levels = 65536;
       break;
     case DITHER_FSAUTO:
-      switch(piece->pipe->levels & IMAGEIO_CHANNEL_MASK)
+      switch(pipe->levels & IMAGEIO_CHANNEL_MASK)
       {
         case IMAGEIO_RGB:
           graymode = 0;
@@ -337,7 +289,7 @@ static int get_dither_parameters(const dt_iop_dither_data_t *const data, const d
           break;
       }
 
-      switch(piece->pipe->levels & IMAGEIO_PREC_MASK)
+      switch(pipe->levels & IMAGEIO_PREC_MASK)
       {
         case IMAGEIO_INT8:
           *levels = 256;
@@ -372,12 +324,9 @@ static int get_dither_parameters(const dt_iop_dither_data_t *const data, const d
 #define DOWNRIGHT_WT  (1.0f/16.0f)
 #define DOWN_WT       (5.0f/16.0f)
 #define DOWNLEFT_WT   (3.0f/16.0f)
-
-#ifdef _OPENMP
-#pragma omp declare simd aligned(ivoid, ovoid : 64)
-#endif
-static void process_floyd_steinberg(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
-                                    const void *const ivoid, void *const ovoid,
+__DT_CLONE_TARGETS__
+static void process_floyd_steinberg(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                                    const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
                                     const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_dither_data_t *const restrict data = (dt_iop_dither_data_t *)piece->data;
@@ -390,7 +339,7 @@ static void process_floyd_steinberg(struct dt_iop_module_t *self, dt_dev_pixelpi
   float *const restrict out = (float *)ovoid;
 
   unsigned int levels = 1;
-  int graymode = get_dither_parameters(data,piece,scale,&levels);
+  int graymode = get_dither_parameters(data, pipe, piece, scale, &levels);
   if(graymode < 0)
   {
     for(int j = 0; j < height * width; j++)
@@ -411,7 +360,7 @@ static void process_floyd_steinberg(struct dt_iop_module_t *self, dt_dev_pixelpi
       nearest_color(out + 4 * j, err, graymode, f, rf);
     }
 
-    if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
+    if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
       dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
     return;
   }
@@ -451,9 +400,7 @@ static void process_floyd_steinberg(struct dt_iop_module_t *self, dt_dev_pixelpi
 
   // once the FS dithering gets started, we can copy&clip the downright pixel, as that will be the first time
   // it will be accessed.  But to get the process started, we need to prepare the top row of pixels
-#ifdef _OPENMP
-#pragma omp simd aligned(in, out : 64)
-#endif
+  __OMP_SIMD__(aligned(in, out : 64))
   for (int j = 0; j < width; j++)
   {
     clipnan_pixel(out + 4*j, in + 4*j);
@@ -496,165 +443,27 @@ static void process_floyd_steinberg(struct dt_iop_module_t *self, dt_dev_pixelpi
   }
 
   // copy alpha channel if needed
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
     dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
 }
 
-#if defined(__SSE2__)
-#ifdef _OPENMP
-#pragma omp declare simd aligned(ivoid, ovoid : 64)
-#endif
-static void process_floyd_steinberg_sse2(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
-                                         const void *const ivoid, void *const ovoid,
-                                         const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
-{
-  dt_iop_dither_data_t *data = (dt_iop_dither_data_t *)piece->data;
-
-  const int width = roi_in->width;
-  const int height = roi_in->height;
-  assert(piece->colors == 4);
-  const float scale = roi_in->scale;
-
-  const float *const restrict in = (const float *)ivoid;
-  float *const restrict out = (float *)ovoid;
-
-  unsigned int levels = 1;
-  int graymode = get_dither_parameters(data,piece,scale,&levels);
-  if(graymode < 0)
-  {
-    for(int j = 0; j < height * width; j++)
-      clipnan_pixel(out + 4*j, in + 4*j);
-    return;
-  }
-
-  const float f = levels - 1;
-  const float rf = 1.0 / f;
-
-  // dither without error diffusion on very tiny images
-  if(width < 3 || height < 3)
-  {
-    for(int j = 0; j < height * width; j++)
-    {
-      clipnan_pixel(out + 4 * j, in + 4 * j);
-      (void)nearest_color_sse(out + 4 * j, graymode, f, rf);
-    }
-
-    if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
-      dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
-    return;
-  }
-
-  // offsets to neighboring pixels
-  const size_t right = 4;
-  const size_t downleft = 4 * (width-1);
-  const size_t down = 4 * width;
-  const size_t downright = 4 * (width+1);
-
-#define PROCESS_PIXEL_FULL_SSE(_pixel, inpix)                           \
-  {                                                                     \
-    float *const pixel_ = (_pixel);                                     \
-    err = nearest_color_sse(pixel_, graymode, f, rf);             /* quantize pixel */ \
-    clipnan_pixel_sse(pixel_ + downright,(inpix) + downright);    /* prepare downright for first access */ \
-    _diffuse_error_sse(pixel_ + right, err, RIGHT_WT);            /* diffuse quantization error to neighbors */ \
-    _diffuse_error_sse(pixel_ + downleft, err, DOWNLEFT_WT);            \
-    _diffuse_error_sse(pixel_ + down, err, DOWN_WT);                    \
-    _diffuse_error_sse(pixel_ + downright, err, DOWNRIGHT_WT);          \
-  }
-
-#define PROCESS_PIXEL_LEFT_SSE(_pixel, inpix)                           \
-  {                                                                     \
-    float *const pixel_ = (_pixel);                                     \
-    err = nearest_color_sse(pixel_, graymode, f, rf);             /* quantize pixel */ \
-    clipnan_pixel_sse(pixel_ + down,(inpix) + down);              /* prepare downright for first access */ \
-    clipnan_pixel_sse(pixel_ + downright,(inpix) + downright);    /* prepare downright for first access */ \
-    _diffuse_error_sse(pixel_ + right, err, RIGHT_WT);            /* diffuse quantization error to neighbors */ \
-    _diffuse_error_sse(pixel_ + down, err, DOWN_WT);                    \
-    _diffuse_error_sse(pixel_ + downright, err, DOWNRIGHT_WT);          \
-  }
-
-#define PROCESS_PIXEL_RIGHT_SSE(pixel)                                  \
-  err = nearest_color_sse(pixel, graymode, f, rf);             /* quantize pixel */ \
-  _diffuse_error_sse(pixel + downleft, err, DOWNLEFT_WT);      /* diffuse quantization error to neighbors */ \
-  _diffuse_error_sse(pixel + down, err, DOWN_WT);
-
-  // once the FS dithering gets started, we can copy&clip the downright pixel, as that will be the first time
-  // it will be accessed.  But to get the process started, we need to prepare the top row of pixels
-  for (int j = 0; j < width; j++)
-  {
-    clipnan_pixel_sse(out + 4*j, in + 4*j);
-  }
-
-  // floyd-steinberg dithering follows here
-  // do the bulk of the image (all except the last one or two rows)
-  for(int j = 0; j < height - 1; j++)
-  {
-    const float *const restrict inrow = in + (size_t)4 * j * width;
-    float *const restrict outrow = out + (size_t)4 * j * width;
-    __m128 err;
-
-    // first two columns
-    PROCESS_PIXEL_LEFT_SSE(outrow, inrow);
-
-    // main part of the current row
-    for(int i = 1; i < width - 1; i++)
-    {
-      float *const restrict pixel = outrow + 4 * i;
-      PROCESS_PIXEL_FULL_SSE(pixel, inrow + 4 * i);		// pixel in upper row
-    }
-
-    // last column of upper row
-    float *const restrict lastpixel = outrow + 4 * (width-1);
-    PROCESS_PIXEL_RIGHT_SSE(lastpixel);
-  }
-
-  // final row
-  {
-    float *const restrict outrow = out + (size_t)4 * (height - 1) * width;
-
-    // last row except for the right-most pixel
-    for(int i = 0; i < width - 1; i++)
-    {
-      float *const restrict pixel = outrow + 4 * i;
-      __m128 err = nearest_color_sse(pixel, graymode, f, rf);
-      _diffuse_error_sse(pixel + right, err, RIGHT_WT);
-    }
-
-    // lower right pixel
-    (void)nearest_color_sse(outrow + 4 * (width - 1), graymode, f, rf);
-
-  }
-
-  // copy alpha channel if needed
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
-    dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
-}
-#endif
-
-static void process_random(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
-                           const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
-                           const dt_iop_roi_t *const roi_out)
+__DT_CLONE_TARGETS__
+static void process_random(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe,
+                           const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
+                           const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_dither_data_t *const data = (dt_iop_dither_data_t *)piece->data;
 
   const int width = roi_in->width;
   const int height = roi_in->height;
-  assert(piece->colors == 4);
-
   const float dither = powf(2.0f, data->random.damping / 10.0f);
 
   unsigned int *const tea_states = alloc_tea_states(darktable.num_openmp_threads);
-
-#ifdef _OPENMP
-#pragma omp parallel default(none) \
-  dt_omp_firstprivate(dither, height, width) \
-  dt_omp_sharedconst(tea_states, ivoid, ovoid)
-#endif
+  __OMP_PARALLEL__()
   {
     // get a pointer to each thread's private buffer *outside* the for loop, to avoid a function call per iteration
     unsigned int *const tea_state = get_tea_state(tea_states,dt_get_thread_num());
-#ifdef _OPENMP
-#pragma omp for schedule(static)
-#endif
+    __OMP_FOR__()
     for(int j = 0; j < height; j++)
     {
       const size_t k = (size_t)4 * width * j;
@@ -665,10 +474,7 @@ static void process_random(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
       {
         encrypt_tea(tea_state);
         float dith = dither * tpdf(tea_state[0]);
-
-#ifdef _OPENMP
-#pragma omp simd aligned(in, out : 64)
-#endif
+        __OMP_SIMD__(aligned(in, out : 64))
         for(int c = 0; c < 4; c++)
         {
           out[4*i+c] = CLIP(in[4*i+c] + dith);
@@ -678,36 +484,38 @@ static void process_random(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   }
   free_tea_states(tea_states);
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, width, height);
+  if(pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, width, height);
 }
 
 
-int process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
+  const dt_iop_roi_t *const roi_out = &piece->roi_out;
   dt_iop_dither_data_t *data = (dt_iop_dither_data_t *)piece->data;
 
   if(data->dither_type == DITHER_RANDOM)
-    process_random(self, piece, ivoid, ovoid, roi_in, roi_out);
+    process_random(self, pipe, piece, ivoid, ovoid, roi_in, roi_out);
   else
   {
-    process_floyd_steinberg(self, piece, ivoid, ovoid, roi_in, roi_out);
+    process_floyd_steinberg(self, pipe, piece, ivoid, ovoid, roi_in, roi_out);
   }
   return 0;
 }
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self, const dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out)
 {
+  const dt_iop_roi_t *const roi_in = &piece->roi_in;
   const dt_iop_dither_data_t *const d = (dt_iop_dither_data_t *)piece->data;
   dt_iop_dither_global_data_t *const gd = (dt_iop_dither_global_data_t *)self->global_data;
   cl_mem dev_work = NULL;
 
   const int width = roi_in->width;
   const int height = roi_in->height;
-  const int devid = piece->pipe->devid;
-  const int preserve_alpha = (piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) ? 1 : 0;
+  const int devid = pipe->devid;
+  const int preserve_alpha = (pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) ? 1 : 0;
   cl_int err = CL_SUCCESS;
   size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
 
@@ -730,22 +538,6 @@ error:
   dt_opencl_release_mem_object(dev_work);
   dt_print(DT_DEBUG_OPENCL, "[opencl_dither] couldn't enqueue kernel! %d\n", err);
   return FALSE;
-}
-#endif
-
-#if defined(__SSE2__)
-int process_sse2(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-                  void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
-{
-  dt_iop_dither_data_t *data = (dt_iop_dither_data_t *)piece->data;
-
-  if(data->dither_type == DITHER_RANDOM)
-    process_random(self, piece, ivoid, ovoid, roi_in, roi_out);
-  else
-  {
-    process_floyd_steinberg_sse2(self, piece, ivoid, ovoid, roi_in, roi_out);
-  }
-  return 0;
 }
 #endif
 
@@ -822,7 +614,7 @@ void init_global(dt_iop_module_so_t *module)
 {
   const int program = 8; // extended.cl, from programs.conf
   dt_iop_dither_global_data_t *gd = (dt_iop_dither_global_data_t *)calloc(1, sizeof(dt_iop_dither_global_data_t));
-  if(!gd) return;
+  if(IS_NULL_PTR(gd)) return;
   module->data = gd;
   gd->kernel_dither_random = dt_opencl_create_kernel(program, "dither_random");
 }

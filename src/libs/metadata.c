@@ -175,7 +175,7 @@ static void _update(dt_lib_module_t *self)
 
   // first we want to make sure the list of images to act on has changed
   // this is not the case if mouse hover change but still stay in selection for ex.
-  if(!imgs && !d->last_act_on) return;
+  if(IS_NULL_PTR(imgs) && IS_NULL_PTR(d->last_act_on)) return;
   if(imgs && d->last_act_on)
   {
     gboolean changed = FALSE;
@@ -447,7 +447,7 @@ static void _update_layout(dt_lib_module_t *self)
 
     if(!hidden)
     {
-      if(!first) first = previous = current;
+      if(IS_NULL_PTR(first)) first = previous = current;
 
       g_object_set_data(G_OBJECT(previous), "meta_next", current);
       g_object_set_data(G_OBJECT(current), "meta_prev", previous);
@@ -923,7 +923,7 @@ void *get_params(dt_lib_module_t *self, int *size)
 // WARNING: also change src/libs/import.c when changing this!
 int set_params(dt_lib_module_t *self, const void *params, int size)
 {
-  if(!params) return 1;
+  if(IS_NULL_PTR(params)) return 1;
   dt_lib_metadata_t *d = (dt_lib_metadata_t *)self->data;
 
   char *buf = (char *)params;
@@ -935,7 +935,7 @@ int set_params(dt_lib_module_t *self, const void *params, int size)
     if(dt_metadata_get_type_by_display_order(i) == DT_METADATA_TYPE_INTERNAL)
       continue;
     metadata[i] = buf;
-    if(!metadata[i]) return 1;
+    if(IS_NULL_PTR(metadata[i])) return 1;
     metadata_len[i] = strlen(metadata[i]) + 1;
     buf += metadata_len[i];
     total_len +=  metadata_len[i];

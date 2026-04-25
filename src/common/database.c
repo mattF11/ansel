@@ -92,6 +92,7 @@
 /* transaction id */
 static dt_atomic_int _trxid;
 static dt_atomic_int _trx_batch_level;
+static gpointer _trx_owner = NULL;
 static gpointer _trx_batch_owner = NULL;
 
 typedef struct dt_database_t
@@ -330,7 +331,7 @@ static gboolean _migrate_schema(dt_database_t *db, int version)
     const int op_version = sqlite3_column_int(stmt, 3);
 
     // is it still the same (name, operation, op_version) triple?
-    if(!last_name || strcmp(last_name, name) || !last_operation || strcmp(last_operation, operation)
+    if(IS_NULL_PTR(last_name) || strcmp(last_name, name) || IS_NULL_PTR(last_operation) || strcmp(last_operation, operation)
        || last_op_version != op_version)
     {
       dt_free(last_name);
@@ -1296,10 +1297,10 @@ static int _upgrade_library_schema_step(dt_database_t *db, int version)
       if(imgid != current_imgid || !has_row)
       {
         // new image, let's handle it
-        if(item_list != NULL)
+        if(!IS_NULL_PTR(item_list))
         {
           // we keep legacy, everything else is migrated to v3.0
-          const dt_iop_order_t new_order_version = current_order_version == 2 ? DT_IOP_ORDER_LEGACY : DT_IOP_ORDER_V30;
+          const dt_iop_order_t new_order_version = current_order_version == 2 ? DT_IOP_ORDER_LEGACY : DT_IOP_ORDER_ANSEL_RAW;
 
           GList *iop_order_list = dt_ioppr_get_iop_order_list_version(new_order_version);
 
@@ -1330,7 +1331,7 @@ static int _upgrade_library_schema_step(dt_database_t *db, int version)
             do
             {
               n = g_list_next(n);
-              if(!n) break;
+              if(IS_NULL_PTR(n)) break;
               n_entry = (dt_iop_order_entry_t *)n->data;
             } while(!strcmp(n_entry->operation, e_entry->operation));
             e = n;
@@ -2657,7 +2658,7 @@ gboolean dt_database_show_error(const dt_database_t *db)
     snprintf(lck_pathname, sizeof(lck_pathname), "%s.lock", db->error_dbfilename);
     char *lck_dirname = g_strdup(lck_pathname);
     char *slash_pos = g_strrstr(lck_dirname, "/");
-    if(slash_pos != NULL) *slash_pos = '\0';
+    if(!IS_NULL_PTR(slash_pos)) *slash_pos = '\0';
     // clang-format off
     char *label_text = g_markup_printf_escaped(
         _("\n"
@@ -3012,7 +3013,7 @@ dt_database_t *dt_database_init(const char *alternative, const gboolean load_dat
   sqlite3_initialize();
 
 start:
-  if(alternative == NULL)
+  if(IS_NULL_PTR(alternative))
   {
     /* migrate default database location to new default */
     _database_migrate_to_xdg_structure();
@@ -3028,15 +3029,15 @@ start:
 
   dt_loc_get_user_config_dir(datadir, sizeof(datadir));
 
-  if(alternative == NULL)
+  if(IS_NULL_PTR(alternative))
   {
     dbname = dt_conf_get_string("database");
-    if(!dbname)
-      snprintf(dbfilename_library, sizeof(dbfilename_library), "%s/library.db", datadir);
+    if(IS_NULL_PTR(dbname))
+      dt_concat_path_file(dbfilename_library, datadir, "library.db");
     else if(!strcmp(dbname, ":memory:"))
       g_strlcpy(dbfilename_library, dbname, sizeof(dbfilename_library));
     else if(dbname[0] != '/')
-      snprintf(dbfilename_library, sizeof(dbfilename_library), "%s/%s", datadir, dbname);
+      dt_concat_path_file(dbfilename_library, datadir, dbname);
     else
       g_strlcpy(dbfilename_library, dbname, sizeof(dbfilename_library));
   }
@@ -3052,7 +3053,7 @@ start:
   /* we also need a 2nd db with permanent data like presets, styles and tags */
   char dbfilename_data[PATH_MAX] = { 0 };
   if(load_data)
-    snprintf(dbfilename_data, sizeof(dbfilename_data), "%s/data.db", datadir);
+    dt_concat_path_file(dbfilename_data, datadir, "data.db");
   else
     snprintf(dbfilename_data, sizeof(dbfilename_data), ":memory:");
 
@@ -3667,7 +3668,7 @@ static void _database_migrate_to_xdg_structure()
     if(g_file_test(dbfilename, G_FILE_TEST_EXISTS))
     {
       char destdbname[PATH_MAX] = { 0 };
-      snprintf(destdbname, sizeof(dbfilename), "%s/%s", datadir, "library.db");
+      dt_concat_path_file(destdbname, datadir, "library.db");
       if(!g_file_test(destdbname, G_FILE_TEST_EXISTS))
       {
         fprintf(stderr, "[init] moving database into new XDG directory structure\n");
@@ -3688,15 +3689,13 @@ static void _database_delete_mipmaps_files()
   // Directory
   char cachedir[PATH_MAX] = { 0 }, mipmapfilename[PATH_MAX] = { 0 };
   dt_loc_get_user_cache_dir(cachedir, sizeof(cachedir));
-
-  snprintf(mipmapfilename, sizeof(mipmapfilename), "%s/mipmaps", cachedir);
+  dt_concat_path_file(mipmapfilename, cachedir, "mipmaps");
 
   if(g_access(mipmapfilename, F_OK) != -1)
   {
     fprintf(stderr, "[mipmap_cache] dropping old version file: %s\n", mipmapfilename);
     g_unlink(mipmapfilename);
-
-    snprintf(mipmapfilename, sizeof(mipmapfilename), "%s/mipmaps.fallback", cachedir);
+    dt_concat_path_file(mipmapfilename, cachedir, "mipmaps.fallback");
 
     if(g_access(mipmapfilename, F_OK) != -1) g_unlink(mipmapfilename);
   }
@@ -4070,7 +4069,7 @@ gboolean dt_database_maybe_snapshot(const struct dt_database_t *db)
   GFile *library = g_file_parse_name(db->dbfilename_library);
   GFile *parent = g_file_get_parent(library);
 
-  if(parent == NULL)
+  if(IS_NULL_PTR(parent))
   {
     dt_print(DT_DEBUG_SQL, "[db backup] couldn't get library parent!.\n");
     g_object_unref(library);
@@ -4080,7 +4079,7 @@ gboolean dt_database_maybe_snapshot(const struct dt_database_t *db)
   GError *error = NULL;
   GFileEnumerator *library_dir_files = g_file_enumerate_children(parent, G_FILE_ATTRIBUTE_STANDARD_NAME "," G_FILE_ATTRIBUTE_TIME_MODIFIED, G_FILE_QUERY_INFO_NONE, NULL, &error);
 
-  if(library_dir_files == NULL)
+  if(IS_NULL_PTR(library_dir_files))
   {
     dt_print(DT_DEBUG_SQL, "[db backup] couldn't enumerate library parent: %s.\n", error->message);
     g_object_unref(parent);
@@ -4185,7 +4184,7 @@ static gint _db_snap_sort(gconstpointer a, gconstpointer b, gpointer user_data)
 
   gchar *datepos1 = g_strrstr(e1, "-snp-");
   gchar *datepos2 = g_strrstr(e2, "-snp-");
-  if(!datepos1 || !datepos2)
+  if(IS_NULL_PTR(datepos1) || IS_NULL_PTR(datepos2))
     return 0;
 
   datepos1 +=5; //skip "-snp-"
@@ -4242,7 +4241,7 @@ char **dt_database_snaps_to_remove(const struct dt_database_t *db)
   GFile *lib_file = g_file_parse_name(db->dbfilename_library);
   GFile *lib_parent = g_file_get_parent(lib_file);
 
-  if(lib_parent == NULL)
+  if(IS_NULL_PTR(lib_parent))
   {
     dt_print(DT_DEBUG_SQL, "[db backup] couldn't get library parent!.\n");
     g_object_unref(lib_file);
@@ -4252,7 +4251,7 @@ char **dt_database_snaps_to_remove(const struct dt_database_t *db)
   GFile *dat_file = g_file_parse_name(db->dbfilename_data);
   GFile *dat_parent = g_file_get_parent(dat_file);
 
-  if(dat_parent == NULL)
+  if(IS_NULL_PTR(dat_parent))
   {
     dt_print(DT_DEBUG_SQL, "[db backup] couldn't get data parent!.\n");
     g_object_unref(dat_file);
@@ -4283,7 +4282,7 @@ char **dt_database_snaps_to_remove(const struct dt_database_t *db)
     GError *error = NULL;
     GFileEnumerator *library_dir_files = g_file_enumerate_children(lib_parent, G_FILE_ATTRIBUTE_STANDARD_NAME, G_FILE_QUERY_INFO_NONE, NULL, &error);
 
-    if(library_dir_files == NULL)
+    if(IS_NULL_PTR(library_dir_files))
     {
       dt_print(DT_DEBUG_SQL, "[db backup] couldn't enumerate library parent: %s.\n", error->message);
       g_object_unref(lib_parent);
@@ -4350,7 +4349,7 @@ char **dt_database_snaps_to_remove(const struct dt_database_t *db)
 
     GError *error = NULL;
     GFileEnumerator *library_dir_files = g_file_enumerate_children(lib_parent, G_FILE_ATTRIBUTE_STANDARD_NAME, G_FILE_QUERY_INFO_NONE, NULL, &error);
-    if(library_dir_files == NULL)
+    if(IS_NULL_PTR(library_dir_files))
     {
       dt_print(DT_DEBUG_SQL, "[db backup] couldn't enumerate library parent: %s.\n", error->message);
       g_object_unref(lib_parent);
@@ -4368,7 +4367,7 @@ char **dt_database_snaps_to_remove(const struct dt_database_t *db)
     }
 
     GFileEnumerator *data_dir_files = g_file_enumerate_children(dat_parent, G_FILE_ATTRIBUTE_STANDARD_NAME, G_FILE_QUERY_INFO_NONE, NULL, &error);
-    if(data_dir_files == NULL)
+    if(IS_NULL_PTR(data_dir_files))
     {
       dt_print(DT_DEBUG_SQL, "[db backup] couldn't enumerate data parent: %s.\n", error->message);
       g_object_unref(lib_parent);
@@ -4522,7 +4521,7 @@ gchar *dt_database_get_most_recent_snap(const char* db_filename)
   GFile *db_file = g_file_parse_name(db_filename);
   GFile *parent = g_file_get_parent(db_file);
 
-  if(parent == NULL)
+  if(IS_NULL_PTR(parent))
   {
     dt_print(DT_DEBUG_SQL, "[db backup] couldn't get database parent!.\n");
     g_object_unref(db_file);
@@ -4532,7 +4531,7 @@ gchar *dt_database_get_most_recent_snap(const char* db_filename)
   GError *error = NULL;
   GFileEnumerator *db_dir_files = g_file_enumerate_children(parent, G_FILE_ATTRIBUTE_STANDARD_NAME "," G_FILE_ATTRIBUTE_TIME_MODIFIED, G_FILE_QUERY_INFO_NONE, NULL, &error);
 
-  if(db_dir_files == NULL)
+  if(IS_NULL_PTR(db_dir_files))
   {
     dt_print(DT_DEBUG_SQL, "[db backup] couldn't enumerate database parent: %s.\n", error->message);
     g_object_unref(parent);
@@ -4591,7 +4590,7 @@ gchar *dt_database_get_most_recent_snap(const char* db_filename)
   g_file_enumerator_close(db_dir_files, NULL, NULL);
   g_object_unref(db_dir_files);
 
-  if(!last_snap_name)
+  if(IS_NULL_PTR(last_snap_name))
   {
     g_object_unref(parent);
     return NULL;
@@ -4621,24 +4620,34 @@ gchar *dt_database_get_most_recent_snap(const char* db_filename)
 //
 void dt_database_start_transaction_debug(const struct dt_database_t *db)
 {
+  gpointer const owner = g_thread_self();
   const int batch_level = dt_atomic_get_int(&_trx_batch_level);
   if(batch_level > 0)
   {
     // If a batch transaction is active on this thread, suppress nested BEGIN/COMMIT
     // to avoid per-module transaction overhead during presets initialization.
-    if(g_atomic_pointer_get(&_trx_batch_owner) == g_thread_self())
+    if(g_atomic_pointer_get(&_trx_batch_owner) == owner)
     {
       dt_atomic_add_int(&_trxid, 1);
       return;
     }
   }
 
+  if(g_atomic_pointer_get(&_trx_owner) == owner)
+  {
+    dt_atomic_add_int(&_trxid, 1);
+    return;
+  }
+
+  dt_pthread_rwlock_wrlock(&darktable.database_threadsafe);
+  g_atomic_pointer_set(&_trx_owner, owner);
+
   const int trxid = dt_atomic_add_int(&_trxid, 1);
 
   // if top level a simple unamed transaction is used BEGIN / COMMIT / ROLLBACK
   // otherwise we use a savepoint (named transaction).
 
-  if(trxid == 0 || TRUE)
+  if(trxid == 0)
   {
     // In theads application it may be safer to use an IMMEDIATE transaction:
     // "BEGIN IMMEDIATE TRANSACTION"
@@ -4661,14 +4670,21 @@ void dt_database_start_transaction_debug(const struct dt_database_t *db)
 
 void dt_database_release_transaction_debug(const struct dt_database_t *db)
 {
+  gpointer const owner = g_thread_self();
   const int batch_level = dt_atomic_get_int(&_trx_batch_level);
   if(batch_level > 0)
   {
-    if(g_atomic_pointer_get(&_trx_batch_owner) == g_thread_self())
+    if(g_atomic_pointer_get(&_trx_batch_owner) == owner)
     {
       dt_atomic_sub_int(&_trxid, 1);
       return;
     }
+  }
+
+  if(g_atomic_pointer_get(&_trx_owner) != owner)
+  {
+    fprintf(stderr, "[dt_database_release_transaction] COMMIT from non-owner thread\n");
+    return;
   }
 
   const int trxid = dt_atomic_sub_int(&_trxid, 1);
@@ -4676,9 +4692,11 @@ void dt_database_release_transaction_debug(const struct dt_database_t *db)
   if(trxid <= 0)
     fprintf(stderr, "[dt_database_release_transaction] COMMIT outside a transaction\n");
 
-  if(trxid == 1 || TRUE)
+  if(trxid == 1)
   {
     DT_DEBUG_SQLITE3_EXEC(dt_database_get(db), "COMMIT TRANSACTION", NULL, NULL, NULL);
+    g_atomic_pointer_set(&_trx_owner, NULL);
+    dt_pthread_rwlock_unlock(&darktable.database_threadsafe);
   }
 #ifdef USE_NESTED_TRANSACTIONS
   else
@@ -4692,14 +4710,26 @@ void dt_database_release_transaction_debug(const struct dt_database_t *db)
 
 void dt_database_rollback_transaction(const struct dt_database_t *db)
 {
+  gpointer const owner = g_thread_self();
+  if(g_atomic_pointer_get(&_trx_owner) != owner && g_atomic_pointer_get(&_trx_batch_owner) != owner)
+  {
+    fprintf(stderr, "[dt_database_rollback_transaction] ROLLBACK from non-owner thread\n");
+    return;
+  }
+
   const int trxid = dt_atomic_sub_int(&_trxid, 1);
 
   if(trxid <= 0)
     fprintf(stderr, "[dt_database_rollback_transaction] ROLLBACK outside a transaction\n");
 
-  if(trxid == 1 || TRUE)
+  if(trxid >= 1)
   {
     DT_DEBUG_SQLITE3_EXEC(dt_database_get(db), "ROLLBACK TRANSACTION", NULL, NULL, NULL);
+    dt_atomic_set_int(&_trxid, 0);
+    dt_atomic_set_int(&_trx_batch_level, 0);
+    g_atomic_pointer_set(&_trx_owner, NULL);
+    g_atomic_pointer_set(&_trx_batch_owner, NULL);
+    dt_pthread_rwlock_unlock(&darktable.database_threadsafe);
   }
 #ifdef USE_NESTED_TRANSACTIONS
   else
@@ -4713,29 +4743,50 @@ void dt_database_rollback_transaction(const struct dt_database_t *db)
 
 void dt_database_begin_transaction_batch(const struct dt_database_t *db)
 {
+  gpointer const owner = g_thread_self();
+  if(g_atomic_pointer_get(&_trx_batch_owner) == owner)
+  {
+    dt_atomic_add_int(&_trx_batch_level, 1);
+    return;
+  }
+
+  dt_pthread_rwlock_wrlock(&darktable.database_threadsafe);
+  g_atomic_pointer_set(&_trx_owner, owner);
+  g_atomic_pointer_set(&_trx_batch_owner, owner);
+
   const int level = dt_atomic_add_int(&_trx_batch_level, 1);
   if(level == 0)
   {
-    g_atomic_pointer_set(&_trx_batch_owner, g_thread_self());
     DT_DEBUG_SQLITE3_EXEC(dt_database_get(db), "BEGIN TRANSACTION", NULL, NULL, NULL);
   }
 }
 
 void dt_database_end_transaction_batch(const struct dt_database_t *db)
 {
+  gpointer const owner = g_thread_self();
+  if(g_atomic_pointer_get(&_trx_batch_owner) != owner)
+  {
+    dt_print(DT_DEBUG_SQL, "[dt_database_end_transaction_batch] COMMIT from non-owner thread\n");
+    return;
+  }
+
   const int level = dt_atomic_sub_int(&_trx_batch_level, 1);
   if(level <= 0)
   {
     dt_print(DT_DEBUG_SQL, "[dt_database_end_transaction_batch] COMMIT outside a batch transaction\n");
     dt_atomic_set_int(&_trx_batch_level, 0);
+    g_atomic_pointer_set(&_trx_owner, NULL);
     g_atomic_pointer_set(&_trx_batch_owner, NULL);
+    dt_pthread_rwlock_unlock(&darktable.database_threadsafe);
     return;
   }
 
   if(level == 1)
   {
     DT_DEBUG_SQLITE3_EXEC(dt_database_get(db), "COMMIT TRANSACTION", NULL, NULL, NULL);
+    g_atomic_pointer_set(&_trx_owner, NULL);
     g_atomic_pointer_set(&_trx_batch_owner, NULL);
+    dt_pthread_rwlock_unlock(&darktable.database_threadsafe);
   }
 }
 
